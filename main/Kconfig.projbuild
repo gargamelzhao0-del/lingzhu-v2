@@ -1,0 +1,3583 @@
+menu "Nuwax AI Partner Cloud Voice"
+
+    config NUWAX_PRODUCTION_SECURITY_REQUIRED
+        bool "Require production Secure Boot and Flash Encryption"
+        default n
+        help
+            Release-build gate only. When enabled, configuration fails unless
+            Secure Boot V2 and Flash Encryption are enabled. This option does
+            not generate keys or burn eFuses; those remain controlled factory
+            provisioning operations with a documented recovery procedure.
+
+    choice NUWAX_BOARD
+        prompt "Target hardware board profile"
+        default NUWAX_BOARD_LEGACY
+        help
+            Selects the hardware board. The profile drives default GPIO
+            assignments for shared peripherals. Miaopan 2.0 is the isolated
+            hardware-validation target; the production 7.0
+            target; LEGACY keeps the previous discrete-mic/speaker
+            pin defaults so existing benches keep building.
+
+        config NUWAX_BOARD_LEGACY
+            bool "Legacy (pre-7.0 discrete mic/speaker pins)"
+
+        config NUWAX_BOARD_ESP_VOCAT_V1_0
+            bool "Miaopan 2.0 (ESP32-S3-WROOM-1-N16R8)"
+    endchoice
+
+    menu "Battery service"
+
+        config NUWAX_BATTERY_SERVICE_ENABLE
+            bool "Enable BQ27220 battery service and UI status"
+            default y if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default n
+            help
+                Poll the BQ27220 fuel gauge and publish state-of-charge,
+                voltage, current, charging and low-battery state to the UI.
+
+        config NUWAX_BATTERY_SAMPLE_INTERVAL_MS
+            int "Battery sampling interval in milliseconds"
+            default 8000
+            range 5000 10000
+            depends on NUWAX_BATTERY_SERVICE_ENABLE
+
+        config NUWAX_BATTERY_LOW_ENTER_PERCENT
+            int "Low-battery entry threshold"
+            default 10
+            range 1 99
+            depends on NUWAX_BATTERY_SERVICE_ENABLE
+
+        config NUWAX_BATTERY_LOW_EXIT_PERCENT
+            int "Low-battery recovery threshold"
+            default 15
+            range 2 100
+            depends on NUWAX_BATTERY_SERVICE_ENABLE
+
+        config NUWAX_BATTERY_HARD_LOW_ENTER_MV
+            int "Hard low-voltage entry threshold in millivolts"
+            default 3400
+            range 3000 3900
+            depends on NUWAX_BATTERY_SERVICE_ENABLE
+            help
+                A fresh sample at or below this voltage is low regardless of
+                the fuel-gauge SOC. This protects devices whose CEDV profile
+                has not yet been authenticated.
+
+        config NUWAX_BATTERY_HARD_LOW_EXIT_MV
+            int "Hard low-voltage recovery threshold in millivolts"
+            default 3550
+            range 3100 4100
+            depends on NUWAX_BATTERY_SERVICE_ENABLE
+
+        config NUWAX_BATTERY_ESTIMATED_LOW_ENTER_MV
+            int "Voltage confirmation for untrusted low SOC"
+            default 3600
+            range 3200 4200
+            depends on NUWAX_BATTERY_SERVICE_ENABLE
+            help
+                When the CEDV profile is untrusted, low SOC or gauge alarms
+                must also be at or below this voltage before product low-power
+                state is asserted.
+
+        config NUWAX_BATTERY_ESTIMATED_LOW_EXIT_MV
+            int "Voltage recovery for untrusted low SOC"
+            default 3700
+            range 3300 4300
+            depends on NUWAX_BATTERY_SERVICE_ENABLE
+
+        config NUWAX_BATTERY_DESIGN_CAPACITY_MAH
+            int "Battery design capacity in mAh"
+            default 1200
+            range 100 20000
+            depends on NUWAX_BATTERY_SERVICE_ENABLE
+
+    endmenu
+
+    menu "Application OTA"
+
+        config NUWAX_OTA_ENABLE
+            bool "Enable authenticated-cloud application OTA"
+            default n
+            depends on MBEDTLS_CERTIFICATE_BUNDLE && BOOTLOADER_APP_ROLLBACK_ENABLE
+            depends on NUWAX_BATTERY_SERVICE_ENABLE
+            help
+                Enables HTTPS download into ota_0/ota_1 with exact size,
+                SHA-256, board, project, version and release-sequence checks.
+                Product builds must also enable bootloader app rollback.
+
+        config NUWAX_OTA_MIN_BATTERY_PERCENT
+            int "Minimum battery percentage to start OTA"
+            default 30
+            range 10 90
+            depends on NUWAX_OTA_ENABLE
+            help
+                OTA admission uses a fresh, valid battery percentage regardless
+                of whether the gauge's cell profile has been authenticated.
+                Thirty percent is inclusive. Verified external power remains
+                valid for batteryless hardware variants.
+
+        config NUWAX_OTA_AUDIO_QUIESCE_MS
+            int "Audio fade and quiesce time before flash writes"
+            default 300
+            range 100 2000
+            depends on NUWAX_OTA_ENABLE
+
+        config NUWAX_OTA_TOTAL_TIMEOUT_MS
+            int "Maximum total OTA transaction time"
+            default 2100000
+            range 60000 7200000
+            depends on NUWAX_OTA_ENABLE
+            help
+                Covers TLS setup, all full-image download attempts, flash
+                writes and image verification. Per-read and no-data stall
+                timeouts remain independent and fail much sooner.
+
+        config NUWAX_OTA_IO_BUFFER_BYTES
+            int "Internal OTA I/O buffer size"
+            default 4096
+            range 2048 8192
+            depends on NUWAX_OTA_ENABLE
+            help
+                Internal-DRAM buffer shared by HTTPS reads, image hashing and
+                flash writes. The transport falls back to 2048 bytes if the
+                configured contiguous allocation is unavailable at runtime.
+
+        config NUWAX_OTA_REBOOT_DELAY_MS
+            int "Delay after staged result before OTA reboot"
+            default 1500
+            range 500 10000
+            depends on NUWAX_OTA_ENABLE
+
+        config NUWAX_OTA_BOOT_VALIDATION_TIMEOUT_MS
+            int "New-image authenticated cloud health timeout"
+            default 120000
+            range 30000 600000
+            depends on NUWAX_OTA_ENABLE
+
+    endmenu
+
+    menu "BLE Wi-Fi provisioning"
+
+        config NUWAX_PROVISION_SEC2_DEV_MODE
+            bool "Use development Security 2 PoP"
+            default y
+            help
+                Development-only mode. Generates a Security 2 salt/verifier at
+                runtime from the fixed PoP below. Production must replace this
+                with factory-injected per-device salt/verifier data.
+
+        config NUWAX_PROVISION_SEC2_DEV_POP
+            string "Development Security 2 PoP"
+            default "Nuwax7-Dev-PoP"
+            depends on NUWAX_PROVISION_SEC2_DEV_MODE
+
+        config NUWAX_PROVISION_SUCCESS_BLE_HOLD_MS
+            int "BLE availability after provisioning success (ms)"
+            default 15000
+            range 5000 60000
+            help
+                Keeps provisioning reachable after GOT_IP so the mobile app
+                 can observe the final status before BLE stops.
+
+        config NUWAX_PROVISION_SECURITY_SESSION_TIMEOUT_MS
+            int "BLE Security 2 setup timeout (ms)"
+            default 15000
+            range 5000 60000
+            help
+                Disconnects an unauthenticated GATT client after this interval
+                so it cannot indefinitely suppress saved Wi-Fi recovery.
+
+        config NUWAX_PROVISION_APP_PRECONFIG_IDLE_TIMEOUT_MS
+            int "Secured provisioning pre-config idle timeout (ms)"
+            default 300000
+            range 60000 600000
+            help
+                Time allowed after Security 2 setup while the APP transitions
+                to Wi-Fi selection and the user chooses or enters credentials.
+                On expiry the session is rolled back and BLE keeps advertising.
+
+        config NUWAX_PROVISION_APP_SESSION_IDLE_TIMEOUT_MS
+            int "Secured provisioning post-config idle timeout (ms)"
+            default 60000
+            range 15000 300000
+            help
+                After vox-config is staged, disconnects and rolls back an
+                authenticated APP session if Wi-Fi provisioning does not start.
+                Active Wi-Fi attempts use their separate result timeout.
+
+        config NUWAX_PROVISION_FAILURE_STATUS_HOLD_MS
+            int "Wi-Fi failure status hold before parallel recovery (ms)"
+            default 5000
+            range 1000 30000
+            help
+                Keeps the authenticated BLE session briefly after a failed
+                Wi-Fi attempt so the APP can read the failure or immediately
+                submit corrected credentials. On expiry the APP owner is
+                released and BLE advertising plus saved Wi-Fi recovery resume.
+
+        config NUWAX_PROVISION_RUNTIME_IDLE_TIMEOUT_MS
+            int "Runtime reprovisioning inactivity timeout (ms)"
+            default 600000
+            range 120000 1800000
+            help
+                Device-menu and authenticated remote reprovisioning remain
+                available while the APP is making progress. If no BLE,
+                Security 2, device-info, cloud-config, or Wi-Fi credential
+                activity is observed for this interval, the device exits BLE
+                provisioning and restores the durable previous Wi-Fi/cloud
+                pair. This does not change the APP provisioning protocol.
+
+        config NUWAX_PROVISION_OLD_WIFI_ATTEMPT_MS
+            int "Saved Wi-Fi recovery attempt window (ms)"
+            default 20000
+            range 5000 60000
+            help
+                Time allowed for one saved Wi-Fi connection attempt while BLE
+                advertising remains available after the focused APP window.
+
+        config NUWAX_PROVISION_OLD_WIFI_RETRY_MS
+            int "Saved Wi-Fi recovery retry interval (ms)"
+            default 15000
+            range 5000 120000
+
+        config NUWAX_PROVISION_VOX_CONFIG_JOB_TIMEOUT_MS
+            int "vox-config worker response timeout (ms)"
+            default 15000
+            range 5000 60000
+            help
+                Bounds a BLE endpoint wait without freeing a job still owned by
+                the main provisioning supervisor.
+
+        config NUWAX_CLOUD_CONFIG_ALLOW_INSECURE_WS
+            bool "Allow ws:// in dynamic cloud configuration (test only)"
+            default y
+            help
+                Allows the local integration gateway to use ws:// during
+                hardware bring-up. Production builds must disable this option
+                so dynamic cloud endpoints require certificate-verified wss://.
+
+        config NUWAX_PROVISION_USB_CONTROL_ENABLE
+            bool "Enable local USB provisioning control (integration only)"
+            default y
+            help
+                Accepts the exact local console command
+                "NUWAX_CTRL start_ble_provisioning" and routes it through the
+                same reversible reprovisioning worker used by the Device menu.
+                This is a physical-USB integration aid for the browser
+                simulator. Disable it in production release builds; production
+                APP control must use the local Device menu or an authenticated,
+                ownership-checked cloud command API.
+
+    endmenu
+
+    menu "P1 hardware diagnostics"
+
+        config NUWAX_P1_HW_DIAG_MODE
+            bool "Run local P1 hardware diagnostics instead of cloud app loop"
+            default n
+            help
+                Bring-up-only mode for ESP-VoCat P1. Initializes local hardware
+                and then stays in a serial-log diagnostic loop. It does not
+                connect Wi-Fi or WebSocket, so it is safe for display/touch/I2C
+                validation without real credentials.
+
+        config NUWAX_P1_HW_DIAG_INTERVAL_MS
+            int "P1 hardware diagnostic log interval in milliseconds"
+            default 1000
+            range 200 10000
+            depends on NUWAX_P1_HW_DIAG_MODE
+
+    endmenu
+
+    menu "Miaopan 2.0 full hardware acceptance"
+        depends on NUWAX_BOARD_ESP_VOCAT_V1_0
+
+        config NUWAX_HW_ACCEPTANCE_MODE
+            bool "Run board-wide peripheral acceptance before the selected app mode"
+            default n
+            help
+                Initializes and checks every locally testable Miaopan 2.0 board
+                peripheral before P1/P2 or the normal application continues.
+                This option belongs only in the isolated COM5 test project.
+
+        config NUWAX_HW_ACCEPTANCE_SD_ENABLE
+            bool "Mount and non-destructively test the TF card"
+            default y
+            depends on NUWAX_HW_ACCEPTANCE_MODE
+
+        config NUWAX_HW_ACCEPTANCE_SD_CARD_INSERTED
+            bool "A FAT-formatted TF card is confirmed inserted"
+            default n
+            depends on NUWAX_HW_ACCEPTANCE_SD_ENABLE
+            help
+                This board has no MCU-readable card-detect input. Enable only
+                after an operator confirms that a FAT-formatted card is fully
+                inserted. With this disabled the SD item remains fixture pending;
+                with it enabled any mount/read/write failure is a real test failure.
+
+        config NUWAX_HW_ACCEPTANCE_LCD_TE_ENABLE
+            bool "Enable and count ST77916 TE pulses"
+            default y
+            depends on NUWAX_HW_ACCEPTANCE_MODE
+
+        config NUWAX_HW_ACCEPTANCE_BASE_UART_LOOPBACK_ENABLE
+            bool "Run GPIO43/GPIO44 external UART loopback test"
+            default n
+            depends on NUWAX_HW_ACCEPTANCE_MODE
+            help
+                Requires an external TX-RX loopback fixture. Leave disabled
+                when the bottom-board UART is not connected.
+
+        config NUWAX_HW_ACCEPTANCE_4G_AT_ENABLE
+            bool "Power the optional 4G rail and run an AT probe"
+            default n
+            depends on NUWAX_HW_ACCEPTANCE_MODE
+            help
+                Enables GPIO15 and can draw substantial current. Enable only
+                after confirming that a supported 4G module is installed.
+
+    endmenu
+
+    menu "P2 audio diagnostics"
+        depends on NUWAX_BOARD_ESP_VOCAT_V1_0
+
+        config NUWAX_P2_AUDIO_SMOKE_MODE
+            bool "Run local P2 ES7210/ES8311 audio smoke test instead of cloud app loop"
+            default n
+            help
+                Bring-up-only mode for the isolated Miaopan 2.0 audio path. It
+                initializes the single-I2S mixed-mode bus, ES7210, ES8311 and
+                NS4150B PA, then writes a local tone while reading ES7210 TDM
+                slots. It does not connect Wi-Fi or WebSocket.
+
+        config NUWAX_P2_AUDIO_SMOKE_DURATION_MS
+            int "P2 audio smoke duration in milliseconds"
+            default 5000
+            range 500 60000
+            depends on NUWAX_P2_AUDIO_SMOKE_MODE
+
+        config NUWAX_P2_POST_DIAG_TOUCH_UI_ENABLE
+            bool "Start touch UI only after P2 audio diagnostics finish"
+            default n
+            depends on NUWAX_P2_AUDIO_SMOKE_MODE && NUWAX_TOUCH_ENABLE && NUWAX_UI_USE_LVGL
+            help
+                Keep touch completely inactive while P2 audio, MIC3 reference and
+                AEC health measurements run. After all measurements are complete,
+                initialize CST816S and start the existing UI gesture tasks so the
+                display touch path can be validated without changing AEC results.
+
+    endmenu
+
+        menu "Miaopan 2.0 shared audio I2S"
+        depends on NUWAX_BOARD_ESP_VOCAT_V1_0
+
+        config NUWAX_VOCAT_AUDIO_DMA_DESC_NUM
+            int "Miaopan shared duplex I2S DMA descriptor count"
+            default 8
+            range 2 16
+            help
+                Descriptor count for the shared Miaopan ES7210/ES8311 I2S0
+                duplex channel. This is separate from the legacy discrete mic
+                and speaker DMA settings because CyberVoc uses one shared
+                mixed TX/RX bus.
+
+        config NUWAX_VOCAT_AUDIO_DMA_FRAME_NUM
+            int "Miaopan shared duplex I2S DMA frame count"
+            default 240
+            range 64 2048
+            help
+                Frame count per shared Miaopan I2S DMA descriptor. Keep the
+                default for production-equivalent P2 runs; reduce only in
+                controlled P3-0S resource headroom diagnostics.
+
+        config NUWAX_VOCAT_ES7210_MIC_GAIN_DB
+            int "Miaopan ES7210 microphone analog gain in dB"
+            default 30
+            range 0 37
+            help
+                Analog PGA gain applied to all selected ES7210 microphone
+                slots. The ES7210 driver maps this to its supported gain steps.
+                Lower this first when playback-coupled hum or front-end
+                headroom issues appear during full-duplex capture.
+
+        config NUWAX_VOCAT_MIC_INPUT_GAIN_Q15
+            int "Miaopan primary mic digital input gain, Q15"
+            default 32768
+            range 4096 32768
+            help
+                Digital gain applied after reading ES7210 slot0 and before the
+                rest of the voice pipeline. 32768 is unity, 24576 is 0.75x,
+                16384 is 0.5x. This is a diagnostic headroom control; prefer
+                lowering ES7210 analog gain before reducing this value.
+
+        config NUWAX_VOCAT_PA_ENABLE_SETTLE_MS
+            int "External PA enable settle time (ms)"
+            default 20
+            range 0 200
+            help
+                Minimum delay after GPIO4 is asserted before PCM may be sent.
+
+        config NUWAX_VOCAT_PA_DISABLE_SETTLE_MS
+            int "External PA disable settle time (ms)"
+            default 5
+            range 0 200
+
+        config NUWAX_VOCAT_PA_TRANSITION_MAX_MS
+            int "External PA transition deadline (ms)"
+            default 100
+            range 1 1000
+            help
+                A GPIO transition plus its configured settle delay must finish
+                within this bound. GPIO feedback validates only the output
+                latch; the board has no amplifier power-good signal.
+
+    endmenu
+
+    menu "P3 audio pipeline (AFE / AEC / VAD multi-channel)"
+        depends on NUWAX_BOARD_ESP_VOCAT_V1_0
+
+        config NUWAX_P3_AFE_MR_PROTOTYPE_ENABLE
+            bool "P3-0/P3-1 minimum AFE MR prototype (feature flag, default OFF)"
+            default n
+            help
+                When enabled, the capture pipeline routes ES7210 slot0(MIC1) +
+                slot2(MIC3=playback reference) into esp-sr AFE in MR format,
+                replacing the current mono-downmix path. AEC echo-removed mono
+                is then fed to VAD / Opus / ASR.
+
+                This is the "activate dormant path" entry point (phase 3-0 /
+                3-1 of the master plan).  Default OFF until ref_health_score
+                and AEC on/off A/B pass P3-0 acceptance.
+
+                WARNING: enabling this without a verified ref_health_score
+                may feed garbage reference data into AFE, producing worse
+                ASR accuracy than the simple mono path.
+
+        config NUWAX_P3_AFE_MR_TASK_STACK_SIZE
+            int "P3 AFE MR fetch task stack size (bytes)"
+            default 4096
+            depends on NUWAX_P3_AFE_MR_PROTOTYPE_ENABLE
+            help
+                Stack size for the task that continuously fetches AFE output.
+
+        config NUWAX_P3_AEC_REF_HEALTH_BOOT_GATE_ENABLE
+            bool "Run P3-0 AEC ref health gate automatically at boot"
+            default n
+            depends on NUWAX_P3_AFE_MR_PROTOTYPE_ENABLE
+            help
+                Diagnostic-only boot gate. Keep this disabled for normal
+                online firmware because it plays a calibration tone. Use the
+                manual p3_ref_health command for product validation runs.
+
+        config NUWAX_P3_AEC_REF_HEALTH_SCORE_THRESHOLD
+            int "P3-0 AEC ref health score minimum threshold (x1000)"
+            default 500
+            range 0 1000
+            depends on NUWAX_P3_AFE_MR_PROTOTYPE_ENABLE
+            help
+                Minimum ref_health_score (0.0-1.0, stored as x1000) required to
+                enable hardware AEC. Below this threshold, AFE input falls back
+                to MM (mono mic only, no AEC) even when has_ref=true.
+
+        config NUWAX_P3_REF_TDM_REFERENCE_STYLE
+            bool "P3-0 diagnostic: use cyberkit reference-style RX TDM config"
+            default n
+            help
+                Diagnostic-only switch for COM8 AEC reference route convergence.
+                When disabled, keep the proven 7.0/G3 mixed-mode timing:
+                TX STD 32-bit slots plus RX TDM fixed 4x16 slots.
+
+                When enabled, RX TDM is configured closer to cyberkit-main
+                AECVERIFY: slot_bit_width=AUTO, total_slot=AUTO, bclk_div=8.
+                Use only for controlled P3-0 ref_health/AECVERIFY comparison.
+                Do not ship or enable P3-1/L3 based on this flag alone.
+
+        config NUWAX_P3_VENDOR_V2_AUDIO_PROFILE
+            bool "P3-0 diagnostic: reproduce CyberVoc V2.0 24 kHz audio timing"
+            default n
+            depends on NUWAX_P2_AUDIO_SMOKE_MODE
+            select NUWAX_P3_REF_TDM_REFERENCE_STYLE
+            help
+                Isolated COM5 comparison profile for the vendor CyberVoc V2.0
+                audio timing. It changes the ES8311/ES7210 shared bus to 24 kHz,
+                uses the vendor TX 16-bit AUTO slot width, and selects the vendor
+                RX AUTO/AUTO TDM timing with bclk_div=8.
+
+                RX deliberately keeps all four slots enabled (mask 0x0f) so the
+                MIC3 candidate reference cannot be discarded before diagnostics.
+                This profile is incompatible with the 16 kHz ESP-SR hard-reference
+                A/B path and must remain OFF outside isolated P2 smoke tests.
+
+        config NUWAX_P3_VENDOR_V2_CLOCK_ALIGNED_TX
+            bool "P3-0 diagnostic: keep 24 kHz TX/RX BCLK aligned"
+            default n
+            depends on NUWAX_P3_VENDOR_V2_AUDIO_PROFILE
+            help
+                Keep the vendor 24 kHz sample rate and RX timing, but retain
+                32-bit TX slots so TX 2x32-bit and RX 4x16-bit both require a
+                1.536 MHz BCLK. Leave this disabled to reproduce the vendor
+                source exactly (TX 2x16-bit = 768 kHz versus RX 4x16-bit =
+                1.536 MHz on the shared clock pins).
+
+        config NUWAX_P3_SOFTWARE_REF_ENABLE
+            bool "Software playback reference ring"
+            default n
+            help
+                When enabled, the firmware mirrors the
+                volume-scaled mono PCM that is actually written to ES8311 into a
+                software reference ring buffer. The stable product profile uses
+                this timeline for fail-closed wake-word interruption filtering;
+                enabling it does not enable Live AEC, generic VAD barge-in, or DOA.
+
+        config NUWAX_P3_SOFTWARE_REF_CAPACITY_MS
+            int "P3-0S software reference ring capacity in milliseconds"
+            default 2000
+            range 200 10000
+            depends on NUWAX_P3_SOFTWARE_REF_ENABLE
+
+        config NUWAX_P3_SOFTWARE_REF_LOG_INTERVAL_MS
+            int "P3-0S software reference stats log interval"
+            default 1000
+            range 0 60000
+            depends on NUWAX_P3_SOFTWARE_REF_ENABLE
+
+        config NUWAX_LIVE_AEC_ENABLE
+            bool "Live ESP-SR AEC on the main uplink path"
+            default n
+            depends on NUWAX_P3_SOFTWARE_REF_ENABLE || NUWAX_VOCAT_SLOT2_AEC_REF_ENABLE
+            help
+                Enables the main microphone uplink path to run ESP-SR AEC using
+                MIC1 plus the hardware ES7210 slot2 reference or software
+                playback reference ring. When SLOT2_AEC_REF is enabled the
+                hardware path is preferred and the software ring is optional.
+
+        config NUWAX_LIVE_AEC_BACKEND_AFE
+            bool "Use esp_afe_aec for the live product path"
+            default y
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Selects the production live-AEC backend independently from the
+                P3 diagnostic A/B switches.
+
+        config NUWAX_LIVE_AEC_FILTER_LENGTH
+            int "Live product AEC filter length"
+            default 4
+            range 1 16
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Product-path filter length passed to the ESP-SR AEC backend.
+                ESP-SR recommends 4 for ESP32-S3. This setting is deliberately
+                independent from the P3 diagnostic A/B filter selection.
+
+        choice NUWAX_LIVE_AEC_MODE
+            prompt "Live product AEC performance mode"
+            default NUWAX_LIVE_AEC_MODE_LOW_COST
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Selects the AEC implementation used by the live product path.
+                LOW_COST is the product default because it coexists with the V2
+                display, Wi-Fi/TLS, MultiNet and OTA runtime while retaining the
+                measured full-duplex AEC path. HIGH_PERF is an explicit lab-only
+                option until its internal-RAM reserve is proven on the complete
+                product image.
+
+            config NUWAX_LIVE_AEC_MODE_HIGH_PERF
+                bool "High performance"
+
+            config NUWAX_LIVE_AEC_MODE_LOW_COST
+                bool "Low cost"
+        endchoice
+
+        config NUWAX_VOCAT_SLOT2_AEC_REF_ENABLE
+            bool "Allow health-gated ES7210 slot2 hardware reference"
+            default n
+            depends on NUWAX_BOARD_ESP_VOCAT_V1_0
+            help
+                Slot2 is only a reference candidate. Enable this option only on
+                hardware where the playback route is verified; runtime health
+                must also pass before the live path can consume slot2.
+                When enabled, AEC can use the hardware reference path without
+                requiring the software reference ring.
+
+        config NUWAX_VOCAT_MIC3_REFERENCE_PRODUCTION_PROVEN
+            bool "V2 MIC3 to DMA slot2 route has production evidence"
+            default n
+            depends on NUWAX_VOCAT_SLOT2_AEC_REF_ENABLE
+            help
+                Independent release gate for the physical MIC3 reference
+                route. Enable only after a V2 sample has passed a non-loopback
+                channel-map/electrical test with archived evidence. Runtime
+                ref-health alone cannot satisfy this gate.
+
+        config NUWAX_LIVE_AEC_REF_DELAY_SAMPLES
+            int "Live AEC software-reference delay in samples"
+            default 840 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 240
+            range 0 8000
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Delay used by the capture task when snapshotting the speaker
+                reference ring for the primary live AEC path.
+
+        config NUWAX_LIVE_AEC_SHADOW_DELAY_ENABLE
+            bool "Measure software-reference delay without applying it"
+            default n
+            depends on NUWAX_LIVE_AEC_ENABLE && NUWAX_P3_SOFTWARE_REF_ENABLE
+            help
+                Lab-only diagnostic. Copies an absolute-indexed software-reference history window
+                and estimates the acoustic delay during far-end-only playback.
+                The result is diagnostic only: it never changes the production
+                AEC delay, reference buffers, microphone samples, or uplink. Keep
+                this disabled in product builds because the correlation scan can
+                exceed a 20 ms capture deadline while UART diagnostics are active.
+
+        config NUWAX_LIVE_AEC_DYNAMIC_FIR_DELAY_ENABLE
+            bool "Apply measured delay to the human-rescue FIR reference"
+            default n
+            depends on NUWAX_LIVE_AEC_SHADOW_DELAY_ENABLE && NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_ENABLE
+            help
+                Publishes one accepted acoustic-delay estimate per software-
+                reference generation to the capture task. Only the dedicated
+                human-rescue FIR reference is moved; the primary live AEC
+                reference remains at NUWAX_LIVE_AEC_REF_DELAY_SAMPLES.
+
+        config NUWAX_LIVE_AEC_MIN_REF_AVG_ABS
+            int "Live AEC minimum reference average absolute level"
+            default 20
+            range 0 2000
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Minimum software playback reference average absolute level for
+                running live AEC. Keep this low for low-volume validation tones.
+
+        config NUWAX_LIVE_AEC_MIN_REF_PEAK
+            int "Live AEC minimum reference peak level"
+            default 60
+            range 0 8000
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Minimum software playback reference peak level for running live
+                AEC. Either this or the average level threshold may pass.
+
+        config NUWAX_LIVE_AEC_OUTPUT_GAIN_Q15
+            int "Live AEC post output gain in Q15"
+            default 32768
+            range 8192 131072
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Gain applied after live AEC and before the conservative cleaner.
+                32768 means 1.0x, 45056 means 1.375x, 49152 means 1.5x.
+
+        config NUWAX_LIVE_AEC_REF_MISSING_ATTENUATE_Q15
+            int "Live AEC reference-missing mic attenuation in Q15"
+            default 32768
+            range 0 32768
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Reference loss is uncertainty, not proof of far-end-only audio.
+                The human-first product path therefore preserves microphone
+                audio until a valid reference is available.
+
+        config NUWAX_LIVE_AEC_REF_INACTIVE_ATTENUATE_Q15
+            int "Live AEC reference-inactive mic attenuation in Q15"
+            default 32768
+            range 0 32768
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Gain used when the delayed software reference can be read but is
+                currently below the active-ref threshold. This happens during
+                TTS gaps and reference timing holes. A full raw bypass preserves
+                weak near-end speech but also leaks complete speaker playback.
+                Confirmed dual-mic near-end hints use a bounded preservation path
+                inside live AEC instead of raw bypass.
+                2048 is 6.25%; 8192 is 25%; 32768 is legacy raw bypass.
+
+        config NUWAX_LIVE_AEC_ADAPTIVE_REF_ENABLE
+            bool "Search nearby software-reference delay for live AEC"
+            default n
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Lab-only fallback. When enabled, live AEC reads the configured software reference
+                delay first, then probes nearby delay windows and uses the
+                candidate with stronger microphone/reference correlation.
+                The product path mirrors PCM at the actual I2S write boundary, so
+                its calibrated fixed delay is deterministic and avoids this scan
+                on every live frame.
+
+        config NUWAX_LIVE_AEC_ADAPTIVE_REF_SPAN_SAMPLES
+            int "Adaptive software-reference search span in samples"
+            default 1600 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 640
+            range 0 3200
+            depends on NUWAX_LIVE_AEC_ADAPTIVE_REF_ENABLE
+            help
+                Positive and negative search span around the configured delay.
+                The CyberVoc default covers both the historical 360-sample
+                window and the 1600-sample window observed in acceptance runs.
+
+        config NUWAX_LIVE_AEC_ADAPTIVE_REF_STEP_SAMPLES
+            int "Adaptive software-reference search step in samples"
+            default 160 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 320
+            range 40 800
+            depends on NUWAX_LIVE_AEC_ADAPTIVE_REF_ENABLE
+
+        config NUWAX_LIVE_AEC_ADAPTIVE_REF_MIN_CORR_Q15
+            int "Adaptive software-reference minimum improvement correlation Q15"
+            default 1500
+            range 0 32767
+            depends on NUWAX_LIVE_AEC_ADAPTIVE_REF_ENABLE
+            help
+                Minimum absolute mic/reference correlation before a probed
+                delay is allowed to replace the configured delay. 1500 is about
+                0.046, intentionally low because this is still followed by the
+                active-reference and AEC gates.
+
+        config NUWAX_LIVE_AEC_FORCE_VC
+            bool "Force live AEC to ESP-SR VOIP/VC mode"
+            default y
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Keep the product-path live AEC on the VOIP/VC mode even if the
+                older P3 diagnostic A/B choice is configured for SR mode. VC has
+                a smaller chunk on the current build and is more appropriate for
+                full-duplex near-end speech capture.
+
+        config NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+            bool "Blend near-end mic back into live AEC output during double talk"
+            default y
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Preserves near-end speech clarity when AEC is active. This
+                intentionally allows a small amount of residual playback through
+                during confirmed near-end speech; the cloud can run the second
+                AEC pass.
+
+        config NUWAX_LIVE_AEC_NEAREND_BLEND_AVG_ABS
+            int "Live AEC near-end blend average threshold"
+            default 300
+            range 0 5000
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+
+        config NUWAX_LIVE_AEC_NEAREND_BLEND_PEAK
+            int "Live AEC near-end blend peak threshold"
+            default 1000
+            range 0 16000
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+
+        config NUWAX_LIVE_AEC_NEAREND_RAW_MIX_Q15
+            int "Live AEC near-end raw mic mix in Q15"
+            default 0
+            range 0 32768
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+            help
+                Raw mic share mixed into AEC output during near-end speech.
+                The product path keeps this at zero and restores spatial human
+                speech through the dual-microphone differential path instead.
+
+        config NUWAX_LIVE_AEC_STRONG_NEAREND_AVG_ABS
+            int "Live AEC strong near-end average threshold"
+            default 550
+            range 0 12000
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+            help
+                Average absolute mic level that enables a higher raw mic mix for
+                clearer near-end speech.
+
+        config NUWAX_LIVE_AEC_STRONG_NEAREND_PEAK
+            int "Live AEC strong near-end peak threshold"
+            default 1800
+            range 0 24000
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+            help
+                Peak mic level that enables a higher raw mic mix for clearer
+                near-end speech.
+
+        config NUWAX_LIVE_AEC_STRONG_NEAREND_RAW_MIX_Q15
+            int "Live AEC strong near-end raw mic mix in Q15"
+            default 0
+            range 0 32768
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+            help
+                Raw mic share used only for strong near-end speech. The product
+                path keeps this at zero because raw mixing restores common-mode
+                speaker leakage together with the human voice.
+
+        config NUWAX_LIVE_AEC_NEAREND_BLEND_AEC_AVG_ABS
+            int "Live AEC near-end blend AEC-output average evidence threshold"
+            default 300
+            range 0 5000
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+            help
+                Raw mic blend is allowed only if the AEC output itself still
+                contains enough energy. This prevents speaker echo in the raw
+                mic from reopening the blend path after AEC already suppressed it.
+
+        config NUWAX_LIVE_AEC_NEAREND_BLEND_AEC_PEAK
+            int "Live AEC near-end blend AEC-output peak evidence threshold"
+            default 1000
+            range 0 16000
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+            help
+                Peak companion threshold for the AEC-output evidence gate. Low
+                values preserve weak near-end speech; higher values suppress
+                more playback-only leakage before raw mic is mixed back.
+
+        config NUWAX_LIVE_AEC_NEAREND_BLEND_MIN_OUT_RATIO_Q15
+            int "Live AEC near-end blend minimum AEC-output/raw-mic ratio Q15"
+            default 16384
+            range 0 32768
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+            help
+                Raw mic blend is allowed only if the AEC output still contains
+                at least this fraction of the raw mic level. 16384 is about 50%.
+                This blocks playback-only frames where AEC suppressed most of
+                the raw microphone and prevents reintroducing speaker leakage.
+
+        config NUWAX_LIVE_AEC_NEAREND_BLEND_FULL_CORR_Q15
+            int "Live AEC near-end blend full-mix max ref correlation Q15"
+            default 6554
+            range 0 32767
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+            help
+                Raw mic blend is left at the configured amount while raw mic and
+                playback reference correlation is at or below this value. 6554
+                is about 0.20.
+
+        config NUWAX_LIVE_AEC_NEAREND_BLEND_GUARD_CORR_Q15
+            int "Live AEC near-end blend guard ref correlation Q15"
+            default 16384
+            range 0 32767
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+            help
+                Normal near-end raw mic blend is reduced as raw mic/reference
+                correlation approaches this value, and disabled at or above it.
+                This prevents playback leakage from being reintroduced as speech.
+                16384 is about 0.50.
+
+        config NUWAX_LIVE_AEC_STRONG_NEAREND_BLEND_GUARD_CORR_Q15
+            int "Live AEC strong near-end blend guard ref correlation Q15"
+            default 19661
+            range 0 32767
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+            help
+                Strong near-end speech is allowed more raw mic blend, but still
+                disabled when raw mic is highly reference-correlated. 19661 is
+                about 0.60.
+
+        config NUWAX_LIVE_AEC_NEAREND_BLEND_DUAL_GUARD_ENABLE
+            bool "Require dual-mic evidence for unhinted near-end raw blend"
+            default y
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_ENABLE
+            help
+                Blocks raw microphone mixing when only the primary mic energy
+                looks speech-like. This prevents playback echo from being mixed
+                back after AEC unless dual-mic spatial evidence or a near-end
+                hint confirms likely user speech.
+
+        config NUWAX_LIVE_AEC_NEAREND_BLEND_DUAL_BALANCE_Q15
+            int "Dual-mic max balance for unhinted raw blend Q15"
+            default 22000
+            range 0 32768
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_DUAL_GUARD_ENABLE
+            help
+                Maximum min(mic1,mic2)/max(mic1,mic2) average-level ratio for
+                unhinted raw blend. Lower values require stronger spatial
+                difference between the two microphones.
+
+        config NUWAX_LIVE_AEC_NEAREND_BLEND_DUAL_DIFF_AVG_ABS
+            int "Dual-mic average diff threshold for unhinted raw blend"
+            default 450
+            range 0 8000
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_DUAL_GUARD_ENABLE
+
+        config NUWAX_LIVE_AEC_NEAREND_BLEND_DUAL_DIFF_PEAK
+            int "Dual-mic peak diff threshold for unhinted raw blend"
+            default 1600
+            range 0 24000
+            depends on NUWAX_LIVE_AEC_NEAREND_BLEND_DUAL_GUARD_ENABLE
+
+        config NUWAX_LIVE_AEC_DUAL_RESTORE_ENABLE
+            bool "Restore dual-mic differential near-end speech after live AEC"
+            default n
+            depends on NUWAX_LIVE_AEC_ENABLE && NUWAX_BOARD_ESP_VOCAT_V1_0
+            help
+                Adds a guarded, gain-limited dual-microphone differential signal
+                after AEC. Common speaker playback is reduced by the differential,
+                while confirmed or spatially distinct near-end speech is restored.
+                Reference correlation, dual-mic level difference, and spatial
+                balance gates prevent the path from reopening for far-end-only audio.
+
+        config NUWAX_LIVE_AEC_DUAL_RESTORE_HINT_GAIN_Q15
+            int "Maximum dual-mic restore gain for a strong near-end hint"
+            default 8192
+            range 0 32768
+            depends on NUWAX_LIVE_AEC_DUAL_RESTORE_ENABLE
+            help
+                Caps differential restoration at 0.25x. Higher values can make
+                sparse hint transitions pump near-end speech and reintroduce
+                device playback, even when the main AEC output is clean.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_ENABLE
+            bool "Restore reference-projected mic during confirmed human speech"
+            default y
+            depends on NUWAX_LIVE_AEC_ENABLE && NUWAX_BOARD_ESP_VOCAT_V1_0
+            help
+                Crossfades the AEC result toward mic1 after subtracting the
+                least-squares projection of the aligned playback reference.
+                A short provisional path protects speech onset; the confirmed
+                path is driven by the stable playback-human context.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_PROVISIONAL_MIX_Q15
+            int "Provisional human rescue mix in Q15"
+            default 24576
+            range 0 32768
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_ENABLE
+            help
+                Projected-mic share before the two-evidence human seed is
+                confirmed. 24576 is 75 percent so speech onset is not attenuated.
+                Once the FIR model is validated, false provisional hints select
+                the echo-subtracted FIR residual instead of restoring raw echo.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_CONFIRMED_MIX_Q15
+            int "Confirmed human rescue mix in Q15"
+            default 24576
+            range 0 32768
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_ENABLE
+            help
+                Projected-mic share while stable confirmed human context is
+                active. 24576 is 75 percent; the remaining 25 percent retains
+                the ESP-SR AEC output.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_FAST_MIX_Q15
+            int "High-confidence onset rescue mix in Q15"
+            default 24576
+            range 0 32768
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_ENABLE
+            help
+                Projected-mic share after one high-confidence onset frame and
+                before formal two-evidence confirmation. The stricter main-path
+                gate keeps this level out of the historical far-end-only cases.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_MAX_REF_GAIN_Q15
+            int "Human rescue maximum reference projection gain Q15"
+            default 65536
+            range 0 262144
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_ENABLE
+            help
+                Clamp for subtracting the aligned software reference from mic1
+                before it is admitted to the human rescue path. 65536 is 2.0x.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_MIN_REF_CORR_Q15
+            int "Human rescue minimum trusted reference correlation Q15"
+            default 8192
+            range 0 32767
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_ENABLE
+            help
+                Minimum absolute mic/reference correlation used to learn or
+                latch the scalar acoustic projection. Lower-correlation frames
+                keep the last stable coefficient instead of changing it from
+                random short-window speech correlation. 8192 is 0.25.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_ENABLE
+            bool "Use an adaptive multi-tap echo model for the human rescue source"
+            default n
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_ENABLE
+            help
+                Optional lab model. Learns the causal loudspeaker-to-primary-microphone path only
+                before human protection is admitted. Coefficients freeze as soon
+                as provisional, fast, or confirmed protection starts. The scalar
+                projection remains the automatic fallback until the FIR residual
+                passes its training and energy health checks. Product builds use
+                ESP-SR LOW_COST AEC plus the bounded scalar rescue path; this
+                256-tap float NLMS path is disabled to preserve the 20 ms budget.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_TAPS
+            int "Human rescue adaptive FIR taps"
+            default 256
+            range 32 256
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_ENABLE
+            help
+                Number of causal reference taps. At 16 kHz, 256 taps cover 16 ms.
+                With the 376-sample rescue reference lag, cold-start captures place
+                the direct acoustic path between taps 30 and 213.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_REF_LAG_SAMPLES
+            int "Human rescue FIR reference lag samples"
+            default 376
+            range 0 1024
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_ENABLE
+            help
+                Uses a rescue-only software reference this many samples behind
+                the 840-sample main AEC reference. Cross-reboot synchronous
+                measurements place the acoustic peak between taps 30 and 213
+                with lag 376 and 256 taps; the AFE reference remains unchanged.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_SEED_TAP
+            int "Human rescue FIR scalar seed tap"
+            default 120
+            range 0 255
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_ENABLE
+            help
+                Initial tap for the scalar echo-gain estimate. Tap 120 is centered
+                within the measured cross-reboot direct-path range.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_STEP_Q15
+            int "Human rescue NLMS adaptation step Q15"
+            default 2048
+            range 256 8192
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_ENABLE
+            help
+                Normalized LMS step. 2048 is 0.0625 and favors stable convergence
+                over rapid coefficient movement near a possible double-talk onset.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_MIN_TRAINING_SAMPLES
+            int "Human rescue FIR minimum training samples"
+            default 2048
+            range 256 64000
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_ENABLE
+            help
+                Minimum qualified adaptation before validation can start. 8192
+                samples are 512 ms at 16 kHz, followed by an independent
+                32-chunk validation window before FIR rescue is trusted.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_WARMUP_SAMPLES
+            int "Human rescue FIR reference warmup samples"
+            default 32000
+            range 0 128000
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_ENABLE
+            help
+                Effective FIR-reference samples required before any coefficient
+                adaptation. The two-second default excludes playback startup and
+                DMA-latency transients; human protection remains active throughout.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_MAX_RESIDUAL_RAW_Q15
+            int "Human rescue FIR maximum residual/raw energy ratio Q15"
+            default 6144
+            range 0 65536
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_ENABLE
+            help
+                The held-out FIR residual energy must stay below this fraction
+                of raw-mic energy before FIR rescue is trusted. 6144 is 0.1875.
+
+        config NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_MAX_RESIDUAL_SCALAR_Q15
+            int "Human rescue FIR maximum residual/scalar energy ratio Q15"
+            default 8192
+            range 0 65536
+            depends on NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_ENABLE
+            help
+                The FIR residual must also improve on the scalar projection.
+                8192 is 0.25 and rejects local fits that do not generalize to
+                the longer independent validation interval.
+
+        config NUWAX_LIVE_AEC_RESIDUAL_CANCEL_ENABLE
+            bool "Live AEC residual reference-correlated cancel"
+            default y
+            depends on NUWAX_LIVE_AEC_ENABLE
+            help
+                Runs a conservative post-AEC linear subtraction for the part of
+                the residual output that is still correlated with the software
+                playback reference. This targets first-pass playback leakage
+                without applying a fixed frequency notch to normal speech.
+
+        config NUWAX_LIVE_AEC_RESIDUAL_MIN_CORR_Q15
+            int "Live AEC residual cancel minimum correlation Q15"
+            default 12000
+            range 0 32767
+            depends on NUWAX_LIVE_AEC_RESIDUAL_CANCEL_ENABLE
+            help
+                Minimum absolute correlation between AEC output and playback
+                reference before residual subtraction is allowed. 12000 is about 0.366.
+
+        config NUWAX_LIVE_AEC_RESIDUAL_NEAREND_MIN_CORR_Q15
+            int "Live AEC residual cancel near-end minimum correlation Q15"
+            default 28000
+            range 0 32767
+            depends on NUWAX_LIVE_AEC_RESIDUAL_CANCEL_ENABLE
+            help
+                Stronger correlation required when near-end speech is detected.
+                This avoids subtracting reference-shaped content from user voice
+                unless playback leakage clearly dominates. 28000 is about 0.85.
+
+        config NUWAX_LIVE_AEC_RESIDUAL_MAX_GAIN_Q15
+            int "Live AEC residual cancel max linear gain Q15"
+            default 32768
+            range 0 262144
+            depends on NUWAX_LIVE_AEC_RESIDUAL_CANCEL_ENABLE
+            help
+                Clamp for the estimated residual/reference gain. Software
+                reference is post-volume PCM and can be much lower than acoustic
+                pickup, so the product-path live AEC needs a higher clamp than
+                the older cleaner softref path. 196608 means 6.0x.
+
+        config NUWAX_LIVE_AEC_POST_BLEND_RESIDUAL_ENABLE
+            bool "Live AEC post near-end-blend residual cancel"
+            default n
+            depends on NUWAX_LIVE_AEC_RESIDUAL_CANCEL_ENABLE
+            help
+                Runs a second, stricter residual cancel after near-end raw mic
+                is mixed back. This specifically targets echo reintroduced by
+                the raw mic share while requiring high playback-reference
+                correlation.
+
+        config NUWAX_LIVE_AEC_POST_BLEND_RESIDUAL_MIN_CORR_Q15
+            int "Live AEC post-blend residual minimum correlation Q15"
+            default 12000
+            range 0 32767
+            depends on NUWAX_LIVE_AEC_POST_BLEND_RESIDUAL_ENABLE
+            help
+                Minimum correlation required for the second residual pass.
+                12000 is about 0.37 and is still stricter than the main residual
+                pass for weak correlations.
+
+        config NUWAX_LIVE_AEC_POST_BLEND_RESIDUAL_MAX_GAIN_Q15
+            int "Live AEC post-blend residual max linear gain Q15"
+            default 65536
+            range 0 131072
+            depends on NUWAX_LIVE_AEC_POST_BLEND_RESIDUAL_ENABLE
+            help
+                Clamp for the second residual pass. 65536 means 2.0x.
+
+        config NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE
+            bool "P3-0S-2/P3-0S-3 software reference AEC A/B diagnostic (default OFF)"
+            default n
+            depends on NUWAX_P3_SOFTWARE_REF_ENABLE
+            depends on !NUWAX_P3_VENDOR_V2_AUDIO_PROFILE
+            help
+                Diagnostic-only A/B entry. When enabled, a manual remote command
+                can read the software playback reference ring, interleave it with
+                live MIC1 mono as MR, run esp-sr afe_aec_process(), and print one
+                structured P3-0S-AEC-AB metric line.
+
+                This does not enable production AEC, AFE MR always-on, L3/L4
+                smart interruption, or DOA. Keep OFF except during P3-0S-2
+                validation builds.
+
+        config NUWAX_P3_HARDREF_AEC_AB_ENABLE
+            bool "P3-0H hardware reference AEC A/B diagnostic (default OFF)"
+            default n
+            depends on !NUWAX_P3_VENDOR_V2_AUDIO_PROFILE
+            help
+                Diagnostic-only A/B entry for the fixed CyberVoc hardware
+                reference path: ES8311 OUTP/N -> RC network -> ES7210
+                MIC3/slot2. When enabled, the manual p3_hardref_ab command
+                reads slot0(MIC1) + slot2(MIC3 ref) as MR, runs
+                esp-sr afe_aec_process(), and prints structured
+                P3-0H-AEC-AB metric lines.
+
+                This proves the hardware reference can drive AFE AEC, but it
+                still does not enable production AEC, always-on AFE MR, default
+                smart interruption, L3/L4 behavior, or DOA.
+
+        config NUWAX_P3_SOFTREF_AB_MIN_REF_RMS
+            int "P3-0S-3 AEC A/B minimum playback reference RMS"
+            default 20
+            range 0 32767
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE || NUWAX_P3_HARDREF_AEC_AB_ENABLE
+            help
+                Minimum playback reference RMS required before the A/B result
+                is considered data-plane ready.
+
+        config NUWAX_P3_SOFTREF_AB_MAX_READ_TIMEOUTS
+            int "P3-0S-3 AEC A/B max mic read timeouts"
+            default 0
+            range 0 100
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE || NUWAX_P3_HARDREF_AEC_AB_ENABLE
+
+        config NUWAX_P3_SOFTREF_AB_MAX_UNDERRUN_RATIO
+            int "P3-0S-3 AEC A/B max reference underrun ratio (x1000)"
+            default 10
+            range 0 1000
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE || NUWAX_P3_HARDREF_AEC_AB_ENABLE
+
+        config NUWAX_P3_SOFTREF_AB_MIN_ERLE_DB
+            int "P3-0S-3 AEC A/B minimum ERLE in dB (x100)"
+            default 600
+            range 0 3000
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE || NUWAX_P3_HARDREF_AEC_AB_ENABLE
+            help
+                Minimum echo return loss enhancement required for diagnostic
+                quality_ok. This is intentionally conservative until a stronger
+                near-end preservation test is added.
+
+        config NUWAX_P3_SOFTREF_AB_MIN_ACTIVE_REF_RATIO
+            int "P3-0S-3 AEC A/B minimum active reference ratio (x1000)"
+            default 600
+            range 0 1000
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE || NUWAX_P3_HARDREF_AEC_AB_ENABLE
+            help
+                Minimum ratio of frames with valid playback reference required
+                before the diagnostic window can pass quality_ok. Low ratios
+                usually mean the host triggered A/B too close to TTS tail or
+                during a quiet playback gap.
+
+        config NUWAX_P3_SOFTREF_AB_MAX_CORR_AFTER_ABS
+            int "P3-0S-3 AEC A/B max residual absolute ref correlation (x1000)"
+            default 100
+            range 0 1000
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE || NUWAX_P3_HARDREF_AEC_AB_ENABLE
+
+        config NUWAX_P3_SOFTREF_AB_AEC_FILTER_LENGTH
+            int "P3-0S-6 AEC diagnostic filter length"
+            default 4
+            range 1 16
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE || NUWAX_P3_HARDREF_AEC_AB_ENABLE
+            help
+                Diagnostic-only filter length passed to afe_aec_create().
+                ESP-SR recommends 4 for ESP32-S3. Larger values may increase
+                ERLE but also increase CPU/internal heap pressure.
+
+        choice NUWAX_P3_SOFTREF_AB_AEC_TYPE
+            prompt "P3-0S-6 AEC diagnostic type"
+            default NUWAX_P3_SOFTREF_AB_AEC_TYPE_SR
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE || NUWAX_P3_HARDREF_AEC_AB_ENABLE
+
+            config NUWAX_P3_SOFTREF_AB_AEC_TYPE_SR
+                bool "AFE_TYPE_SR"
+
+            config NUWAX_P3_SOFTREF_AB_AEC_TYPE_VC
+                bool "AFE_TYPE_VC"
+        endchoice
+
+        choice NUWAX_P3_SOFTREF_AB_AEC_MODE
+            prompt "P3-0S-6 AEC diagnostic mode"
+            default NUWAX_P3_SOFTREF_AB_AEC_MODE_LOW_COST
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE || NUWAX_P3_HARDREF_AEC_AB_ENABLE
+
+            config NUWAX_P3_SOFTREF_AB_AEC_MODE_LOW_COST
+                bool "AFE_MODE_LOW_COST"
+
+            config NUWAX_P3_SOFTREF_AB_AEC_MODE_HIGH_PERF
+                bool "AFE_MODE_HIGH_PERF"
+        endchoice
+
+        config NUWAX_P3_SOFTREF_AB_RESOURCE_SLIM_ENABLE
+            bool "P3-0S-7 software reference AEC resource-slim diagnostic"
+            default n
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE
+            help
+                Diagnostic-only switch for P3-0S-7 resource feasibility tests.
+                It keeps Wi-Fi, WebSocket, speaker playback, software reference,
+                and p3_softref_ab commands alive, but skips UI/LVGL/touch runtime
+                so AEC heap headroom can be measured without nonessential UI load.
+
+        config NUWAX_P3_SOFTREF_AB_WIFI_SLIM_ENABLE
+            bool "P3-0S-8 use conservative Wi-Fi buffers for AEC attribution"
+            default y if NUWAX_P3_SOFTREF_AB_RESOURCE_SLIM_ENABLE
+            default n
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE
+            help
+                Diagnostic/productization attribution switch. It keeps the online
+                path alive while reducing Wi-Fi buffer pressure so UI/touch loads
+                can be added back one at a time.
+
+        config NUWAX_P3_SOFTREF_AB_SKIP_UI_RUNTIME
+            bool "P3-0S-8 skip display/LVGL UI runtime"
+            default y if NUWAX_P3_SOFTREF_AB_RESOURCE_SLIM_ENABLE
+            default n
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE
+            help
+                Skip display and LVGL UI runtime while leaving Wi-Fi, WebSocket,
+                speaker playback, software reference and p3_softref_ab available.
+                Touch can be tested separately with the touch skip switch.
+
+        config NUWAX_P3_SOFTREF_AB_SKIP_TOUCH_RUNTIME
+            bool "P3-0S-8 skip touch runtime"
+            default y if NUWAX_P3_SOFTREF_AB_RESOURCE_SLIM_ENABLE
+            default n
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE
+            help
+                Skip touch init/log/gesture runtime independently from display/UI
+                so P3-0S-8 can identify touch stack heap cost.
+
+        config NUWAX_P3_SOFTREF_AB_MIN_INTERNAL_FREE
+            int "P3-0S-3 AEC A/B minimum internal heap free bytes"
+            default 49152
+            range 0 262144
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE || NUWAX_P3_HARDREF_AEC_AB_ENABLE
+
+        config NUWAX_P3_SOFTREF_AB_MIN_INTERNAL_LARGEST
+            int "P3-0S-3 AEC A/B minimum largest internal heap block bytes"
+            default 16384
+            range 0 262144
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE || NUWAX_P3_HARDREF_AEC_AB_ENABLE
+
+        config NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+            bool "P3-1 software-reference near-end candidate record-only probe"
+            default n
+            depends on NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE
+            help
+                Record-only P3-1 entry point. It reuses the verified software
+                reference AEC diagnostic to classify a near-end speech candidate
+                during active playback, logs one structured
+                P3-1-NEAREND-CANDIDATE line, and never cancels playback or sends
+                cancel_turn. Keep OFF except controlled P3-1 validation builds.
+
+        config NUWAX_P3_INTERRUPT_TIMING_ENABLE
+            bool "P3-2 explicit manual/gray interrupt timing probe"
+            default n
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+            help
+                Diagnostic-only P3-2 entry point. It adds an explicit remote
+                p3_interrupt_timing command that can measure
+                near_end_candidate_ts -> interrupt_pending_ts -> local_mute_ts
+                -> cancel_turn_sent_ts -> stale_drop_effective_ts.
+
+                The default command mode is record_only and never cancels
+                playback. Only explicit manual_cancel or gray_cancel requests
+                are allowed to locally mute playback and send cancel_turn, and
+                only after the P3-1 near-end candidate gate passes.
+
+                Keep OFF for normal builds until manual/gray timing validation
+                passes. This does not enable product automatic interruption,
+                hardware AEC, always-on AFE MR, L3/L4 behavior, or DOA.
+
+        config NUWAX_P3_NEAREND_MIN_ACTIVE_REF_RATIO
+            int "P3-1 near-end candidate minimum active reference ratio (x1000)"
+            default 600
+            range 0 1000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+
+        config NUWAX_P3_NEAREND_MIN_ACTIVE_OUT_RMS
+            int "P3-1 near-end candidate minimum residual RMS"
+            default 140
+            range 0 32767
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+
+        config NUWAX_P3_NEAREND_MIN_ACTIVE_MIC_RMS
+            int "P3-1 near-end candidate minimum active microphone RMS"
+            default 900
+            range 0 32767
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+
+        config NUWAX_P3_NEAREND_MIN_OUT_TO_REF_DB
+            int "P3-1 near-end candidate minimum residual-to-reference dB (x100)"
+            default -1600
+            range -6000 2000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+
+        config NUWAX_P3_NEAREND_MAX_CORR_AFTER_ABS
+            int "P3-1 near-end candidate max residual reference correlation (x1000)"
+            default 100
+            range 0 1000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+
+        config NUWAX_P3_NEAREND_STRONG_MIC_RMS
+            int "P3-1 near-end candidate strong-speech microphone RMS"
+            default 1800
+            range 0 32767
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+
+        config NUWAX_P3_NEAREND_STRONG_OUT_RMS
+            int "P3-1 near-end candidate strong-speech residual RMS"
+            default 900
+            range 0 32767
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+
+        config NUWAX_P3_NEAREND_STRONG_OUT_TO_REF_DB
+            int "P3-1 near-end candidate strong-speech residual-to-reference dB (x100)"
+            default -600
+            range -6000 2000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+
+        config NUWAX_P6_CANCEL_MIN_OUT_TO_REF_DB
+            int "P6 gray cancel minimum residual-to-reference dB (x100)"
+            default -400
+            range -6000 2000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+            help
+                Extra safety gate for sending cancel_turn. P3/P6 may still log
+                a broad record candidate for sampling, but gray cancel requires
+                strong near-end evidence or residual/reference above this
+                threshold. Low-reference near-end evidence remains observation
+                data only because playback-only windows can also produce low
+                active reference ratios.
+        config NUWAX_P6_NARROW_NORMALVOICE_REF_RATIO_LO
+            int "P6 narrow normalvoice REF_RATIO min (x1000)"
+            default 600
+            range 0 1000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+        config NUWAX_P6_NARROW_NORMALVOICE_REF_RATIO_HI
+            int "P6 narrow normalvoice REF_RATIO max (x1000)"
+            default 750
+            range 0 1000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+        config NUWAX_P6_NARROW_NORMALVOICE_MIC_RMS_LO
+            int "P6 narrow normalvoice mic_rms min"
+            default 3800
+            range 0 30000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+        config NUWAX_P6_NARROW_NORMALVOICE_OUT_RMS_LO
+            int "P6 narrow normalvoice out_rms min"
+            default 550
+            range 0 30000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+        config NUWAX_P6_NARROW_NORMALVOICE_OUT_RMS_HI
+            int "P6 narrow normalvoice out_rms max"
+            default 900
+            range 0 30000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+        config NUWAX_P6_NARROW_NORMALVOICE_OUT_TO_REF_DB_LO
+            int "P6 narrow normalvoice out_to_ref_db min (x100)"
+            default -400
+            range -6000 2000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+        config NUWAX_P6_NARROW_NORMALVOICE_OUT_TO_REF_DB_HI
+            int "P6 narrow normalvoice out_to_ref_db max (x100)"
+            default 0
+            range -6000 2000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+        config NUWAX_P6_NARROW_NORMALVOICE_ERLE_DB_LO
+            int "P6 narrow normalvoice erle_db min (x100)"
+            default 1750
+            range -6000 6000
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+            help
+                Narrow normalvoice class (P6-LIVEBARGEIN-004-4C).
+                targets ref_ratio 0.60..0.75 with residual playback; tight
+                acoustic shape; refuses unsafe configs.
+
+    endmenu
+
+    menu "P5 full-duplex diagnostics"
+        depends on NUWAX_BOARD_ESP_VOCAT_V1_0
+
+        config NUWAX_P5_FULLDUPLEX_OVERLAP_PROBE_ENABLE
+            bool "P5-1 explicit full-duplex playback/uplink overlap probe"
+            default n
+            help
+                Diagnostic-only P5-1 entry point. It adds a manual remote
+                p5_fullduplex_overlap_probe command that captures and uploads
+                short microphone audio while speaker playback is already active,
+                then prints one structured P5-1-FULLDUPLEX-OVERLAP line.
+
+                Keep OFF for normal builds. This does not enable product
+                automatic interruption, hardware AEC, always-on AFE MR, L3/L4
+                behavior, or DOA.
+
+        config NUWAX_P5_DURING_PLAYBACK_CANDIDATE_ENABLE
+            bool "P5-3 explicit during-playback candidate-only probe"
+            default n
+            depends on NUWAX_P5_FULLDUPLEX_OVERLAP_PROBE_ENABLE
+            depends on NUWAX_P3_NEAREND_CANDIDATE_RECORD_ENABLE
+            help
+                Diagnostic-only P5-3 entry point. It adds a manual remote
+                p5_during_playback_candidate command that first verifies
+                during-playback uplink overlap, then records one near-end
+                candidate-only decision in the same speaking window.
+
+                This command never mutes playback and never sends cancel_turn.
+                Keep OFF for normal builds. It is a data-path probe for the
+                future interrupt classifier, not product automatic interruption,
+                hardware AEC, L3/L4 behavior, or DOA.
+
+        config NUWAX_P6_GRAY_CANCEL_ENABLE
+            bool "P6 explicit gray cancel after during-playback classifier"
+            default n
+            depends on NUWAX_P5_DURING_PLAYBACK_CANDIDATE_ENABLE
+            help
+                Controlled P6 gray-only cancel path for validation builds.
+                It allows p5_during_playback_candidate mode=gray_cancel to
+                locally mute playback and send cancel_turn only after the
+                P6 record classifier reports p6_record_candidate=1 and the
+                overlap/data/resource gates pass.
+
+                Keep OFF for normal builds. This does not enable default
+                automatic interruption, hardware AEC, L3/L4 behavior, or DOA.
+
+        config NUWAX_P6_GRAY_CONFIRM_ENABLE
+            bool "P6-GRAYCONFIRM-003 two-stage gray confirm smart interrupt"
+            default n
+            depends on NUWAX_P5_DURING_PLAYBACK_CANDIDATE_ENABLE
+            help
+                P6-GRAYCONFIRM-003 stage 1: two-stage gray confirm path that
+                uses ASR/cloud keyword confirmation instead of dual-mic hard gate.
+                Workflow:
+                  p6_record_candidate=1 -> gray_candidate (local duck)
+                  -> ASR/keyword match in cloud -> confirmed_cancel
+                  OR timeout/reject -> rejected_gray (restore volume).
+                Old p6-gray-cancel path is preserved; this only adds a new path.
+                Keep OFF for normal builds. Independent feature flag.
+
+        config NUWAX_P6_GRAY_CONFIRM_DUCK_VOLUME_PERCENT
+            int "Gray confirm duck volume ceiling percent (0-100; 0 = full mute)"
+            default 30
+            range 0 100
+            depends on NUWAX_P6_GRAY_CONFIRM_ENABLE
+            help
+                Absolute upper bound for the temporary output volume during
+                the gray candidate window. The runtime must compute:
+                  duck_target = min(current_volume_percent,
+                                     NUWAX_P6_GRAY_CONFIRM_DUCK_VOLUME_PERCENT)
+                and then call apply_volume_percent(duck_target, persist=false).
+                If user volume is already lower than this ceiling, the duck
+                step is a no-op (recorded in logs). 0 = full mute.
+
+        config NUWAX_P6_GRAY_CONFIRM_DUCK_FADE_MS
+            int "Gray confirm duck fade-in time (ms)"
+            default 80
+            range 20 500
+            depends on NUWAX_P6_GRAY_CONFIRM_ENABLE
+
+        config NUWAX_P6_GRAY_CONFIRM_TIMEOUT_MS
+            int "Gray confirm confirmation timeout (ms)"
+            default 1500
+            range 500 3000
+            depends on NUWAX_P6_GRAY_CONFIRM_ENABLE
+            help
+                Maximum wait for cloud ASR/keyword confirmation before
+                rejected_gray (restore volume, no cancel).
+
+    endmenu
+
+    menu "Miaopan power hold (PG2)"
+        depends on NUWAX_BOARD_ESP_VOCAT_V1_0
+
+        config NUWAX_POWER_CTRL_GPIO
+            int "Power-hold GPIO (-1 to disable)"
+            default 7 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 9
+            range -1 48
+            help
+                Miaopan 2.0 routes PG2 to ESP32-S3 GPIO7. A high level drives
+                Q4 and keeps the Q2/Q3 battery latch on after SW3 is released.
+                Set -1 only when the board has no power-hold circuit.
+
+        choice NUWAX_POWER_CTRL_MODE
+            prompt "PG2 power-hold mode"
+            default NUWAX_POWER_CTRL_HOLD_HIGH
+            help
+                HOLD_HIGH is required for the Miaopan PG2 latch. OBSERVE
+                configures the selected pin as high-Z input and only logs its
+                level, boot count, and reset reason. HOLD_LOW is for legacy
+                polarity checks and will release the new-board rail.
+
+            config NUWAX_POWER_CTRL_HOLD_LOW
+                bool "Drive LOW (legacy polarity diagnostic)"
+            config NUWAX_POWER_CTRL_OBSERVE
+                bool "Observe only (high-Z, log level) — diagnostics"
+            config NUWAX_POWER_CTRL_HOLD_HIGH
+                bool "Drive HIGH (Miaopan PG2 normal operation)"
+        endchoice
+
+        config NUWAX_POWER_KEY_ENABLE
+            bool "Enable SW3 single-click shutdown and wake"
+            default y
+            depends on NUWAX_POWER_CTRL_HOLD_HIGH
+            help
+                PG1 is sampled by an independent debounced task. The startup
+                press must first be released, then a subsequent stable press
+                and release turns off PA/backlight, releases PG2 and enters
+                deep sleep if USB keeps the MCU powered.
+
+        config NUWAX_POWER_KEY_GPIO
+            int "SW3 PG1 input GPIO"
+            default 16
+            range 0 21
+            depends on NUWAX_POWER_KEY_ENABLE
+            help
+                Miaopan 2.0 routes SW3 feedback PG1 to ESP32-S3 GPIO16.
+                GPIO0-21 are the S3 RTC IO range required for EXT1 wake.
+
+        config NUWAX_POWER_KEY_ACTIVE_LOW
+            bool "SW3 PG1 is active-low"
+            default y
+            depends on NUWAX_POWER_KEY_ENABLE
+
+        config NUWAX_POWER_KEY_POLL_MS
+            int "SW3 polling interval in milliseconds"
+            default 20
+            range 5 100
+            depends on NUWAX_POWER_KEY_ENABLE
+
+        config NUWAX_POWER_KEY_DEBOUNCE_MS
+            int "SW3 stable-level debounce in milliseconds"
+            default 60
+            range 20 500
+            depends on NUWAX_POWER_KEY_ENABLE
+
+        config NUWAX_POWER_KEY_FORCE_OFF_HOLD_MS
+            int "SW3 emergency force-off hold in milliseconds"
+            default 5000
+            range 1000 15000
+            depends on NUWAX_POWER_KEY_ENABLE
+            help
+                A normal click remains inhibited during OTA and reprovisioning
+                flash transactions. Holding SW3 for this duration and then
+                releasing it overrides a stale inhibit owner and enters the
+                hardware power-off path without waiting on application tasks.
+    endmenu
+
+    config NUWAX_WIFI_SSID
+        string "Wi-Fi SSID (primary)"
+        default ""
+        help
+            Primary Wi-Fi SSID used by the ESP32S3 demo.
+
+    config NUWAX_WIFI_PASSWORD
+        string "Wi-Fi password (primary)"
+        default ""
+        help
+            Primary Wi-Fi password. Leave empty for an open network.
+
+    config NUWAX_WIFI_SSID_B
+        string "Wi-Fi SSID (backup, empty to disable auto-fallback)"
+        default ""
+        help
+            Backup Wi-Fi SSID used as automatic fallback when the primary
+            Wi-Fi retries are exhausted. When this is non-empty, the
+            device alternates between primary and backup after each
+            disconnect-retry-exhausted event, and on successful connect
+            it remembers the working one for the next session.
+
+    config NUWAX_WIFI_PASSWORD_B
+        string "Wi-Fi password (backup)"
+        default ""
+        help
+            Backup Wi-Fi password. Leave empty for an open network.
+
+    config NUWAX_WIFI_REALTIME_DISABLE_POWER_SAVE
+        bool "Disable Wi-Fi power save for realtime audio"
+        default y
+        help
+            Keep the station radio awake while the product is running so
+            bidirectional realtime audio is not delayed by modem sleep.
+
+    config NUWAX_DEVICE_ID
+        string "Device ID"
+        default "esp32s3-demo"
+        help
+            Logical device ID sent to the Cloud Gateway.
+
+    config NUWAX_VOICE_WS_URL
+        string "Cloud Gateway device WebSocket URL"
+        default "ws://192.168.31.180:8799/api/device/ws"
+        help
+            URL of the Cloud Gateway device WebSocket endpoint. For local validation, use the PC LAN IP.
+            For production deployment, use a public wss:// endpoint after TLS support is enabled.
+
+    config NUWAX_VOICE_TOKEN
+        string "Cloud Gateway token"
+        default ""
+        help
+            Optional device token. Must match CLOUD_DEVICE_TOKEN when public Cloud Gateway device authentication is enabled.
+
+    config NUWAX_PROTOCOL_LISTEN_STOP_ENABLE
+        bool "Send listen stop protocol messages"
+        default y
+        help
+            Send the JSON listen message whose state is "stop" after the
+            terminal binary audio frame. This is required to close every ASR
+            input transaction. Disable it only for temporary protocol tests;
+            production conversation builds must keep it enabled.
+
+    config NUWAX_TLS_TRYCLOUDFLARE_CA_ENABLE
+        bool "Trust pinned trycloudflare test tunnel CA"
+        default y
+        help
+            Use a pinned GTS Root R4 certificate for *.trycloudflare.com
+            development tunnels. This keeps TLS verification enabled for the temporary
+            Cloudflare Quick Tunnel path. Production devices should use your own domain
+            with a normal public CA chain and may disable this option later.
+
+    config NUWAX_TIME_SYNC_SERVER
+        string "SNTP time sync server"
+        default "ntp.aliyun.com"
+        help
+            SNTP server used after Wi-Fi connects and before TLS/WSS handshake.
+            TLS certificate validation requires a valid system clock on ESP32.
+
+    config NUWAX_TIME_SYNC_TIMEOUT_MS
+        int "SNTP time sync timeout in milliseconds"
+        default 12000
+        range 1500 60000
+        help
+            Maximum time spent waiting for SNTP before each WSS connection attempt.
+            If time sync fails, the firmware still attempts WSS and logs the risk.
+
+    config NUWAX_CLOUD_TEXT_REQUEST_ENABLE
+        bool "Send cloud text_request after local listen cycle"
+        default y
+        help
+            In 3.0 bring-up, send a text_request to the Cloud Gateway after a synthetic/mic listen cycle.
+            This validates Cloud Gateway -> PC Agent -> Nuwaclaw before ASR is integrated.
+
+    config NUWAX_CLOUD_TEXT_REQUEST_TEXT
+        string "Default cloud text_request text"
+        default "Report current cloud relay status through Nuwaclaw."
+        depends on NUWAX_CLOUD_TEXT_REQUEST_ENABLE
+        help
+            Text sent to the Cloud Gateway for early cloud relay validation.
+
+    choice NUWAX_AUDIO_SOURCE
+        prompt "Voice audio source"
+        default NUWAX_AUDIO_SOURCE_I2S_MIC
+        help
+            Select the audio source uploaded to the Cloud Gateway.
+
+        config NUWAX_AUDIO_SOURCE_I2S_MIC
+            bool "I2S digital microphone"
+
+        config NUWAX_AUDIO_SOURCE_SYNTHETIC
+            bool "Synthetic sine wave test audio"
+    endchoice
+
+    config NUWAX_VOICE_SAMPLE_RATE
+        int "Voice input sample rate"
+        default 16000
+        range 8000 48000
+        help
+            Sample rate used by the MVP PCM16 uplink. 16000 matches the xiaozhi
+            bread-compact INMP441 reference path and avoids an extra ASR-side
+            downsample step.
+
+    config NUWAX_VOICE_CHANNELS
+        int "Voice input channels"
+        default 1
+        range 1 2
+        help
+            Number of PCM channels. MVP expects mono.
+
+    config NUWAX_VOICE_OUTPUT_SAMPLE_RATE
+        int "Voice output sample rate"
+        default 16000 if NUWAX_BOARD_ESP_VOCAT_V1_0
+        default 24000
+        range 8000 48000
+        help
+            Sample rate used for PCM16 playback from the Cloud Gateway.
+            CyberVoc V1.2 shares one 16kHz I2S clock for capture+playback
+            (P2-2), so ES8311 plays at 16k; the device must advertise 16000 in
+            hello so the gateway resamples TTS to 16k (else wrong pitch/speed).
+
+    config NUWAX_VOICE_FRAME_DURATION_MS
+        int "Voice frame duration in milliseconds"
+        default 20
+        range 10 60
+        help
+            Duration of each audio frame sent over WebSocket. The formal cloud
+            contract is 20 ms at 16 kHz mono (320 samples). Live AEC may use a
+            different internal processing chunk; its FIFO adapter must bridge
+            that chunk size without changing the cloud-facing frame duration.
+
+    config NUWAX_MONITORING_SILENCE_STOP_MS
+        int "Monitoring no-speech duration before requesting cloud pause (ms)"
+        default 120000
+        range 120000 180000
+        help
+            While monitoring remains enabled, request a cloud-acknowledged
+            upload pause after this much audio contains no confirmed speech.
+            The default is exactly two minutes. The microphone stays armed for
+            local VAD and upload resumes only after the cloud acknowledges it.
+
+    config NUWAX_MONITORING_CAPTURE_ACK_TIMEOUT_MS
+        int "Monitoring pause/resume ACK timeout (ms)"
+        default 1500
+        range 250 5000
+        help
+            Time allowed for the cloud to acknowledge each device-originated
+            monitoring capture pause or resume request before the same
+            request_id is retried.
+
+    config NUWAX_MONITORING_CAPTURE_ACK_MAX_RETRIES
+        int "Monitoring pause/resume maximum send attempts"
+        default 3
+        range 1 10
+        help
+            Maximum sends of the same idempotent pause/resume request. If no
+            matching ACK is received, monitoring stops instead of changing
+            upload state without cloud agreement.
+
+    config NUWAX_MONITORING_ESP_VAD_ENABLE
+        bool "Use ESP-SR VAD for monitoring pause/resume decisions"
+        default y
+        help
+            Uses ESP-SR VAD mode 0 so weak speech prevents a pause and wakes a
+            paused monitor. Its result is combined with the adaptive low-energy
+            detector below, which also remains available if VAD allocation
+            fails.
+
+    config NUWAX_MONITORING_PREROLL_MS
+        int "Monitoring speech-trigger pre-roll (ms)"
+        default 500
+        range 100 2000
+        help
+            Local PCM retained while monitoring is armed but not uploading.
+            When speech is confirmed, these frames are sent first so the cloud
+            receives the beginning of the utterance.
+
+    config NUWAX_MONITORING_SPEECH_CONFIRM_FRAMES
+        int "Monitoring consecutive frames required to confirm speech"
+        default 3
+        range 1 10
+        help
+            Base consecutive speech-like frame count used by monitoring activity
+            policy. Paused-stream recovery uses the stricter resume confirmation
+            setting below.
+
+    config NUWAX_MONITORING_RESUME_CONFIRM_FRAMES
+        int "Monitoring consecutive frames required to resume upload"
+        default 10
+        range 3 25
+        help
+            Consecutive 20 ms speech-like frames required after a paused monitor
+            has completed its guard interval. Ten frames reject short ESP VAD
+            false-positive bursts while the pre-roll retains the utterance start.
+
+    config NUWAX_MONITORING_RESUME_GUARD_MS
+        int "Monitoring pause-to-resume guard interval (ms)"
+        default 300
+        range 100 1000
+        help
+            After a pause ACK, retain audio locally for this interval without
+            reopening the cloud stream. The VAD trigger is reset again when the
+            interval completes, preventing state carried across the pause boundary
+            from immediately reopening capture.
+
+    config NUWAX_MONITORING_RESUME_QUIET_FRAMES
+        int "Monitoring quiet frames required to rearm resume detection"
+        default 10
+        range 3 50
+        help
+            Consecutive non-speech frames required after the resume guard before
+            a new speech run may reopen upload. This creates a real quiet-to-speech
+            edge and prevents unchanged ambient VAD output from bouncing a paused
+            monitor directly back to streaming.
+
+    config NUWAX_MONITORING_SPEECH_REFRESH_FRAMES
+        int "Monitoring consecutive frames required to refresh silence timer"
+        default 10
+        range 3 25
+        help
+            Sustained speech-like frames required to erase the accumulated
+            no-speech duration while a stream is already uploading. This is
+            intentionally stricter than resume confirmation: short VAD noise
+            bursts remain part of, and do not reset, the two-minute silence clock.
+            Ten 20 ms frames preserve weak speech with 200 ms confirmation.
+
+    config NUWAX_MONITORING_SPEECH_MIN_AVG_ABS
+        int "Monitoring minimum speech average absolute PCM level"
+        default 208
+        range 20 10000
+        help
+            Absolute PCM16 energy floor used by the monitoring weak-speech
+            detector. The detector also applies an adaptive noise-floor margin.
+
+    config NUWAX_MONITORING_SPEECH_MIN_PEAK
+        int "Monitoring minimum speech PCM peak"
+        default 780
+        range 100 30000
+        help
+            Peak PCM16 level paired with the average-energy threshold. A strong
+            peak path preserves weak consonants without opening on a single
+            impulse because consecutive-frame confirmation is still required.
+
+    config NUWAX_MONITORING_SPEECH_NOISE_MARGIN_ABS
+        int "Monitoring speech margin above adaptive noise floor"
+        default 104
+        range 20 5000
+        help
+            Additional average PCM16 energy required above the learned ambient
+            noise floor before a frame is classified as speech-like.
+
+    config NUWAX_VOICE_MAX_SAMPLES_PER_FRAME
+        int "Max samples per voice frame"
+        default 960
+        range 160 2880
+        help
+            Static buffer cap for PCM16 samples. 960 covers 20 ms at 48 kHz mono
+            or longer frames at lower sample rates.
+
+    choice NUWAX_VOICE_UPLINK_CODEC
+        prompt "Voice uplink codec"
+        default NUWAX_VOICE_UPLINK_CODEC_PCM16
+        help
+            Codec used for microphone audio frames sent to Cloud Gateway. PCM16
+            remains the debug/fallback path. Opus uses Espressif esp_audio_codec
+            and also requires Cloud Gateway Opus decode to be configured.
+
+        config NUWAX_VOICE_UPLINK_CODEC_PCM16
+            bool "PCM16"
+
+        config NUWAX_VOICE_UPLINK_CODEC_OPUS
+            bool "Opus"
+    endchoice
+
+    config NUWAX_VOICE_UPLINK_QUEUE_DEPTH
+        int "Realtime microphone uplink queue depth in packet slots"
+        default 16
+        range 4 64
+        help
+            Bounds unsent normal-conversation WebSocket packets in PSRAM. A
+            packet can contain one, two, or four 20 ms frames under adaptive
+            batching, so this value is not an audio-frame count. The independent
+            staging-age deadline below prevents replay of stale packets.
+
+    config NUWAX_VOICE_UPLINK_REALTIME_MAX_AGE_MS
+        int "Maximum realtime uplink packet age in milliseconds"
+        default 160
+        range 40 1000
+        help
+            A normal-conversation packet that reaches this budget is not sent.
+            The current listen stream stops and the awake session can restart
+            with a fresh audio_session_id. Reliable meeting and monitoring
+            streams are intentionally unaffected.
+
+    config NUWAX_VOICE_SYNTHETIC_FRAMES_PER_BURST
+        int "Synthetic test frames per burst"
+        default 60
+        range 1 1000
+        help
+            Number of synthetic PCM frames sent per listen cycle before real microphone input is integrated.
+
+    config NUWAX_VOICE_MIC_FRAMES_PER_BURST
+        int "I2S microphone frames per listen cycle"
+        default 150
+        range 10 1000
+        depends on NUWAX_AUDIO_SOURCE_I2S_MIC
+        help
+            Legacy fixed-frame microphone burst length. Touch-triggered microphone mode now uses
+            NUWAX_VOICE_MIC_MAX_RECORD_MS as the primary maximum duration.
+
+    config NUWAX_VOICE_MIC_MAX_RECORD_MS
+        int "I2S microphone max recording duration in milliseconds"
+        default 10000
+        range 1000 60000
+        depends on NUWAX_AUDIO_SOURCE_I2S_MIC
+        help
+            Maximum microphone capture duration once speech has been detected.
+            Local VAD should normally end the turn earlier. Default 10000 ms is 10 seconds.
+
+    config NUWAX_VOICE_MIC_TOUCH_TRIGGER
+        bool "Use screen or head touch to start the microphone listen cycle"
+        default y
+        depends on NUWAX_AUDIO_SOURCE_I2S_MIC && (NUWAX_TOUCH_ENABLE || NUWAX_HEAD_TOUCH_ENABLE)
+        help
+            Press and hold the face UI, or touch the independent head sensor, to
+            wake from the local sleep state and enter continuous prelisten. Release
+            does not stop capture in conversational mode; local VAD and the listen
+            window decide when the turn ends.
+
+    config NUWAX_TOUCH_WAKE_ACTION_ENABLE
+        bool "Allow screen/head touch to wake or start listening"
+        default n
+        depends on NUWAX_VOICE_MIC_TOUCH_TRIGGER
+        help
+            Enable the conversation action produced by a screen hold or the
+            independent head-touch sensor while sleeping or idle. Keep this
+            disabled when wake-word-only entry is required; normal UI gestures,
+            menus, volume and provisioning controls remain available.
+
+    config NUWAX_TOUCH_INTERRUPT_ACTION_ENABLE
+        bool "Allow screen/head touch to interrupt an active turn"
+        default n
+        depends on NUWAX_VOICE_MIC_TOUCH_TRIGGER
+        help
+            Enable the conversation cancel action produced by a screen hold or
+            the independent head-touch sensor while thinking or speaking. Remote
+            cancel and wake-word playback interruption are unaffected.
+
+    menu "Local VAD endpointing"
+        depends on NUWAX_AUDIO_SOURCE_I2S_MIC
+
+        config NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
+            bool "End microphone capture after local trailing silence"
+            default y
+            help
+                Use a conservative energy-based local VAD to end the current microphone
+                turn after speech has been observed and trailing silence is stable.
+                This is the first step toward wake-word conversational mode; ESP-SR AFE
+                can replace this heuristic later.
+
+        config NUWAX_VOICE_LOCAL_VAD_SPEECH_AVG_ABS
+            int "Speech avg_abs threshold"
+            default 281 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 3600
+            range 100 30000
+            depends on NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
+            help
+                Medium average absolute PCM level needed for speech when the
+                peak threshold is also met. Frames with only moderate average
+                energy and no speech-like peak are treated as noise so speaker
+                tail and room noise do not repeatedly start cloud ASR during
+                auto follow-up.
+                CyberVoc V1.2 (ES7210 16-bit analog mic) runs ~1 order of
+                magnitude lower amplitude than the legacy INMP441 32-bit path,
+                so the vocat default is recalibrated from real-hw measurement
+                (quiet avg<10, normal speech avg~500-830 / peak~2000).
+
+        config NUWAX_VOICE_LOCAL_VAD_SPEECH_PEAK
+            int "Speech peak threshold"
+            default 1105 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 12000
+            range 500 32767
+            depends on NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
+            help
+                Peak threshold used with the speech avg_abs threshold. This
+                catches sharper speech consonants while rejecting isolated
+                electrical or speaker residual spikes.
+
+        config NUWAX_VOICE_LOCAL_VAD_SILENCE_AVG_ABS
+            int "Silence avg_abs threshold"
+            default 130 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 1600
+            range 50 20000
+            depends on NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
+
+        config NUWAX_VOICE_LOCAL_VAD_SILENCE_PEAK
+            int "Silence peak threshold"
+            default 520 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 6500
+            range 200 32767
+            depends on NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
+
+        config NUWAX_VOICE_LOCAL_VAD_MIN_SPEECH_MS
+            int "Minimum speech duration before endpointing"
+            default 180
+            range 40 2000
+            depends on NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
+
+        choice NUWAX_SPEECH_CONFIRMATION_MODE
+            prompt "Persistent conversation speech confirmation mode"
+            default NUWAX_SPEECH_CONFIRMATION_MODE_SHADOW
+            depends on NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
+            help
+                Apply a bounded voiced-frame window only to ordinary persistent
+                conversation. Legacy mode keeps the consecutive-speech gate.
+                Shadow mode records window decisions while legacy remains the
+                owner. Active mode accepts either the legacy gate or a valid
+                window decision. Playback interruption and exclusive audio modes
+                never use this policy.
+
+            config NUWAX_SPEECH_CONFIRMATION_MODE_LEGACY
+                bool "Legacy: consecutive speech only"
+
+            config NUWAX_SPEECH_CONFIRMATION_MODE_SHADOW
+                bool "Shadow: observe window decisions"
+
+            config NUWAX_SPEECH_CONFIRMATION_MODE_ACTIVE
+                bool "Active: admit bounded window decisions"
+        endchoice
+
+        choice NUWAX_SHORT_SPEECH_POLICY_MODE
+            prompt "Unified short-speech confirmation policy"
+            default NUWAX_SHORT_SPEECH_POLICY_MODE_SHADOW
+            depends on NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
+            help
+                Restrict the unified strong/weak short-speech tracker to
+                ordinary persistent conversation. Legacy preserves the current
+                split confirmation paths. Shadow records unified decisions while
+                legacy remains authoritative. Active lets the unified tracker
+                own initial speech confirmation. Playback interruption, meeting,
+                monitoring, notification, and sleep audio never use this policy.
+
+            config NUWAX_SHORT_SPEECH_POLICY_MODE_LEGACY
+                bool "Legacy: split strong and weak confirmation"
+
+            config NUWAX_SHORT_SPEECH_POLICY_MODE_SHADOW
+                bool "Shadow: compare unified confirmation"
+
+            config NUWAX_SHORT_SPEECH_POLICY_MODE_ACTIVE
+                bool "Active: unified short-speech confirmation"
+        endchoice
+
+        config NUWAX_SPEECH_CONFIRMATION_WINDOW_MS
+            int "Speech confirmation window in milliseconds"
+            default 320
+            range 100 640
+            depends on NUWAX_SPEECH_CONFIRMATION_MODE_SHADOW || NUWAX_SPEECH_CONFIRMATION_MODE_ACTIVE
+
+        config NUWAX_SPEECH_CONFIRMATION_REQUIRED_VOICED_MS
+            int "Required voiced time within the confirmation window"
+            default 240
+            range 80 600
+            depends on NUWAX_SPEECH_CONFIRMATION_MODE_SHADOW || NUWAX_SPEECH_CONFIRMATION_MODE_ACTIVE
+
+        config NUWAX_SPEECH_CONFIRMATION_RESET_SILENCE_MS
+            int "Unconfirmed candidate reset silence in milliseconds"
+            default 120
+            range 40 400
+            depends on NUWAX_SPEECH_CONFIRMATION_MODE_SHADOW || NUWAX_SPEECH_CONFIRMATION_MODE_ACTIVE
+
+        config NUWAX_VOICE_LOCAL_VAD_MIN_CAPTURE_MS
+            int "Minimum capture duration before endpointing"
+            default 700
+            range 200 5000
+            depends on NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
+
+        config NUWAX_VOICE_LOCAL_VAD_TRAILING_SILENCE_MS
+            int "Trailing silence duration to end turn"
+            default 1200
+            range 200 3000
+            depends on NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
+
+        choice NUWAX_ADAPTIVE_ENDPOINT_MODE
+            prompt "Persistent conversation adaptive endpoint mode"
+            default NUWAX_ADAPTIVE_ENDPOINT_MODE_SHADOW
+            depends on NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
+            help
+                Restrict adaptive trailing-silence endpointing to ordinary
+                persistent conversation. Shadow mode records the adaptive
+                decision while the existing fixed threshold remains the only
+                endpoint owner. Active mode lets the adaptive policy commit;
+                invalid or ineligible state always falls back to the fixed
+                policy without changing the cloud protocol.
+
+            config NUWAX_ADAPTIVE_ENDPOINT_MODE_OFF
+                bool "Off: fixed endpoint only"
+
+            config NUWAX_ADAPTIVE_ENDPOINT_MODE_SHADOW
+                bool "Shadow: measure adaptive decisions, keep fixed endpoint"
+
+            config NUWAX_ADAPTIVE_ENDPOINT_MODE_ACTIVE
+                bool "Active: adaptive endpoint owns eligible turns"
+        endchoice
+
+        config NUWAX_VOICE_LOCAL_VAD_NO_SPEECH_TIMEOUT_MS
+            int "No-speech timeout"
+            default 1200
+            range 500 10000
+            depends on NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
+            help
+                End the microphone turn if no speech-like frame appears within this
+                time. This avoids long waits when the touch trigger is accidental.
+
+        config NUWAX_RT_CAPTURE_QUEUE_DEPTH
+            int "Realtime conversation capture queue depth (20 ms slots)"
+            default 12
+            range 4 32
+            help
+                Bounds capture-to-DSP buffering. The consumer also discards any
+                frame that exceeds the decision-age limit, so this is burst
+                capacity rather than permission to process stale speech.
+
+        config NUWAX_RT_CAPTURE_MAX_DECISION_AGE_MS
+            int "Maximum capture frame age admitted to conversation DSP"
+            default 60
+            range 20 200
+            help
+                Frames older than this at dequeue are released without AEC,
+                VAD, interruption decisions, or uplink. Sequence and stale-drop
+                metrics make overload visible instead of adding hidden latency.
+
+        config NUWAX_BARGE_END_TO_END_MAX_FRAME_AGE_MS
+            int "Maximum capture-to-barge-decision frame age"
+            default 100
+            range 60 200
+            help
+                Reject interruption evidence older than this after DSP. The
+                product latency contract reserves 40 ms between the 60 ms
+                pre-DSP admission limit and this 100 ms end-to-end limit.
+    endmenu
+
+    menu "First-layer conservative audio cleaning"
+        depends on NUWAX_AUDIO_SOURCE_I2S_MIC
+
+        config NUWAX_AUDIO_CLEANER_ENABLE
+            bool "Enable first-layer conservative microphone cleaning"
+            default y
+            help
+                Apply a conservative device-side cleanup pass before microphone
+                audio is uploaded. This pass removes DC drift, zeroes very low
+                energy background frames, and attenuates isolated impulse spikes.
+                It is intentionally not a semantic interruption decision.
+
+        config NUWAX_AUDIO_CLEANER_HIGHPASS_ENABLE
+            bool "Enable DC/high-pass filter"
+            default y
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_HIGHPASS_COEFF_Q15
+            int "High-pass coefficient Q15"
+            default 32604
+            range 30000 32760
+            depends on NUWAX_AUDIO_CLEANER_HIGHPASS_ENABLE
+            help
+                Fixed-point coefficient for y[n] = x[n] - x[n-1] + a*y[n-1].
+                32604 is about 0.995 and removes slow DC drift without changing
+                normal speech significantly.
+
+        config NUWAX_AUDIO_CLEANER_NOTCH_100HZ_ENABLE
+            bool "Enable 100 Hz notch for power hum cleanup"
+            default y
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                Applies a narrow 100 Hz notch after the high-pass filter. This
+                targets the observed current-noise component without broadly
+                attenuating speech bands.
+
+        config NUWAX_AUDIO_CLEANER_QUIET_AVG_ABS
+            int "Quiet frame avg_abs gate"
+            default 90 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 900
+            range 10 20000
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_QUIET_PEAK
+            int "Quiet frame peak gate"
+            default 420 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 3000
+            range 50 32767
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_QUIET_AVG_ABS
+            int "Playback quiet frame avg_abs gate"
+            default 220 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 1800
+            range 10 20000
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                Slightly higher quiet gate while speaker playback is active.
+                This only suppresses low-level speaker leakage; user speech
+                should remain above the normal local VAD thresholds.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_QUIET_PEAK
+            int "Playback quiet frame peak gate"
+            default 900 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 6500
+            range 50 32767
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_QUIET_ZERO_ENABLE
+            bool "Zero quiet frames instead of attenuating them"
+            default n
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                Keep disabled on the product path so low-energy speech remains
+                continuous. Enable only for diagnostics that require exact silence.
+
+        config NUWAX_AUDIO_CLEANER_QUIET_ATTENUATE_Q15
+            int "Quiet frame attenuation gain (Q15)"
+            default 32768
+            range 0 32768
+            depends on NUWAX_AUDIO_CLEANER_ENABLE && !NUWAX_AUDIO_CLEANER_QUIET_ZERO_ENABLE
+            help
+                The production default preserves quiet frames. Lower values are
+                reserved for controlled noise-suppression diagnostics.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_QUIET_ATTENUATE_Q15
+            int "Playback quiet frame attenuation gain (Q15)"
+            default 32768
+            range 0 32768
+            depends on NUWAX_AUDIO_CLEANER_ENABLE && !NUWAX_AUDIO_CLEANER_QUIET_ZERO_ENABLE
+            help
+                The production default preserves uncertain quiet playback frames.
+
+        config NUWAX_AUDIO_CLEANER_SPEECH_HANGOVER_FRAMES
+            int "Speech-protection hangover frames"
+            default 10 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 10
+            range 0 50
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                Number of 20 ms frames that remain protected after a speech-like
+                frame. This keeps weak syllable tails from being cut by quiet or
+                soft-reference gates during first-layer cleaning.
+
+        config NUWAX_AUDIO_CLEANER_SPEECH_GUARD_AVG_ABS
+            int "Speech-protection avg_abs gate"
+            default 300 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 1200
+            range 1 20000
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                A lower near-end guard used only to protect continuity. It does
+                not decide cloud interruption; it prevents local filtering from
+                removing likely near-end speech edges.
+
+        config NUWAX_AUDIO_CLEANER_SPEECH_GUARD_PEAK
+            int "Speech-protection peak gate"
+            default 1200 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 6000
+            range 1 32767
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_SPEECH_GUARD_AVG_ABS
+            int "Playback speech-protection avg_abs gate"
+            default 700
+            range 1 20000
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                Stricter level-only speech protection while speaker playback is
+                active. Confirmed dual-mic near-end hints still use the normal
+                protection path.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_SPEECH_GUARD_PEAK
+            int "Playback speech-protection peak gate"
+            default 2500
+            range 1 32767
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_SPEECH_HANGOVER_FRAMES
+            int "Playback speech-protection hangover frames"
+            default 4
+            range 0 50
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_LEVEL_SPEECH_PROTECT_ENABLE
+            bool "Enable level-only speech protection during playback"
+            default n
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                When disabled, speaker-playback frames are protected from local
+                attenuation only by explicit near-end hints. This avoids treating
+                playback echo bursts as user speech.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_UNPROTECTED_GATE_MAX_AVG_ABS
+            int "Playback unprotected attenuation max avg_abs"
+            default 12000
+            range 0 32767
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_UNPROTECTED_GATE_MAX_PEAK
+            int "Playback unprotected attenuation max peak"
+            default 30000
+            range 0 32767
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_UNPROTECTED_ATTENUATE_Q15
+            int "Playback unprotected attenuation gain Q15"
+            default 32768
+            range 0 32768
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                Keep this at unity in the product path. Human evidence can be
+                fragmented during double-talk, so uncertainty must retain the
+                AEC output instead of creating silent holes in near-end speech.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_UNPROTECTED_ATTACK_STEP_Q15
+            int "Playback unprotected gate close step Q15 per frame"
+            default 16384
+            range 1 32768
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                Absolute Q15 step used to close the far-end gate. 16384 moves
+                from unity to zero in two 16 ms frames.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_UNPROTECTED_RELEASE_STEP_Q15
+            int "Playback unprotected gate human release step Q15 per frame"
+            default 32768
+            range 1 32768
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                Absolute Q15 step used to reopen the gate for strong or
+                confirmed near-end human evidence. 32768 restores unity in the
+                first protected frame so speech onset is not attenuated.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_ENABLE
+            bool "Enable limited gain for protected near-end playback frames"
+            default n
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                Optional AGC for protected near-end speech. Disabled in the
+                product path because target-driven frame gain causes audible
+                pumping and also raises residual speaker playback.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_MIN_AVG_ABS
+            int "Protected playback gain minimum avg_abs"
+            default 90
+            range 0 20000
+            depends on NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_MIN_PEAK
+            int "Protected playback gain minimum peak"
+            default 300
+            range 0 32767
+            depends on NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_MIN_BEFORE_AVG_ABS
+            int "Protected playback gain minimum pre-filter avg_abs"
+            default 80
+            range 0 20000
+            depends on NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_ENABLE
+            help
+                Requires the frame level before high-pass/notch/softref to also
+                look non-trivial. This prevents gain from amplifying filter
+                tails or hangover residuals whose original frame was near
+                silence.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_MIN_BEFORE_PEAK
+            int "Protected playback gain minimum pre-filter peak"
+            default 250
+            range 0 32767
+            depends on NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_TARGET_AVG_ABS
+            int "Protected playback gain target avg_abs"
+            default 520
+            range 1 20000
+            depends on NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_MAX_Q15
+            int "Protected playback gain maximum Q15"
+            default 57344
+            range 32768 131072
+            depends on NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_ENABLE
+            help
+                57344 is about 1.75x. This is intentionally not a global output
+                gain; it only applies to protected near-end frames.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_MAX_PEAK
+            int "Protected playback gain peak ceiling"
+            default 24000
+            range 1000 32767
+            depends on NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_MAX_CORR_Q15
+            int "Protected playback gain max software-ref corr Q15"
+            default 14000
+            range 0 32767
+            depends on NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_GAIN_ENABLE
+            help
+                Protected frames whose software-reference correlation is above
+                this value still look echo-dominated, so they are not boosted.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_LIMIT_ENABLE
+            bool "Enable peak limiter for protected playback frames"
+            default y
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                Protected frames bypass impulse attenuation to avoid cutting
+                user speech, but they still need a mild peak ceiling so speaker
+                residual spikes cannot pass untouched.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_LIMIT_PEAK
+            int "Protected playback peak limiter"
+            default 24000
+            range 1000 32767
+            depends on NUWAX_AUDIO_CLEANER_PLAYBACK_PROTECTED_LIMIT_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_IMPULSE_PEAK_MIN
+            int "Impulse peak minimum"
+            default 10000 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 24000
+            range 1000 32767
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_IMPULSE_AVG_MAX
+            int "Impulse avg_abs maximum"
+            default 260 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 2000
+            range 50 20000
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+            help
+                Frames with a very high peak but very low average energy are
+                treated as isolated clicks and attenuated instead of dropped.
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_IMPULSE_PEAK_MIN
+            int "Playback impulse peak minimum"
+            default 5200
+            range 1000 32767
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_IMPULSE_AVG_MAX
+            int "Playback impulse avg_abs maximum"
+            default 360
+            range 50 20000
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_PLAYBACK_IMPULSE_ATTENUATE_Q15
+            int "Playback impulse attenuation gain Q15"
+            default 32768
+            range 0 32768
+            depends on NUWAX_AUDIO_CLEANER_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+            bool "Enable software-reference playback leakage suppression"
+            default n
+            depends on NUWAX_AUDIO_CLEANER_ENABLE && NUWAX_P3_SOFTWARE_REF_ENABLE
+            help
+                Diagnostic-only secondary linear cancellation. Keep disabled on
+                the product path because the primary AFE already consumes the
+                speaker software reference.
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_DELAY_SAMPLES
+            int "Software-reference delay in samples"
+            default 360 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 240
+            range 0 8000
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+            help
+                Delay used when reading the playback reference ring. 360 samples
+                is the validated ESP-VOCAT V1.0 software-reference point from
+                the P3-0S A/B runs at 16 kHz. Larger values such as 1600 samples
+                can make live AEC read the wrong playback window and preserve
+                device echo as ref-inactive fallback audio.
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_MIN_REF_AVG_ABS
+            int "Software-reference active avg_abs gate"
+            default 120 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 300
+            range 1 20000
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_MIN_REF_PEAK
+            int "Software-reference active peak gate"
+            default 350 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 1200
+            range 1 32767
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_MIN_CORR_Q15
+            int "Minimum reference correlation for linear cancel (Q15)"
+            default 4915
+            range 0 32767
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+            help
+                Q15 threshold for the lightweight frame-level linear subtraction.
+                4915 is about 0.15. If correlation is lower, only the conservative
+                energy gate can attenuate playback leakage.
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_GUARD_BYPASS_CORR_Q15
+            int "Reference correlation that bypasses near-end guard (Q15)"
+            default 16056
+            range 0 32767
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+            help
+                High-correlation frames are likely dominated by speaker leakage,
+                even when microphone energy is high. 16056 is about 0.49.
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_MAX_LINEAR_GAIN_Q15
+            int "Maximum linear cancel gain magnitude (Q15)"
+            default 24576
+            range 0 32767
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+            help
+                Clamp for the least-squares frame gain. 24576 is about 0.75.
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_ECHO_GATE_MAX_MIC_AVG_ABS
+            int "Playback leakage attenuation max mic avg_abs"
+            default 900 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 2500
+            range 1 20000
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_ECHO_GATE_MAX_MIC_PEAK
+            int "Playback leakage attenuation max mic peak"
+            default 5000 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 12000
+            range 1 32767
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_HIGH_CORR_GATE_MAX_MIC_AVG_ABS
+            int "High-correlation playback leakage max mic avg_abs"
+            default 7000 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 12000
+            range 1 30000
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_HIGH_CORR_GATE_MAX_MIC_PEAK
+            int "High-correlation playback leakage max mic peak"
+            default 16000 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 26000
+            range 1 32767
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_NEAREND_GUARD_AVG_ABS
+            int "Near-end guard mic avg_abs"
+            default 300 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 5000
+            range 1 30000
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+            help
+                Frames above this level bypass soft-reference attenuation to
+                avoid damaging near-end speech.
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_NEAREND_GUARD_PEAK
+            int "Near-end guard mic peak"
+            default 1200 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 24000
+            range 1 32767
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_ATTENUATE_Q15
+            int "Playback leakage attenuation gain (Q15)"
+            default 16384
+            range 0 32767
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+            help
+                Gain applied to playback-leakage frames after the reference gate
+                passes. 16384 is -6 dB, conservative enough for first-layer
+                cleaning without muting uncertain near-end speech.
+
+        config NUWAX_AUDIO_CLEANER_SOFTREF_HIGH_CORR_ATTENUATE_Q15
+            int "High-correlation playback leakage attenuation gain (Q15)"
+            default 4096
+            range 0 32767
+            depends on NUWAX_AUDIO_CLEANER_SOFTREF_ENABLE
+            help
+                Stronger gain for frames that look dominated by speaker leakage.
+                4096 is about -18 dB.
+    endmenu
+
+    config NUWAX_VOICE_SYNTHETIC_TOUCH_TRIGGER
+        bool "Start synthetic listen cycle by touching the screen"
+        default y
+        depends on NUWAX_AUDIO_SOURCE_SYNTHETIC && NUWAX_TOUCH_ENABLE
+        help
+            In the single-board screen bring-up stage, touch the round display to start one synthetic voice cycle.
+            Disable this for unattended transport tests that should send synthetic bursts on a timer.
+
+    config NUWAX_VOICE_BURST_INTERVAL_MS
+        int "Synthetic burst interval in milliseconds"
+        default 5000
+        range 100 600000
+        depends on NUWAX_AUDIO_SOURCE_SYNTHETIC
+        help
+            Delay between synthetic audio bursts.
+
+    config NUWAX_VOICE_RECONNECT_DELAY_MS
+        int "Reconnect delay in milliseconds"
+        default 3000
+        range 500 60000
+        help
+            Delay before reconnecting to the Cloud Gateway after errors.
+
+    config NUWAX_VOICE_RECONNECT_BACKOFF_MAX_MS
+        int "Maximum reconnect backoff in milliseconds"
+        default 60000
+        range 3000 600000
+        help
+            Maximum delay used by the exponential Cloud Gateway reconnect
+            backoff. This prevents a transient gateway outage from causing a
+            tight reconnect loop while still allowing recovery without a
+            reboot or Wi-Fi reprovisioning.
+
+    config NUWAX_WS_RX_TASK_STACK_BYTES
+        int "WebSocket receive task stack bytes"
+        default 16384
+        range 6144 32768
+        help
+            Stack size for the device WebSocket receive task. JSON session
+            parsing and synchronous protocol replies can overlap the TLS send
+            path. Keep enough headroom for both text and binary callbacks when
+            ESP-SR MultiNet and newlib are enabled in the custom wake build.
+
+    config NUWAX_CONVERSATION_IDLE_SLEEP_MS
+        int "Legacy generic idle sleep timeout in milliseconds"
+        default 0
+        range 0 600000
+        help
+            Deprecated compatibility setting. Normal conversation sleep is
+            governed exclusively by NUWAX_CONVERSATION_AWAKE_IDLE_TIMEOUT_MS
+            while the device is listening. Keep this value at 0.
+
+    config NUWAX_CONVERSATION_AWAKE_IDLE_TIMEOUT_MS
+        int "Awake conversation inactivity timeout in milliseconds"
+        default 60000
+        range 60000 600000
+        depends on NUWAX_AUDIO_SOURCE_I2S_MIC
+        help
+            Keep the normal conversation session awake for at least this long
+            after a wake word, touch wake, or locally confirmed human speech.
+            Short VAD capture windows may restart during this period. The device
+            returns to the local wake-only state only after the rolling inactivity
+            deadline expires. The default and minimum are one minute.
+
+    config NUWAX_CONVERSATION_AUTO_FOLLOWUP_MS
+        int "Conversation listen window after wake or speaker playback"
+        default 60000
+        range 0 120000
+        depends on NUWAX_AUDIO_SOURCE_I2S_MIC
+        help
+            When greater than 0, the device stays in local prelisten after touch wake
+            or TTS playback. Speech starts cloud upload; no speech before the window
+            expires returns the device to the local sleeping state.
+
+    config NUWAX_CONVERSATION_AUTO_FOLLOWUP_GRACE_MS
+        int "Auto follow-up grace after speaker playback"
+        default 350
+        range 0 2000
+        depends on NUWAX_AUDIO_SOURCE_I2S_MIC && NUWAX_CONVERSATION_AUTO_FOLLOWUP_MS > 0
+        help
+            Delay automatic follow-up by this many milliseconds after a speaker
+            END frame. If another TTS segment starts during this grace window,
+            the pending follow-up is cancelled so streamed TTS chunks do not
+            interrupt each other.
+
+    config NUWAX_BARGE_IN_ENABLE
+        bool "Enable voice barge-in during speaker playback"
+        default n
+        depends on NUWAX_AUDIO_SOURCE_I2S_MIC && NUWAX_CONVERSATION_AUTO_FOLLOWUP_MS > 0
+        help
+            Capture and classify microphone audio while TTS is playing so
+            locally detected human speech can interrupt the speaker. Disable
+            this to keep playback voice-exclusive. Remote cancel remains
+            available; touch cancel is controlled by the separate touch
+            interruption product option.
+
+    config NUWAX_BARGE_IN_LOCAL_EARLY_CONFIRM
+        bool "Let the device confirm and fade barge-in candidates locally"
+        default y
+        depends on NUWAX_BARGE_IN_ENABLE
+        help
+            When enabled, the existing device-side near-end detector owns the
+            interruption decision. A locally confirmed candidate fades playback,
+            enters listening, and is reported to the cloud as confirmed. The cloud
+            records the event and processes the new audio but does not decide when
+            the speaker should stop.
+
+    config NUWAX_BARGE_IN_CLOUD_GUARDED_HIGH_RECALL
+        bool "Admit strict single-frame barge-in candidates"
+        default y
+        depends on NUWAX_BARGE_IN_ENABLE
+        help
+            Treat one frame that already passes the strict nearfield classifier
+            as sufficient to start preroll upload and human protection. This
+            controls candidate admission only; the selected interruption owner
+            controls whether playback is cancelled. Disable this to restore the
+            stricter local multi-frame candidate admission policy.
+
+    menu "Wake word"
+        depends on NUWAX_AUDIO_SOURCE_I2S_MIC
+
+        config NUWAX_WAKE_WORD_ENABLE
+            bool "Enable ESP-SR local wake word detection"
+            default n
+            depends on IDF_TARGET_ESP32S3 && SPIRAM
+            help
+                Detect a local wake word while the conversation state is sleeping.
+                This first 6.1 implementation uses ESP-SR WakeNet from the model
+                partition and keeps touch hold as a fallback wake path.
+
+        choice NUWAX_WAKE_WORD_BACKEND
+            prompt "Wake word backend"
+            default NUWAX_WAKE_WORD_BACKEND_MULTINET
+            depends on NUWAX_WAKE_WORD_ENABLE
+
+            config NUWAX_WAKE_WORD_BACKEND_WAKENET
+                bool "WakeNet fixed wake word"
+                help
+                    Use an ESP-SR WakeNet model, such as ni hao xiao zhi.
+
+            config NUWAX_WAKE_WORD_BACKEND_MULTINET
+                bool "MultiNet custom command wake"
+                help
+                    Use ESP-SR MultiNet command recognition as a custom wake
+                    trigger. This is more flexible than WakeNet but should be
+                    evaluated carefully for false wakes and far-field accuracy.
+        endchoice
+
+        config NUWAX_WAKE_WORD_MODEL_PARTITION
+            string "ESP-SR model partition label"
+            default "model"
+            depends on NUWAX_WAKE_WORD_ENABLE
+            help
+                Partition label passed to esp_srmodel_init(). The partition must
+                contain ESP-SR model files flashed together with the firmware.
+
+        config NUWAX_WAKE_WORD_MODEL_NAME
+            string "WakeNet model name"
+            default "wn9_nihaoxiaozhi_tts"
+            depends on NUWAX_WAKE_WORD_ENABLE
+            help
+                Specific ESP-SR WakeNet model to use from the model partition,
+                for example wn9_nihaoxiaozhi_tts, wn9_xiaoaitongxue,
+                wn9_hiesp, wn9_alexa, wn9_jarvis_tts, or wn9_computer_tts.
+                The selected model must also be enabled in ESP-SR Kconfig and
+                packed into srmodels.bin by the build script.
+
+        config NUWAX_CUSTOM_WAKE_WORD_COMMAND
+            string "Custom wake command"
+            default "xiao zhu xiao zhu"
+            depends on NUWAX_WAKE_WORD_BACKEND_MULTINET
+            help
+                MultiNet command string for custom wake. Use space-separated
+                pinyin for Chinese, for example: xiao zhu xiao zhu. The built-in
+                family also accepts xiao zu xiao zu, xiao zhu xiao zu, and
+                xiao zu xiao zhu as the same wake event.
+
+        config NUWAX_CUSTOM_WAKE_WORD_DISPLAY
+            string "Custom wake display text"
+            default "小珠小珠"
+            depends on NUWAX_WAKE_WORD_BACKEND_MULTINET
+            help
+                Text reported to the application when the custom command wakes
+                the device.
+
+        config NUWAX_CUSTOM_WAKE_WORD_LANGUAGE
+            string "Custom wake language"
+            default "cn"
+            depends on NUWAX_WAKE_WORD_BACKEND_MULTINET
+            help
+                Language passed to esp_srmodel_filter() for selecting MultiNet.
+                Use cn for Chinese or en for English.
+
+        config NUWAX_CUSTOM_WAKE_WORD_DURATION_MS
+            int "Custom wake recognition duration ms"
+            default 3000
+            range 1000 6000
+            depends on NUWAX_WAKE_WORD_BACKEND_MULTINET
+
+        config NUWAX_CUSTOM_WAKE_WORD_THRESHOLD_PERCENT
+            int "Custom wake threshold percent"
+            default 8
+            range 1 99
+            depends on NUWAX_WAKE_WORD_BACKEND_MULTINET
+            help
+                Detection threshold passed to MultiNet, scaled as percent.
+                The product default lowers candidate admission to 8 percent.
+                Candidates below the 10 percent strong threshold must also
+                pass device-side voice-span, SNR and clipping confirmation.
+
+        config NUWAX_WAKE_WORD_INTERRUPT_ENABLE
+            bool "Allow the wake word to interrupt TTS playback"
+            default n
+            depends on NUWAX_WAKE_WORD_BACKEND_MULTINET && NUWAX_SPEAKER_ENABLE && NUWAX_P3_SOFTWARE_REF_ENABLE
+            help
+                Run the existing MultiNet wake recognizer during an owned TTS
+                generation. A hit can stop only that generation and must pass
+                the dual-microphone and software-reference echo filter. Generic
+                VAD barge-in and Live AEC remain independent and may stay off.
+
+        config NUWAX_WAKE_WORD_INTERRUPT_SHADOW_ONLY
+            bool "Record playback wake candidates without stopping TTS"
+            default n
+            depends on NUWAX_WAKE_WORD_INTERRUPT_ENABLE
+            help
+                Keep the complete playback recognizer and echo-filter path active
+                but only log its decisions. Disable after acoustic validation to
+                allow eligible wake hits to fade and cancel the current turn.
+
+        config NUWAX_WAKE_WORD_INTERRUPT_THRESHOLD_PERCENT
+            int "Playback wake final action threshold percent"
+            default 10
+            range 1 99
+            depends on NUWAX_WAKE_WORD_INTERRUPT_ENABLE
+            help
+                MultiNet still collects candidates at the normal custom wake
+                threshold. Playback cancellation additionally requires this
+                final probability and a recent fail-closed near-field frame.
+
+        config NUWAX_WAKE_WORD_INTERRUPT_FADE_MS
+            int "Playback wake fade-out time in milliseconds"
+            default 15
+            range 1 100
+            depends on NUWAX_WAKE_WORD_INTERRUPT_ENABLE
+
+        config NUWAX_WAKE_WORD_INTERRUPT_POST_STOP_GUARD_MS
+            int "Playback wake acoustic guard after physical stop"
+            default 120
+            range 50 500
+            depends on NUWAX_WAKE_WORD_INTERRUPT_ENABLE
+
+        config NUWAX_WAKE_WORD_INTERRUPT_EVENT_MAX_AGE_MS
+            int "Maximum playback wake event age in milliseconds"
+            default 250
+            range 50 1000
+            depends on NUWAX_WAKE_WORD_INTERRUPT_ENABLE
+
+        config NUWAX_WAKE_WORD_TASK_STACK_BYTES
+            int "Wake word task stack bytes"
+            default 8192
+            range 4096 32768
+            depends on NUWAX_WAKE_WORD_ENABLE
+
+        config NUWAX_WAKE_WORD_TASK_PRIORITY
+            int "Wake word task priority"
+            default 10
+            range 4 20
+            depends on NUWAX_WAKE_WORD_ENABLE
+            help
+                Keep microphone reads and ESP-SR feeds ahead of UI and idle
+                work so a valid wake phrase is not split by scheduler stalls.
+
+        config NUWAX_WAKE_CAPTURE_TASK_STACK_BYTES
+            int "Playback wake capture task stack bytes"
+            default 6144
+            range 4096 16384
+            depends on NUWAX_WAKE_WORD_INTERRUPT_ENABLE
+
+        config NUWAX_WAKE_CAPTURE_TASK_PRIORITY
+            int "Playback wake capture task priority"
+            default 11
+            range 9 20
+            depends on NUWAX_WAKE_WORD_INTERRUPT_ENABLE
+            help
+                This short I2S reader must run above speaker playback and
+                MultiNet inference so RX DMA is drained continuously.
+
+        config NUWAX_WAKE_CAPTURE_QUEUE_DEPTH
+            int "Playback wake capture queue depth"
+            default 12
+            range 8 32
+            depends on NUWAX_WAKE_WORD_INTERRUPT_ENABLE
+            help
+                Number of 15 ms dual-microphone chunks held in PSRAM between
+                the high-priority I2S reader and wake-word inference.
+
+        config NUWAX_WAKE_WORD_IDLE_POLL_MS
+            int "Wake word wait poll interval in milliseconds"
+            default 100
+            range 20 1000
+            depends on NUWAX_WAKE_WORD_ENABLE
+            help
+                How often the main loop checks for a wake event while waiting in
+                the local sleeping state.
+
+        config NUWAX_WAKE_WORD_LISTEN_GRACE_MS
+            int "Wake word listen grace in milliseconds"
+            default 650
+            range 0 3000
+            depends on NUWAX_WAKE_WORD_ENABLE
+            help
+                Delay active VAD capture briefly after WakeNet detects the wake
+                word. This prevents the wake word tail and microphone residuals
+                from being uploaded as the first user turn.
+
+        config NUWAX_WAKE_WORD_LOG_INTERVAL_FRAMES
+            int "Wake word level log interval in frames"
+            default 0
+            range 0 1000
+            depends on NUWAX_WAKE_WORD_ENABLE
+            help
+                Print wake detector microphone level diagnostics every N frames.
+                Keep 0 during normal tests to avoid flooding serial logs.
+    endmenu
+
+    menu "I2S microphone"
+        config NUWAX_MIC_I2S_PORT
+            int "I2S port"
+            default 0
+            range 0 1
+            help
+                ESP32S3 I2S peripheral index used for the microphone.
+
+        config NUWAX_MIC_I2S_BCLK_GPIO
+            int "I2S BCLK/SCK GPIO"
+            default 40 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 5
+            range -1 48
+            help
+                Bit clock GPIO connected to the microphone SCK/BCLK pin.
+
+        config NUWAX_MIC_I2S_WS_GPIO
+            int "I2S WS/LRCLK GPIO"
+            default 39 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 4
+            range -1 48
+            help
+                Word select GPIO connected to the microphone WS/LRCLK pin.
+
+        config NUWAX_MIC_I2S_DIN_GPIO
+            int "I2S DIN/SD GPIO"
+            default 38 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 6
+            range -1 48
+            help
+                Data input GPIO connected to the microphone SD/DOUT pin.
+
+        choice NUWAX_MIC_SLOT
+            prompt "I2S microphone slot"
+            default NUWAX_MIC_SLOT_LEFT
+            help
+                Select the slot used by the microphone data stream.
+                The right-slot retest returned zero PCM on this hardware, so
+                the current bring-up defaults back to Left and relies on raw
+                I2S diagnostics plus safe attenuation to analyze clipping.
+
+            config NUWAX_MIC_SLOT_LEFT
+                bool "Left"
+
+            config NUWAX_MIC_SLOT_RIGHT
+                bool "Right"
+
+            config NUWAX_MIC_SLOT_BOTH
+                bool "Both"
+        endchoice
+
+        choice NUWAX_MIC_BITS_PER_SAMPLE
+            prompt "I2S microphone bits per sample"
+            default NUWAX_MIC_BITS_PER_SAMPLE_32
+            help
+                INMP441-style microphones commonly output 24-bit data in a 32-bit slot.
+
+            config NUWAX_MIC_BITS_PER_SAMPLE_16
+                bool "16-bit"
+
+            config NUWAX_MIC_BITS_PER_SAMPLE_32
+                bool "32-bit slot, downshift to PCM16"
+        endchoice
+
+        config NUWAX_MIC_32BIT_SHIFT
+            int "32-bit to PCM16 right shift"
+            default 12
+            range 8 24
+            depends on NUWAX_MIC_BITS_PER_SAMPLE_32
+            help
+                Right shift applied to signed 32-bit I2S samples before sending PCM16.
+                The xiaozhi NoAudioCodec INMP441 path uses a 32-bit I2S slot and
+                converts to PCM16 with raw >> 12 plus saturation.
+
+        config NUWAX_MIC_DC_BLOCK_ENABLE
+            bool "Remove per-frame DC offset before PCM16 conversion"
+            default y
+            depends on NUWAX_MIC_BITS_PER_SAMPLE_32
+            help
+                Subtract the per-frame raw I2S mean before downshifting. This keeps
+                a stuck DC offset from turning into full-scale PCM16 clipping while
+                preserving speech changes around that offset.
+
+        config NUWAX_MIC_AUTO_ATTENUATE
+            bool "Auto-attenuate frames that would clip after conversion"
+            default y
+            depends on NUWAX_MIC_BITS_PER_SAMPLE_32
+            help
+                Increase the effective right shift for a frame only when the raw
+                centered peak would exceed PCM16 range. The selected shift is logged
+                in raw I2S diagnostics.
+
+        config NUWAX_MIC_DMA_DESC_NUM
+            int "I2S DMA descriptor count"
+            default 8
+            range 2 16
+
+        config NUWAX_MIC_DMA_FRAME_NUM
+            int "I2S DMA frame count"
+            default 512
+            range 64 2048
+
+        config NUWAX_MIC_READ_TIMEOUT_MS
+            int "I2S read timeout in milliseconds"
+            default 500
+            range 20 1000
+
+        config NUWAX_MIC_MAX_CONSECUTIVE_TIMEOUTS
+            int "I2S read consecutive timeouts before ending capture"
+            default 30
+            range 1 200
+            help
+                End the current microphone listen cycle after this many consecutive I2S read timeouts.
+                The WebSocket connection is kept alive so hardware issues do not force a cloud reconnect.
+
+        config NUWAX_MIC_LEVEL_LOG_INTERVAL_FRAMES
+            int "Mic level log interval in frames"
+            default 0
+            range 0 1000
+            help
+                Print one microphone level diagnostic every N frames. With 20 ms frames,
+                100 means about once every 2 seconds. Set to 0 to keep only start/end
+                and event-level voice logs.
+
+        config NUWAX_REALTIME_AUDIO_DIAGNOSTIC_LOG_ENABLE
+            bool "Enable synchronous realtime audio frame diagnostics"
+            default n
+            help
+                Enable detailed cleaner, AEC, VAD, barge-in, and uplink timing logs
+                from the realtime capture path. Keep this disabled in production:
+                synchronous UART output can exceed one 20 ms audio frame period and
+                cause stale-frame drops and capture sequence gaps.
+
+        config NUWAX_MIC_RAW_LOG_ENABLE
+            bool "Enable raw I2S microphone diagnostics"
+            default n
+            help
+                Print raw 32-bit I2S statistics such as min/max/mean/shift. Keep this
+                disabled during normal conversation testing because it can flood the
+                serial log and hide ASR/TTS/session events.
+    endmenu
+
+    menu "I2S speaker"
+
+        config NUWAX_SPEAKER_ENABLE
+            bool "Enable I2S speaker output"
+            default n
+            help
+                Enable PCM16 playback for audio frames sent by the Cloud Gateway.
+
+        config NUWAX_SPEAKER_I2S_PORT
+            int "I2S port"
+            default 0 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 1
+            range 0 1
+            help
+                ESP32S3 I2S peripheral index used for speaker output.
+
+        config NUWAX_SPEAKER_I2S_BCLK_GPIO
+            int "I2S BCLK GPIO"
+            default 40 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 15
+            range -1 48
+
+        config NUWAX_SPEAKER_I2S_WS_GPIO
+            int "I2S WS/LRCLK GPIO"
+            default 39 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 16
+            range -1 48
+
+        config NUWAX_SPEAKER_I2S_DOUT_GPIO
+            int "I2S DOUT/DIN GPIO"
+            default 41 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 17
+            range -1 48
+
+        config NUWAX_SPEAKER_SD_GPIO
+            int "NS4150B PA/EN GPIO"
+            default 4 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 18
+            range -1 48
+            help
+                GPIO used by legacy non-shared speaker paths. The shared
+                Miaopan path lets the ES8311 driver control PA_CTRL.
+
+        config NUWAX_SPEAKER_DMA_DESC_NUM
+            int "I2S DMA descriptor count"
+            default 6
+            range 2 16
+
+        config NUWAX_SPEAKER_DMA_FRAME_NUM
+            int "I2S DMA frame count"
+            default 240
+            range 64 2048
+
+        config NUWAX_SPEAKER_WRITE_TIMEOUT_MS
+            int "I2S write timeout in milliseconds"
+            default 1000 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 100
+            range 20 1000
+
+        config NUWAX_SPEAKER_DEFAULT_VOLUME_PERCENT
+            int "Default speaker volume percent"
+            default 80
+            range 0 100
+            help
+                Initial digital volume applied to PCM16 playback before writing to I2S.
+                The runtime device menu can adjust and persist this value.
+
+        config NUWAX_SPEAKER_BUFFER_BYTES
+            int "Realtime speaker PSRAM ring buffer size in bytes"
+            default 393216
+            range 131072 1048576
+            help
+                Stores compact variable-length cloud PCM records in PSRAM.
+                393216 bytes holds roughly 11 seconds of 16 kHz mono PCM16,
+                while retaining metadata needed for generation-safe playback.
+
+        config NUWAX_SPEAKER_BACKPRESSURE_POLL_MS
+            int "Speaker ingress backpressure poll interval in milliseconds"
+            default 20
+            range 5 250
+            help
+                Maximum retry cadence while the PCM ring is full. Normal builds
+                bound the complete admission wait to one 20 ms audio frame so
+                speaker congestion cannot delay WebSocket control frames. If
+                the roughly 11-second PSRAM ring remains full, the current
+                 playback generation is aborted while the WebSocket is retained.
+
+        config NUWAX_SPEAKER_STREAM_STALL_WARN_MS
+            int "Speaker recoverable downlink PCM stall warning in milliseconds"
+            default 12000
+            range 5000 60000
+            help
+                Emit one diagnostic warning after this interval without new
+                playable PCM. The current playback remains active and keeps
+                rebuffering so a temporarily paused long TTS stream can resume
+                without changing generation or starting a new listen turn.
+
+        config NUWAX_SPEAKER_STREAM_STALL_TIMEOUT_MS
+            int "Speaker hard downlink PCM stall timeout in milliseconds"
+            default 60000
+            range 30000 180000
+            help
+                Hard recovery boundary without new playable PCM. Before this
+                timeout the speaker remains in the recoverable rebuffer state.
+                On expiry the current generation is aborted and the existing
+                terminal/reconnect recovery path is used. Keep this greater
+                than NUWAX_SPEAKER_STREAM_STALL_WARN_MS.
+    endmenu
+
+    menu "Round display"
+
+        config NUWAX_DISPLAY_ENABLE
+            bool "Enable ST77916 SPI round display"
+            default n
+            help
+                Enable the 360x360 ST77916 SPI round display and draw the minimal black/white eye expression.
+
+        config NUWAX_DISPLAY_PIN_SCK
+            int "Display SCK GPIO"
+            default 14 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 21
+            range 0 48
+            depends on NUWAX_DISPLAY_ENABLE
+
+        config NUWAX_DISPLAY_PIN_MOSI
+            int "Display MOSI/SDA GPIO"
+            default 13 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 47
+            range 0 48
+            depends on NUWAX_DISPLAY_ENABLE
+
+        config NUWAX_DISPLAY_QSPI_ENABLE
+            bool "Enable QSPI 4-line display bus"
+            default y
+            depends on NUWAX_DISPLAY_ENABLE
+            help
+                Enable the no-DC 4 data line ST77916 QSPI bus. DATA0 uses the MOSI/SDA GPIO.
+
+        config NUWAX_DISPLAY_PIN_DATA1
+            int "Display QSPI DATA1 GPIO"
+            default 9 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 38
+            range 0 48
+            depends on NUWAX_DISPLAY_QSPI_ENABLE
+
+        config NUWAX_DISPLAY_PIN_DATA2
+            int "Display QSPI DATA2 GPIO"
+            default 12 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 39
+            range 0 48
+            depends on NUWAX_DISPLAY_QSPI_ENABLE
+
+        config NUWAX_DISPLAY_PIN_DATA3
+            int "Display QSPI DATA3 GPIO"
+            default 46 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 48
+            range 0 48
+            depends on NUWAX_DISPLAY_QSPI_ENABLE
+
+        config NUWAX_DISPLAY_PIN_DC
+            int "Display DC GPIO"
+            default -1 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 40
+            range -1 48
+            depends on NUWAX_DISPLAY_ENABLE
+            help
+                Legacy SPI panels use a DC signal. CyberVoc V1.2 uses a no-DC
+                QSPI ST77916 panel, so this value is ignored when QSPI is enabled.
+
+        config NUWAX_DISPLAY_PIN_CS
+            int "Display CS GPIO"
+            default 10 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 41
+            range 0 48
+            depends on NUWAX_DISPLAY_ENABLE
+
+        config NUWAX_DISPLAY_PIN_RST
+            int "Display reset GPIO"
+            default 21 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 45
+            range 0 48
+            depends on NUWAX_DISPLAY_ENABLE
+
+        config NUWAX_DISPLAY_RST_ACTIVE_HIGH
+            bool "Display reset is active high"
+            default n if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default n
+            depends on NUWAX_DISPLAY_ENABLE
+            help
+                The Miaopan 2.0 H0185Y078T078 panel specification defines
+                RESET as low-active. Keep this disabled for the new board.
+
+        config NUWAX_DISPLAY_PIN_BL
+            int "Display backlight GPIO"
+            default 3 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 42
+            range 0 48
+            depends on NUWAX_DISPLAY_ENABLE
+
+        config NUWAX_DISPLAY_BL_ACTIVE_LOW
+            bool "Display backlight is active low"
+            default n if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default y
+            depends on NUWAX_DISPLAY_ENABLE
+            help
+                Miaopan 2.0 GPIO3 drives the backlight low-side NMOS, so its
+                logical enable is active-high. Legacy ST7789 wiring is active-low.
+
+        config NUWAX_DISPLAY_IPS_INVERT
+            bool "Use inverted color mode for IPS panel"
+            default y
+            depends on NUWAX_DISPLAY_ENABLE
+
+        config NUWAX_DISPLAY_SPI_HZ
+            int "Display SPI clock in Hz"
+            default 80000000
+            range 10000000 80000000
+            depends on NUWAX_DISPLAY_ENABLE
+            help
+                Start with 40 MHz in ESP-IDF for bring-up, then raise or lower it after real panel testing.
+
+    endmenu
+
+    menu "Touch input"
+
+        config NUWAX_HEAD_TOUCH_ENABLE
+            bool "Enable independent head touch input"
+            default y if NUWAX_BOARD_ESP_VOCAT_V1_0
+            help
+                Enable the active-high TOUCH signal from the microphone/head
+                board. This input is independent of the CST816 screen controller
+                and uses the board profile's TOUCH_WAKE GPIO (GPIO8 on Miaopan
+                2.0). A debounced touch must remain active through the configured
+                qualification window before it can request a product action.
+
+        config NUWAX_HEAD_TOUCH_LONG_PRESS_MS
+            int "Head touch qualification duration in milliseconds"
+            default 1000
+            range 100 10000
+            depends on NUWAX_HEAD_TOUCH_ENABLE
+            help
+                Require the head-touch input to remain continuously active for
+                this duration before publishing visual or conversation work.
+                Shorter contacts are ignored as accidental touches. A
+                successful touch starts a two-second interaction cooldown.
+
+        config NUWAX_HEAD_TOUCH_MAX_VALID_DURATION_MS
+            int "Head touch maximum valid duration in milliseconds"
+            default 5000
+            range 100 60000
+            depends on NUWAX_HEAD_TOUCH_ENABLE
+            help
+                Treat a continuously active GPIO8 signal as an expired touch
+                after this duration. The event is emitted once, any listening
+                action started by that touch is stopped. Agent transactions keep
+                ownership of the shared interaction gate until their normal
+                completion. This protects against a stuck-high sensor.
+
+        config NUWAX_HEAD_TOUCH_GAP_TOLERANCE_MS
+            int "Head touch sensor gap tolerance in milliseconds"
+            default 750
+            range 0 2000
+            depends on NUWAX_HEAD_TOUCH_ENABLE
+            help
+                Preserve one physical head-touch qualification session across
+                brief inactive pulses from the capacitive sensor. Qualification
+                is still emitted only while the GPIO is active, so an isolated
+                short touch cannot fire after release.
+
+        config NUWAX_TOUCH_ENABLE
+            bool "Enable CST816S/CST816-family touch input"
+            default y
+            help
+                Enable the CST816S/CST816-family capacitive touch controller on the round display adapter board.
+
+        config NUWAX_TOUCH_PIN_INT
+            int "Touch INT GPIO"
+            default 11 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 14
+            range 0 48
+            depends on NUWAX_TOUCH_ENABLE
+
+        config NUWAX_TOUCH_PIN_RST
+            int "Touch reset GPIO"
+            default -1 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 13
+            range -1 48
+            depends on NUWAX_TOUCH_ENABLE
+
+        config NUWAX_TOUCH_PIN_SCL
+            int "Touch I2C SCL GPIO"
+            default 1 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 12
+            range 0 48
+            depends on NUWAX_TOUCH_ENABLE
+
+        config NUWAX_TOUCH_PIN_SDA
+            int "Touch I2C SDA GPIO"
+            default 2 if NUWAX_BOARD_ESP_VOCAT_V1_0
+            default 11
+            range 0 48
+            depends on NUWAX_TOUCH_ENABLE
+
+        config NUWAX_TOUCH_I2C_HZ
+            int "Touch I2C clock in Hz"
+            default 100000
+            range 100000 400000
+            depends on NUWAX_TOUCH_ENABLE
+
+        config NUWAX_TOUCH_I2C_TIMEOUT_MS
+            int "Touch I2C timeout in milliseconds"
+            default 100
+            range 10 1000
+            depends on NUWAX_TOUCH_ENABLE
+
+        config NUWAX_TOUCH_POLL_INTERVAL_MS
+            int "Touch poll interval in milliseconds"
+            default 20
+            range 10 1000
+            depends on NUWAX_TOUCH_ENABLE
+
+        config NUWAX_TOUCH_TASK_STACK_SIZE
+            int "Touch log task stack size"
+            default 4096
+            range 2048 8192
+            depends on NUWAX_TOUCH_ENABLE
+
+        config NUWAX_TOUCH_GESTURE_TASK_STACK_SIZE
+            int "Touch gesture task stack size"
+            default 16384
+            range 4096 16384
+            depends on NUWAX_TOUCH_ENABLE
+            help
+                Stack for the higher-level touch gesture router. LVGL drawer
+                interactions can call into heavier rendering paths, so this is
+                intentionally separate from the lightweight touch log task.
+
+        config NUWAX_TOUCH_DISABLE_AUTO_SLEEP
+            bool "Disable CST816-family auto sleep during bring-up"
+            default y
+            depends on NUWAX_TOUCH_ENABLE
+            help
+                Keeps touch in a more responsive mode during early hardware validation.
+
+    endmenu
+
+    menu "LVGL V28 UI"
+
+        config NUWAX_UI_USE_LVGL
+            bool
+            default y
+            help
+                6.3 uses the V28 LVGL-based UI as the only supported UI path.
+                The legacy framebuffer UI and ai_character sources have been
+                removed.
+
+        config NUWAX_FACE_LIVELY_MODE_ENABLE
+            bool "Enable lightweight lively face motion"
+            default y
+            depends on NUWAX_UI_USE_LVGL
+            help
+                Enables the lightweight V28 face motion layer: expression transition
+                morphing plus small-area idle blink overlays. The implementation avoids
+                continuous full-screen image transforms so interaction remains smooth.
+
+        config NUWAX_UI_HARDWARE_FAST_MODE
+            bool "Prefer hardware-safe UI animation paths"
+            default y
+            depends on NUWAX_UI_USE_LVGL
+            help
+                Keeps the ESP32-S3 panel path responsive by disabling full-screen
+                opacity/transform loops and other expensive continuous animations.
+                Pixel fidelity is preserved for static frames; motion is limited to
+                small local regions where the QSPI flush path can keep up.
+
+        config NUWAX_UI_ANIMATION_TARGET_FPS
+            int "UI animation target frame rate"
+            default 40
+            range 20 60
+            depends on NUWAX_UI_USE_LVGL
+            help
+                Sets the control cadence for emotion and control-center motion.
+                This is a target rather than a guaranteed panel frame rate;
+                partial rendering and display backpressure still apply.
+
+        config NUWAX_UI_BACKGROUND_DECODE_ENABLE
+            bool "Decode emotion frames outside the LVGL task"
+            default y
+            depends on NUWAX_UI_USE_LVGL
+            help
+                Runs partition reads and DEFLATE work in a cooperative worker
+                on the display core. The worker runs below LVGL priority and
+                blocks between decoded frames; the LVGL owner also has a
+                mandatory scheduling boundary so CPU0 idle and system watchdog
+                servicing remain available without moving work onto the audio
+                core. The LVGL task only publishes changed RGB565 pixels and
+                dirty bands.
+                Worker allocation failure falls back to synchronous decoding
+                without disabling the rest of the UI.
+
+        config NUWAX_UI_ASYNC_FLUSH_ENABLE
+            bool "Enable asynchronous LVGL display flushing"
+            default y
+            depends on NUWAX_UI_USE_LVGL && NUWAX_DISPLAY_ENABLE
+            help
+                Moves LCD transfers out of the LVGL owner task. The worker owns
+                the draw buffer until the transfer completes. Allocation failure
+                falls back to the synchronous flush path.
+
+        config NUWAX_UI_DOUBLE_BUFFER_ENABLE
+            bool "Prefer double-buffered LVGL partial rendering"
+            default y
+            depends on NUWAX_UI_USE_LVGL
+            help
+                Allocates a second draw strip only while the internal-memory
+                reserve remains available. Runtime memory pressure can release
+                the second strip without stopping the UI.
+
+        config NUWAX_UI_DRAW_BUFFER_LINES
+            int "LVGL partial draw-buffer height"
+            default 20
+            range 8 40
+            depends on NUWAX_UI_USE_LVGL
+            help
+                Twenty 360-pixel RGB565 lines use 14.4 KiB. Two internal
+                buffers use 28.8 KiB and halve repeated object-tree traversal
+                during partial control-center refreshes. Runtime memory
+                pressure can release the second strip without stopping LVGL.
+
+        config NUWAX_UI_FLUSH_TASK_STACK_SIZE
+            int "Asynchronous display flush task stack size"
+            default 4096
+            range 3072 8192
+            depends on NUWAX_UI_ASYNC_FLUSH_ENABLE
+            help
+                Stack for the display transfer worker. It remains in internal
+                RAM so flash cache-off windows cannot invalidate the task stack.
+
+        config NUWAX_UI_MENU_BG_SNAPSHOT_ENABLE
+            bool "Enable V28 focus menu background snapshot"
+            default y
+            depends on NUWAX_UI_USE_LVGL && NUWAX_UI_HARDWARE_FAST_MODE
+            help
+                Keeps a full-screen RGB565 background snapshot behind the focus menu
+                surface so wheel drag redraws do not repaint the static ghost/panel
+                background every frame. Disable this only for low-memory A/B tests;
+                it recovers about 253 KiB of PSRAM and falls back to live background
+                redraw during menu interaction.
+
+        config NUWAX_FACE_TEST_MODE_ENABLE
+            bool "Enable V28 face expression test carousel"
+            default n
+            depends on NUWAX_UI_USE_LVGL
+            help
+                Demo-only mode. The emotion player ignores runtime app-state emotion
+                changes and cycles through all 16 packaged expressions for UI
+                validation. This option is disabled in production builds.
+
+        config NUWAX_FACE_TEST_MODE_INTERVAL_MS
+            int "V28 face test carousel interval in milliseconds"
+            default 5000
+            range 1000 60000
+            depends on NUWAX_FACE_TEST_MODE_ENABLE
+            help
+                Time between automatic expression changes in face test mode.
+
+        config NUWAX_UI_LVGL_TOUCH_INDEV_ENABLE
+            bool "Enable LVGL pointer indev polling"
+            default n
+            depends on NUWAX_UI_USE_LVGL && NUWAX_TOUCH_ENABLE
+            help
+                The V28 UI routes gestures through touch_gesture_task and app_shell.
+                Leave this off unless a future LVGL widget needs native LVGL click
+                events. Keeping it disabled avoids a second periodic touch I2C read
+                from the LVGL task.
+
+        config NUWAX_UI_PERF_LOG_ENABLE
+            bool "Enable V28 UI performance telemetry logs"
+            default n
+            depends on NUWAX_UI_USE_LVGL
+            help
+                Prints LVGL handler, render/refresh, display flush, heap and LVGL task
+                stack statistics for hardware bring-up. Disable for quiet release builds.
+
+        config NUWAX_UI_PERF_LOG_INTERVAL_MS
+            int "V28 UI performance telemetry interval"
+            default 2000
+            range 500 60000
+            depends on NUWAX_UI_PERF_LOG_ENABLE
+            help
+                Interval in milliseconds between aggregated UI performance log lines.
+
+        config NUWAX_UI_LONG_HANDLER_WARN_US
+            int "V28 UI long LVGL handler warning threshold"
+            default 33000
+            range 8000 200000
+            depends on NUWAX_UI_PERF_LOG_ENABLE
+            help
+                A warning is emitted when the maximum lv_timer_handler duration in
+                a telemetry window exceeds this threshold.
+
+    endmenu
+
+endmenu

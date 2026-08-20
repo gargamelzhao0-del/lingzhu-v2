@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Nuwax 360 当前 UI 交互原型</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="prototype-shell">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">NUWAX / 屏幕系统 02</p>
+        <h1>桌面 AI 伙伴界面重设计</h1>
+        <p class="page-summary">360 × 360 屏幕视觉与交互原型，保留当前固件功能结构。</p>
+      </div>
+      <button class="page-action" id="replayBootTop" type="button">
+        <i data-lucide="rotate-ccw" aria-hidden="true"></i>
+        重播开机动画
+      </button>
+    </header>
+
+    <main class="workspace">
+      <section class="preview-column" aria-labelledby="previewTitle">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">设备预览</p>
+            <h2 id="previewTitle">真机画布</h2>
+          </div>
+          <div class="live-indicator"><span></span> 实时</div>
+        </div>
+
+        <div class="device-stage">
+          <div class="device-bezel">
+            <div class="device-screen is-booting" id="deviceScreen" aria-label="Nuwax 360 像素设备屏幕预览">
+              <div class="screen-grain" aria-hidden="true"></div>
+
+              <section class="boot-scene" id="bootScene" aria-label="开机动画">
+                <div class="boot-wordmark">NUWAX</div>
+                <div class="boot-signal" aria-hidden="true">
+                  <span class="signal-core"></span>
+                  <span class="signal-left"></span>
+                  <span class="signal-right"></span>
+                </div>
+                <div class="boot-eyes" aria-hidden="true">
+                  <span></span><span></span>
+                </div>
+                <div class="boot-checks" aria-hidden="true">
+                  <span><i data-lucide="wifi"></i></span>
+                  <span><i data-lucide="cloud"></i></span>
+                  <span><i data-lucide="sparkles"></i></span>
+                </div>
+                <p class="boot-caption">随时为你服务</p>
+              </section>
+
+              <section class="screen-view face-view is-active" id="faceView" aria-label="表情主界面">
+                <header class="screen-status">
+                  <div class="status-cluster">
+                    <span class="status-icon is-online" id="topWifi" aria-label="Wi-Fi 已连接"><i data-lucide="wifi"></i></span>
+                    <span class="status-icon is-online" id="topCloud" aria-label="云端在线"><i data-lucide="cloud"></i></span>
+                  </div>
+                  <div class="mode-mark" id="dialogMark"><span></span><b id="dialogLabel">待命</b></div>
+                  <div class="status-cluster status-cluster-right">
+                    <span class="status-icon" id="topMic" aria-label="麦克风可用"><i data-lucide="mic"></i></span>
+                    <span class="status-icon" id="topPower" aria-label="外接供电"><i data-lucide="battery-charging"></i></span>
+                  </div>
+                </header>
+
+                <div class="face-stage emotion-neutral" id="faceStage">
+                  <img class="current-face-image" id="currentFaceImage" src="./assets/current-faces/neutral.png" alt="当前固件中的平静表情" width="360" height="360" decoding="async">
+                  <div class="emotion-caption" aria-live="polite">
+                    <strong id="emotionName">平静</strong>
+                    <span id="emotionHint">轻松自在</span>
+                  </div>
+                </div>
+
+                <button class="screen-menu-trigger" id="screenMenuTrigger" type="button" aria-label="待命，打开菜单">
+                  <span class="dialog-status-icon" id="dialogStatusIcon" data-state="sleep" aria-hidden="true">
+                    <i data-lucide="moon-star"></i>
+                  </span>
+                </button>
+              </section>
+
+              <section class="screen-view menu-view" id="menuView" aria-label="焦点菜单">
+                <header class="menu-header">
+                  <button class="menu-back-button" id="menuBack" type="button" aria-label="返回表情界面"><i data-lucide="arrow-left"></i></button>
+                  <span class="menu-title">菜单</span>
+                  <span class="menu-position" id="menuPosition">01 / 06</span>
+                </header>
+                <div class="menu-ghost-face" aria-hidden="true">
+                  <span class="menu-ghost-eye menu-ghost-eye-left"></span>
+                  <span class="menu-ghost-eye menu-ghost-eye-right"></span>
+                  <span class="menu-ghost-blush menu-ghost-blush-1"></span>
+                  <span class="menu-ghost-blush menu-ghost-blush-2"></span>
+                  <span class="menu-ghost-blush menu-ghost-blush-3"></span>
+                  <span class="menu-ghost-blush menu-ghost-blush-4"></span>
+                  <span class="menu-ghost-blush menu-ghost-blush-5"></span>
+                  <span class="menu-ghost-blush menu-ghost-blush-6"></span>
+                  <span class="menu-ghost-blush menu-ghost-blush-7"></span>
+                  <span class="menu-ghost-blush menu-ghost-blush-8"></span>
+                  <span class="menu-ghost-mouth"></span>
+                </div>
+                <div class="menu-focus-guide" aria-hidden="true"><span></span><span></span></div>
+                <span class="screen-reader-only" id="activeMenuLabel">机械爪</span>
+                <div class="menu-wheel" id="menuWheel" aria-label="触摸滚动菜单"></div>
+                <p class="menu-description" id="activeMenuDescription">机械爪控制</p>
+                <div class="menu-progress" id="menuProgress" aria-hidden="true"></div>
+                <div class="menu-gesture-mark" aria-hidden="true"><i data-lucide="chevrons-up-down"></i></div>
+              </section>
+
+              <section class="screen-view detail-view" id="detailView" aria-label="菜单详情">
+                <header class="screen-page-header detail-header">
+                  <button class="screen-icon-button" id="detailBack" type="button" aria-label="返回菜单"><i data-lucide="arrow-left"></i></button>
+                  <span id="detailTitle">设备</span>
+                  <b id="detailStatus">正常</b>
+                </header>
+                <div class="detail-content" id="detailContent"></div>
+              </section>
+
+              <section class="screen-view qr-view" id="qrView" aria-label="设备二维码">
+                <header class="screen-page-header inverse-header">
+                  <button class="screen-icon-button" id="qrBack" type="button" aria-label="返回设备页面"><i data-lucide="arrow-left"></i></button>
+                  <span>设备二维码</span>
+                  <b>安全</b>
+                </header>
+                <div class="qr-content">
+                  <div class="qr-frame" aria-label="设备绑定二维码视觉占位">
+                    <canvas id="qrCanvas" width="180" height="180"></canvas>
+                  </div>
+                  <strong>NUWAX-A1C3E7</strong>
+                  <span>扫码识别并绑定此设备</span>
+                </div>
+              </section>
+
+              <section class="screen-view provisioning-view" id="provisioningView" aria-label="蓝牙配网页面">
+                <header class="screen-page-header inverse-header">
+                  <button class="screen-icon-button" id="provisionBack" type="button" aria-label="返回设备页面"><i data-lucide="arrow-left"></i></button>
+                  <span>BLE 配网</span>
+                  <b id="bleTimer">15:00</b>
+                </header>
+                <div class="provision-visual">
+                  <div class="ble-orbit" aria-hidden="true">
+                    <span></span><span></span><span></span>
+                    <i data-lucide="bluetooth"></i>
+                  </div>
+                  <strong id="provisionTitle">等待连接</strong>
+                  <span id="provisionCopy">NUWAX-A1C3E7</span>
+                  <div class="provision-steps" aria-label="配网进度">
+                    <span class="is-current"></span><span></span><span></span><span></span>
+                  </div>
+                </div>
+              </section>
+
+              <aside class="status-drawer" id="statusDrawer" aria-label="设备状态抽屉">
+                <div class="drawer-handle" aria-hidden="true"></div>
+                <header class="drawer-header">
+                  <div>
+                    <span>系统状态</span>
+                    <strong id="drawerClock">10:24</strong>
+                  </div>
+                  <button class="screen-icon-button drawer-close" id="drawerClose" type="button" aria-label="关闭状态抽屉"><i data-lucide="chevron-up"></i></button>
+                </header>
+                <div class="status-grid">
+                  <div class="status-cell" id="wifiCell">
+                    <i data-lucide="wifi"></i>
+                    <span>WiFi</span>
+                    <strong id="wifiValue">已连接</strong>
+                  </div>
+                  <div class="status-cell" id="cloudCell">
+                    <i data-lucide="cloud"></i>
+                    <span>云端</span>
+                    <strong id="cloudValue">在线</strong>
+                  </div>
+                  <div class="status-cell" id="micCell">
+                    <i data-lucide="mic"></i>
+                    <span>麦克风</span>
+                    <strong id="micValue">可用</strong>
+                  </div>
+                  <div class="status-cell" id="powerCell">
+                    <i data-lucide="battery-charging"></i>
+                    <span>电源</span>
+                    <strong id="powerValue">外接供电</strong>
+                  </div>
+                </div>
+                <div class="volume-control">
+                  <div class="volume-label">
+                    <span><i data-lucide="volume-2"></i> 音量</span>
+                    <strong id="screenVolumeValue">68</strong>
+                  </div>
+                  <input id="screenVolume" type="range" min="0" max="100" value="68" aria-label="设备音量">
+                </div>
+                <p class="drawer-footer" id="drawerFooter">所有系统可用</p>
+              </aside>
+            </div>
+          </div>
+          <div class="device-foot">
+            <span>360 × 360</span>
+            <strong id="currentScreenName">表情 / 平静</strong>
+            <span>UI V29 概念稿</span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="control-column" aria-labelledby="controlsTitle">
+        <div class="section-heading controls-heading">
+          <div>
+            <p class="section-kicker">交互调试</p>
+            <h2 id="controlsTitle">状态控制台</h2>
+          </div>
+        </div>
+
+        <section class="control-panel">
+          <div class="control-panel-title">
+            <span>界面</span>
+            <small>保持现有页面路由</small>
+          </div>
+          <div class="segmented-control" id="viewControls" role="group" aria-label="切换界面">
+            <button type="button" class="is-selected" data-view="face">表情</button>
+            <button type="button" data-view="menu">菜单</button>
+            <button type="button" data-view="drawer">状态栏</button>
+            <button type="button" data-view="device">设备</button>
+          </div>
+          <button class="control-button primary" id="replayBoot" type="button"><i data-lucide="play"></i> 播放开机动画</button>
+        </section>
+
+        <section class="control-panel">
+          <div class="control-panel-title">
+            <span>表情状态</span>
+            <small id="emotionCount">01 / 25</small>
+          </div>
+          <label class="field-label" for="emotionSelect">设备状态映射</label>
+          <select id="emotionSelect">
+            <option value="neutral">平静</option>
+            <option value="happy">开心</option>
+            <option value="surprised">惊讶</option>
+            <option value="wink">眨眼</option>
+            <option value="tongue">调皮</option>
+            <option value="thinking">思考</option>
+            <option value="focused">专注</option>
+            <option value="pensive">沉思</option>
+            <option value="analyzing">分析</option>
+            <option value="processing">处理</option>
+            <option value="received">收到</option>
+            <option value="what">疑问</option>
+            <option value="understood">明白</option>
+            <option value="awesome">惊喜</option>
+            <option value="like">喜爱</option>
+            <option value="sad">难过</option>
+            <option value="lost">迷茫</option>
+            <option value="angry">生气</option>
+            <option value="shy">害羞</option>
+            <option value="tired">疲惫</option>
+            <option value="booting">启动</option>
+            <option value="listening">聆听</option>
+            <option value="speaking">播报</option>
+            <option value="low_battery">低电量</option>
+            <option value="charging">充电</option>
+          </select>
+          <div class="expression-pager">
+            <button type="button" id="prevEmotion" aria-label="上一个表情"><i data-lucide="arrow-left"></i></button>
+            <div><span id="emotionCategory">平和</span><strong id="emotionDisplayName">平静</strong></div>
+            <button type="button" id="nextEmotion" aria-label="下一个表情"><i data-lucide="arrow-right"></i></button>
+          </div>
+        </section>
+
+        <section class="control-panel">
+          <div class="control-panel-title">
+            <span>实时设备状态</span>
+            <small>同步顶部状态与抽屉</small>
+          </div>
+          <div class="field-grid">
+            <label class="field-label" for="wifiState">WiFi
+              <select id="wifiState">
+                <option value="connected">已连接</option>
+                <option value="connecting">连接中</option>
+                <option value="weak">信号弱</option>
+                <option value="disconnected">已断开</option>
+              </select>
+            </label>
+            <label class="field-label" for="cloudState">云端
+              <select id="cloudState">
+                <option value="connected">在线</option>
+                <option value="connecting">连接中</option>
+                <option value="disconnected">离线</option>
+                <option value="authfail">鉴权失败</option>
+              </select>
+            </label>
+            <label class="field-label" for="dialogState">对话
+              <select id="dialogState">
+                <option value="sleep">休眠</option>
+                <option value="listening">监听</option>
+                <option value="recognizing">识别</option>
+                <option value="thinking">思考</option>
+                <option value="speaking">播报</option>
+                <option value="meeting">会议模式</option>
+                <option value="monitoring">监控模式</option>
+                <option value="error">错误</option>
+              </select>
+            </label>
+            <label class="field-label" for="powerState">电源
+              <select id="powerState">
+                <option value="external">外接供电</option>
+                <option value="battery">电池</option>
+                <option value="charging">充电</option>
+                <option value="low">低电量</option>
+              </select>
+            </label>
+          </div>
+          <label class="range-label" for="volumeRange"><span>音量</span><strong id="volumeValue">68%</strong></label>
+          <input id="volumeRange" type="range" min="0" max="100" value="68">
+        </section>
+
+        <section class="control-panel status-icon-review" aria-label="底部状态图标评估">
+          <div class="control-panel-title">
+            <span>底部状态图标</span>
+            <small>设备 30 x 30 像素预览</small>
+          </div>
+          <div class="status-icon-options" role="group" aria-label="切换底部状态图标">
+            <button class="status-icon-option is-selected" type="button" data-dialog-state="sleep">
+              <span class="status-icon-sample" data-state="sleep"><i data-lucide="moon-star"></i></span>
+              <span>休眠</span>
+            </button>
+            <button class="status-icon-option" type="button" data-dialog-state="listening">
+              <span class="status-icon-sample" data-state="listening"><i data-lucide="audio-lines"></i></span>
+              <span>聆听</span>
+            </button>
+            <button class="status-icon-option" type="button" data-dialog-state="speaking">
+              <span class="status-icon-sample" data-state="speaking"><i data-lucide="volume-2"></i></span>
+              <span>说话</span>
+            </button>
+            <button class="status-icon-option" type="button" data-dialog-state="meeting">
+              <span class="status-icon-sample" data-state="meeting"><i data-lucide="users-round"></i></span>
+              <span>会议</span>
+            </button>
+            <button class="status-icon-option" type="button" data-dialog-state="monitoring">
+              <span class="status-icon-sample" data-state="monitoring"><i data-lucide="scan-eye"></i></span>
+              <span>监控</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="control-panel palette-panel" aria-label="颜色系统">
+          <div class="control-panel-title">
+            <span>颜色系统</span>
+            <small>状态色只承担语义</small>
+          </div>
+          <div class="swatches">
+            <span class="swatch ink" aria-label="石墨黑"></span>
+            <span class="swatch paper" aria-label="纸白"></span>
+            <span class="swatch signal" aria-label="信号绿"></span>
+            <span class="swatch thinking" aria-label="思考黄"></span>
+            <span class="swatch alert" aria-label="警告红"></span>
+            <span class="swatch voice" aria-label="语音蓝"></span>
+          </div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

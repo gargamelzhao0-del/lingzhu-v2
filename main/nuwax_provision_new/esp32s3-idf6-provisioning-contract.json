@@ -1,0 +1,310 @@
+{
+  "contractVersion": "1.3-dynamic-vox-config",
+  "status": "FIRST_INTEGRATION_FORMAL_WSS_VERIFIED_PRODUCTION_HARDENING_PENDING",
+  "releaseScope": {
+    "primaryTransport": "ble",
+    "bleRequired": true,
+    "softApSupported": false,
+    "fallbackTransport": "none"
+  },
+  "hardware": {
+    "chip": "ESP32-S3",
+    "module": "ESP32-S3-N16R8",
+    "chipRevision": "recorded_from_runtime_esp_chip_info_per_test_device"
+  },
+  "firmware": {
+    "espIdfVersion": "6.0",
+    "espIdfTagOrCommit": "v6.0 / 662a3be354759d9487bf4b1a629fadb766cb1800",
+    "component": "espressif/network_provisioning",
+    "componentVersion": "1.2.4",
+    "componentRepositoryCommit": "2de4980640bbe3d2d69473d7251640039e185b92",
+    "bleHost": "NimBLE",
+    "keySdkconfig": [
+      "CONFIG_BT_NIMBLE_ENABLED=y",
+      "CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y",
+      "CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y",
+      "CONFIG_BT_NIMBLE_GATT_SERVER=y",
+      "CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1",
+      "CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517",
+      "CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y",
+      "# CONFIG_MBEDTLS_HARDWARE_SHA is not set",
+      "# CONFIG_MBEDTLS_HARDWARE_AES is not set",
+      "CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_2=y",
+      "CONFIG_NETWORK_PROV_BLE_NOTIFY=y"
+    ]
+  },
+  "androidProviderReference": {
+    "repository": "https://github.com/espressif/esp-idf-provisioning-android",
+    "dependency": "com.github.espressif:esp-idf-provisioning-android:lib-2.4.4",
+    "tagOrCommit": "lib-2.4.4 / 99719ae2d89b9a209cc83ca88bc6f3f4318028",
+    "validationStatus": "REFERENCE_API_REVIEWED_ANDROID_DEVICE_VALIDATION_PENDING",
+    "transportType": "TRANSPORT_BLE",
+    "securityType": "SECURITY_2",
+    "customEndpointApi": "ESPDevice.sendDataToCustomEndPoint(path, utf8Bytes, ResponseListener)",
+    "customEndpointResponse": "ResponseListener receives Security 2 decrypted bytes",
+    "endpointDiscovery": "BLE characteristic UUIDs are discovered from 0x2901 User Description descriptors; APP must address device-info/vox-config by endpoint name and must not hardcode their characteristic UUIDs",
+    "capabilityRule": "parse ESPDevice.getVersionInfo() raw JSON: Security/wifi capabilities are under prov, while cloud_prov is under nuwax; ESPDevice.getDeviceCapabilities() alone does not expose nuwax.cap",
+    "productionLoggingRequirement": "use a vetted patched/forked library artifact, or verified R8 rules plus release artifact inspection, that removes raw QR and PoP Log.d output before production; an ordinary wrapper cannot suppress logging inside the library"
+  },
+  "transport": {
+    "type": "ble",
+    "primaryServiceUuid": "0000ffff-0000-1000-8000-00805f9b34fb",
+    "primaryServiceUuidStatus": "CONFIRMED_BY_FIRMWARE",
+    "serviceNamePrefix": "PROV_",
+    "serviceNamePrefixStatus": "CONFIRMED_BY_FIRMWARE",
+    "serviceNameFormat": "PROV_ plus final three STA MAC bytes in uppercase hexadecimal",
+    "manufacturerId": null,
+    "manufacturerDataFormat": "none",
+    "advertisingTimeoutSeconds": null,
+    "focusedBleOnlySeconds": 300,
+    "securedSessionPreConfigIdleSeconds": 300,
+    "securedSessionPostConfigIdleSeconds": 60,
+    "securedSessionIdlePolicy": "after Security 2, allow the APP Wi-Fi selection flow up to the pre-config limit; after vox-config is staged, require Wi-Fi provisioning to start within the post-config limit; on expiry discard the pending cloud candidate, reset the manager, disconnect the stale GATT session, and continue advertising",
+    "activeAttemptGraceMs": 30000,
+    "activeAttemptGracePolicy": "each accepted credential set receives one complete observation interval; failure resets the official state machine and BLE remains available",
+    "attMtu": "PREFERRED_517_NEGOTIATED",
+    "keepBleAfterProvisioning": "15000_ms_after_GOT_IP_then_explicit_stop",
+    "transportCleanupDelayMs": 1000,
+    "maximumConnections": 1,
+    "gapBondingRequired": false,
+    "osPairingPolicy": "do not create an OS BLE pair/bond; protocomm Security 2 protects the provisioning application session",
+    "bdAddressPolicy": "scan-session locator only; never use BLE address as permanent device identity"
+  },
+  "wifiAssociation": {
+    "supportedBand": "2.4_GHz",
+    "provisioningScanMethod": "WIFI_FAST_SCAN",
+    "transitionNetworkPolicy": "during BLE provisioning, disable ESP-IDF WPA3 compatibility override so WPA2/WPA3 transition APs use the reliable WPA2 association path",
+    "pureWpa3OnlyValidated": false,
+    "successTestAp": {
+      "ssid": "xspaceagi",
+      "channel": 4,
+      "authMode": "WPA2_WPA3_PSK"
+    }
+  },
+  "security": {
+    "version": 2,
+    "status": "CONFIRMED_SECURITY_2_NO_DOWNGRADE",
+    "usernameSource": "device UID printed by development firmware; production QR or device label",
+    "proofOfPossessionSource": "development fixed PoP from this contract or development QR; production per-device manufacturing label or authenticated credential service, not the identity-only device screen QR",
+    "perDeviceSecretRequired": true,
+    "security0AllowedInProduction": false,
+    "developmentPoP": "Nuwax7-Dev-PoP",
+    "productionCredentialStorage": {
+      "namespace": "nuwax_factory",
+      "saltKey": "sec2_salt",
+      "verifierKey": "sec2_verifier",
+      "plaintextPoPStoredOnDevice": false
+    },
+    "qrPayloadExample": "https://nuwax.com/lz.html?n=PROV_A1B2C3&u=NX-A1B2-C3D4-E5F6&p=Nuwax7-Dev-PoP",
+    "onDeviceQrDisplay": {
+      "status": "FIRMWARE_IMPLEMENTED_COMPILE_VERIFIED",
+      "menuPath": "Device > Device QR",
+      "payloadFormat": "HTTPS URL with percent-encoded n=BLE service name, u=device username, and development-only p=PoP query parameters",
+      "developmentBehavior": "includes the configured development PoP for first-integration testing",
+      "productionBehavior": "omits plaintext PoP because production firmware stores only salt and verifier",
+      "productionScreenOnlyProvisioningReady": false,
+      "appIdentityCheck": "after Security 2, device-info.serialNumber must equal QR username",
+      "returnAction": "swipe right returns to Device detail"
+    }
+  },
+  "officialEndpoints": {
+    "capabilityQueryRequired": true,
+    "networkScanRequired": true,
+    "setConfigRequired": true,
+    "applyConfigRequired": true,
+    "getStatusRequired": true,
+    "authoritativeStatusEndpoint": "prov-config",
+    "controlEndpoint": "prov-ctrl",
+    "controlEndpointUsage": "reset_and_reprovision_control_only",
+    "capabilities": ["wifi_prov", "wifi_scan", "cloud_prov"],
+    "capabilityLocations": {
+      "prov.cap": ["wifi_prov", "wifi_scan"],
+      "nuwax.cap": ["wifi_prov", "wifi_scan", "cloud_prov"]
+    },
+    "appValidationRule": "require prov.sec_ver=2, prov.cap contains wifi_prov/wifi_scan, and nuwax.cap contains cloud_prov"
+  },
+  "customEndpoints": [
+    {
+      "name": "device-info",
+      "required": true,
+      "requestFormat": "UTF-8 JSON object {}",
+      "responseFormat": "UTF-8 JSON object",
+      "fields": [
+        "protocolVersion",
+        "serialNumber",
+        "productModel",
+        "hardwareVersion",
+        "firmwareVersion",
+        "capabilities",
+        "lastProvisioningOutcome",
+        "lastProvisioningReason",
+        "wifiDisconnectReason",
+        "wifiDisconnectReasonName",
+        "cloudConfigState"
+      ],
+      "lastOutcomeValues": ["none", "success", "auth_failed", "network_not_found", "timeout", "internal_error", "stopped"]
+    },
+    {
+      "name": "vox-config",
+      "required": true,
+      "security": "protocomm Security 2 encrypted session",
+      "requestFormat": "UTF-8 JSON {deviceId,gatewayUrl,deviceSecret}",
+      "responseFormat": "UTF-8 JSON {ok:true,state:'active',deviceId} or {ok:false,error}; state:'active' is retained for deployed APP compatibility, while firmware internally keeps the candidate pending until Wi-Fi reaches GOT_IP and the provisioning transaction commits",
+      "responseNeverEchoesDeviceSecret": true,
+      "mustRunBefore": "prov-config set/apply"
+    }
+  ],
+  "customEndpointTransport": {
+    "addressing": "endpoint name",
+    "fixedCharacteristicUuid": false,
+    "bleDiscovery": "read each characteristic 0x2901 User Description descriptor after service discovery",
+    "requiredNames": ["device-info", "vox-config"],
+    "missingEndpointResult": "PROTOCOL_ERROR"
+  },
+  "cloudProvisioning": {
+    "endpoint": "vox-config",
+    "capability": "cloud_prov",
+    "appOrder": [
+      "establish Security 2",
+      "verify device-info.serialNumber",
+      "obtain the latest deviceSecret for this deviceId from the existing bind API",
+      "obtain gatewayUrl from the APP environment or a backend configuration API; the currently observed bind response does not include gatewayUrl",
+      "send vox-config {deviceId,gatewayUrl,deviceSecret}",
+      "send prov-config set",
+      "send prov-config apply",
+      "wait WIFI_READY",
+      "observe cloud online separately when the backend exposes that state"
+    ],
+    "payload": {
+      "requiredFields": ["deviceId", "gatewayUrl", "deviceSecret"],
+      "deviceIdentityRule": "deviceId must equal device-info.serialNumber and the hardware-derived device UID",
+      "gatewayUrlSource": "APP environment or backend configuration API; it is dynamically delivered to firmware but is not currently returned by the observed bind response",
+      "gatewayUrlRule": "ASCII ws:// or wss:// URL without credentials, fragment or IPv6 literal; valid port 1..65535 when present; wss:// is required in production and ws:// is accepted only when the firmware test-build option is enabled",
+      "deviceSecretRule": "1..95 printable ASCII characters (0x21..0x7E), suitable for X-Bridge-Token",
+      "removedFields": ["credentialId", "bundleVersion", "signature"]
+    },
+    "firmwareStorage": {
+      "namespace": "nuwax_cloud",
+      "activeKey": "active",
+      "writeBeforeWifi": true,
+      "replacementPolicy": "a valid vox-config atomically replaces the active URL and device secret",
+      "wifiSuccessIndependentFromCloud": true,
+      "productionRequirement": "NVS Encryption + Flash Encryption + Secure Boot"
+    },
+    "urlPolicy": {
+      "firstIntegration": "dynamic ws:// or wss:// target; ws:// enabled only by test-build Kconfig",
+      "production": "dynamic wss:// target only with certificate verification"
+    },
+    "webSocketAuthentication": {
+      "performedBefore101": true,
+      "headers": {
+        "X-Bridge-Token": "deviceSecret"
+      },
+      "helloDeviceIdentity": "device_id contains the hardware-derived device UID",
+      "helloDeviceSecret": "device_secret contains the same runtime deviceSecret for the current formal service binding check",
+      "helloVersion": 1,
+      "helloContainsPlaintextDeviceSecret": true,
+      "confidentialityRule": "production gatewayUrl must use wss://; firmware never logs the header, hello JSON or deviceSecret"
+    },
+    "testGateway": {
+      "authentication": "CLOUD_GATEWAY_TOKEN equals the runtime deviceSecret; no signing or claim service is used",
+      "onlineEndpoint": "GET /api/status using the same runtime token",
+      "validatedScope": "BLE delivery, Wi-Fi provisioning, legacy X-Bridge-Token authentication and device online observation",
+      "onlineState": "DEVICE_ONLINE",
+      "onlineStateDefinition": "the gateway devices list contains the matching hardware device UID"
+    }
+  },
+  "successCriteria": {
+    "level": "WIFI_READY",
+    "firmwareEvent": "IP_EVENT_STA_GOT_IP",
+    "cloudOnlineRequired": false,
+    "statusTimeoutMs": 30000,
+    "recommendedAppStatusTimeoutMs": 35000,
+    "statusTimeoutScope": "prov-config Wi-Fi association only",
+    "cloudOnlineTimeoutMs": 90000,
+    "cloudOnlineTimeoutScope": "optional test-gateway observation after WIFI_READY; it cannot change the Wi-Fi result",
+    "firmwareMustExposeLastStatusAfterReconnect": true,
+    "reconnectStatusScope": "until new Wi-Fi commits or saved Wi-Fi recovers, plus the 15-second post-success window",
+    "appCompletionRule": "report Wi-Fi provisioning success when the official prov-config status is connected; report cloud state separately"
+  },
+  "failureMapping": {
+    "securityAuthFailed": "PROTOCOMM_SECURITY_SESSION_CREDENTIALS_MISMATCH",
+    "authFailed": "raw WIFI_EVENT_STA_DISCONNECTED auth-family reason, including WIFI_REASON_AUTH_EXPIRE, or NETWORK_PROV_WIFI_STA_AUTH_ERROR fallback",
+    "networkNotFound": "NETWORK_PROV_WIFI_STA_AP_NOT_FOUND",
+    "dhcpFailed": "NO_DISTINCT_NATIVE_CODE_MAP_TO_TIMEOUT",
+    "timeout": "FIRMWARE_CREDENTIAL_OBSERVATION_TIMEOUT_OR_APP_GUARD_TIMEOUT",
+    "rawWifiDiagnostic": "device-info.wifiDisconnectReason and wifiDisconnectReasonName",
+    "internalError": "UNMAPPED_RAW_WIFI_REASON_OR_PROTOCOMM_OR_LOCAL_ESP_ERR"
+  },
+  "appResultCodes": {
+    "success": "SUCCESS",
+    "securityAuthFailed": "SECURITY_AUTH_FAILED",
+    "wifiAuthFailed": "WIFI_AUTH_FAILED",
+    "networkNotFound": "NETWORK_NOT_FOUND",
+    "timeout": "TIMEOUT",
+    "internalError": "INTERNAL_ERROR",
+    "deviceIdentityMismatch": "DEVICE_ID_MISMATCH",
+    "deviceNotFound": "DEVICE_NOT_FOUND",
+    "protocolError": "PROTOCOL_ERROR",
+    "operationBusy": "BUSY",
+    "voxConfigInvalid": "VOX_CONFIG_INVALID",
+    "voxConfigPersistFailed": "VOX_CONFIG_PERSIST_FAILED",
+    "cloudConnectTimeout": "CLOUD_CONNECT_TIMEOUT",
+    "cloudCredentialRejected": "CLOUD_CREDENTIAL_REJECTED"
+  },
+  "lifecycle": {
+    "firstBootStartsProvisioning": "when ESP-IDF Wi-Fi provisioned marker is absent",
+    "existingWifiWithoutCloudConfigPolicy": "save current STA rollback record and automatically open reversible BLE cloud-recovery provisioning on boot",
+    "physicalEntryAction": "open Device detail, scan Device QR first when needed, return to Device detail, then tap the visible Wi-Fi-icon BLE button below Meeting",
+    "physicalEntryFeedback": "show BLE provisioning restart status, persist the current STA configuration as a rollback record, then reboot without erasing it",
+    "configuredDeviceAdvertisingPolicy": "do not advertise provisioning BLE during normal boot",
+    "remoteEntryCommand": "authenticated WebSocket device_command start_ble_provisioning",
+    "remoteEntryCapability": "hello.features.remote_ble_reprovision=true",
+    "remoteEntryExecution": "send device_command_ack, persist the same reversible Wi-Fi rollback record used by the local UI action, then reboot into BLE provisioning",
+    "integrationUsbEntryCommand": "NUWAX_CTRL start_ble_provisioning over the physical ESP32-S3 USB Serial/JTAG port",
+    "integrationUsbEntryResult": "the loopback Bridge returns success only after the exact serviceName and frozen Service UUID are observed in BLE advertising",
+    "integrationUsbEntrySecurityBoundary": "development and hardware-integration builds only; disable CONFIG_NUWAX_PROVISION_USB_CONTROL_ENABLE for production release builds",
+    "remoteEntrySimulatorBoundary": "the local simulator prefers physical USB control; without USB it may call the authenticated local test gateway through its loopback Bridge and never exposes the gateway admin token",
+    "remoteEntryProductionBoundary": "a production backend may send this command only after authenticating the APP user and verifying device ownership; the APP must not connect directly to the device WebSocket",
+    "remoteEntryCurrentFormalServiceBoundary": "the simulator can control a USB-attached development device regardless of its current WSS; a production APP still requires an authenticated ownership-checked formal backend API to forward start_ble_provisioning",
+    "failedProvisioningKeepsBleConnected": "yes; BLE advertising resumes indefinitely after disconnect or failed provisioning",
+    "resetCommandOrEndpoint": "local Device menu Wi-Fi-icon BLE button, integration-only physical USB command, or authenticated start_ble_provisioning WebSocket command",
+    "resetRequiresPhysicalPresence": false,
+    "offlineResetRequiresPhysicalPresence": true,
+    "postSuccessBleWindowMs": 15000,
+    "transportCleanupDelayMs": 1000,
+    "activeAttemptGraceMs": 30000,
+    "postWindowFailureBehavior": "after 300 seconds, BLE remains active while saved Wi-Fi is attempted periodically; APP GATT connection pauses saved-Wi-Fi recovery, and either committed new Wi-Fi or recovered saved Wi-Fi ends provisioning"
+  },
+  "logging": {
+    "firmwareSerialBaudRate": 115200,
+    "passwordLoggingAllowed": false,
+    "popLoggingAllowed": false,
+    "rawSecurityMaterialLoggingAllowed": false
+  },
+  "validationStatus": {
+    "date": "2026-07-26",
+    "firmwareFlashed": true,
+    "targetDeviceId": "NX-3927-2693-9288",
+    "localTestGateway": "DEVICE_ONLINE with normal ping/pong after reboot",
+    "formalWebSocketUpgrade": "accepted with X-Bridge-Token",
+    "formalHelloResult": "accepted; device received repeated application pong messages",
+    "formalServiceBlocker": null,
+    "formalServiceUrl": "wss://testagent.xspaceagi.com/api/device/ws",
+    "formalServiceSecretPersistence": "the accepted runtime secret is stored only in device NVS and is not recorded in this contract or delivery documents",
+    "latestSourceBuildFlashed": true,
+    "latestSourceImageSize": "0x3275c0",
+    "hostRegression": "QR 16/16, Bridge 27/27, minimal test gateway 4/4, JavaScript syntax, Python compile, contract JSON and independent package startup",
+    "simulatorUsbEntryResult": "COM8 command acknowledged; exact PROV_1467C4 advertising confirmed after reboot; repeated after extracting USB control into its dedicated firmware module",
+    "latestProvisioningRegression": "Security 2, device-info, vox-config, official prov-config and WIFI_READY passed; formal WSS resumed and application pong was observed",
+    "postHardeningFlashResult": "device retained the dynamic binding and received repeated application pong messages; local gateways on ports 8799 and 8800 both reported zero connected devices",
+    "rebootPersistence": "4/4 consecutive hard-reset cycles loaded active dynamic cloud config, restored xspaceagi, and connected the formal WSS without BLE redelivery",
+    "observedResidualRisk": "one StoreProhibited reboot was observed during the initial audit reset, followed by successful automatic recovery; it was not reproduced in the next five hard resets and requires longer-duration stability monitoring"
+  },
+  "owners": {
+    "app": "nuwax-mobile Android team",
+    "firmware": "nuwax-ai-partner firmware team",
+    "hardware": "Nuwax ESP32-S3 desktop hardware team",
+    "test": "Nuwax desktop integration test team"
+  }
+}

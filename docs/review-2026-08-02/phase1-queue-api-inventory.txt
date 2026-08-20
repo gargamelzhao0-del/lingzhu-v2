@@ -1,0 +1,432 @@
+﻿.\NuwaxAIPartner-v2\main\app_shell.c:268:    if (xQueueSend(s_shell_actions, result, 0) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\audio_uplink.c:112:    (void)xQueueSend(ctx->free_slots, &slot, 0);
+.\NuwaxAIPartner-v2\main\conversation\audio_uplink.c:255:        if (xQueueReceive(ctx->ready_packets, &packet, pdMS_TO_TICKS(100)) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\audio_uplink.c:532:    ctx->free_slots = xQueueCreateWithCaps(queue_depth,
+.\NuwaxAIPartner-v2\main\conversation\audio_uplink.c:537:        ctx->free_slots = xQueueCreate(queue_depth, sizeof(uint8_t));
+.\NuwaxAIPartner-v2\main\conversation\audio_uplink.c:539:    ctx->ready_packets = xQueueCreateWithCaps(ready_queue_depth,
+.\NuwaxAIPartner-v2\main\conversation\audio_uplink.c:544:        ctx->ready_packets = xQueueCreate(ready_queue_depth, sizeof(nuwax_audio_uplink_packet_t));
+.\NuwaxAIPartner-v2\main\conversation\audio_uplink.c:563:        (void)xQueueSend(ctx->free_slots, &slot, 0);
+.\NuwaxAIPartner-v2\main\conversation\audio_uplink.c:658:    } else if (xQueueReceive(ctx->free_slots,
+.\NuwaxAIPartner-v2\main\conversation\audio_uplink.c:705:    if (xQueueSend(ctx->ready_packets, &packet, 0) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:59:    if (xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:65:        xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:75:        xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:85:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:91:        xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:102:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:115:        xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:130:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:139:        if (xQueueReceive(s_queue, &item, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:337:        s_lock = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:340:        s_queue = xQueueCreateWithCaps(NUWAX_BARGE_DISPATCH_QUEUE_DEPTH,
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:344:            s_queue = xQueueCreate(NUWAX_BARGE_DISPATCH_QUEUE_DEPTH,
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:374:        xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:379:        xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:386:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:391:    if (!ws || !s_lock || xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:401:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:407:    if (!s_lock || xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:415:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:446:    if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:454:        xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:463:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:464:    if (xQueueSend(s_queue, &item, 0) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:485:        xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:495:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:503:        xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\conversation\barge_in_dispatcher.c:514:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_mode.c:157:            xQueueOverwrite(mode->request_acks, event) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_mode.c:166:    if (xQueueSend(mode->events, event, 0) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_mode.c:179:        while (xQueueReceive(mode->request_acks, &event, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_mode.c:183:        while (xQueueReceive(mode->events, &event, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_mode.c:429:        while (xQueueReceive(mode->request_acks, &event, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_mode.c:434:        while (xQueueReceive(mode->events, &event, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_mode.c:959:    mode->events = xQueueCreate(NUWAX_MEETING_EVENT_QUEUE_DEPTH, sizeof(nuwax_meeting_event_t));
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_mode.c:963:    mode->request_acks = xQueueCreate(1U, sizeof(nuwax_meeting_event_t));
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_capture_transaction_host_check.c:44:QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t item_size) {
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_capture_transaction_host_check.c:54:BaseType_t xQueueSend(QueueHandle_t queue,
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_capture_transaction_host_check.c:69:BaseType_t xQueueOverwrite(QueueHandle_t queue, const void *item) {
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_capture_transaction_host_check.c:79:BaseType_t xQueueReceive(QueueHandle_t queue,
+.\NuwaxAIPartner-v2\main\board\vocat_audio_board.c:149:    xTaskNotifyGive(ctx->owner);
+.\NuwaxAIPartner-v2\main\board\vocat_audio_board.c:174:    xTaskNotifyGive(ctx->owner);
+.\NuwaxAIPartner-v2\main\board\vocat_audio_board.c:203:        xSemaphoreGive(ctx->done);
+.\NuwaxAIPartner-v2\main\board\vocat_audio_board.c:798:    ctx->done = xSemaphoreCreateBinary();
+.\NuwaxAIPartner-v2\main\board\vocat_audio_board.c:829:    if (xSemaphoreTake(handle->done, pdMS_TO_TICKS(2000)) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\board\vocat_audio_board.c:1400:        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1500)) == 0 && result == ESP_OK) {
+.\NuwaxAIPartner-v2\main\board\vocat_audio_board.c:1650:    if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1500)) == 0) {
+.\NuwaxAIPartner-v2\main\board\vocat_audio_board.c:1834:    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1500));
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_mode_host_check.c:30:QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t item_size) {
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_mode_host_check.c:48:BaseType_t xQueueSend(QueueHandle_t queue, const void *item, TickType_t wait_ticks) {
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_mode_host_check.c:59:BaseType_t xQueueOverwrite(QueueHandle_t queue, const void *item) {
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\meeting_mode_host_check.c:69:BaseType_t xQueueReceive(QueueHandle_t queue, void *item, TickType_t wait_ticks) {
+.\NuwaxAIPartner-v2\main\audio_modes\monitoring\monitoring_mode_host_check.c:29:QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t item_size) {
+.\NuwaxAIPartner-v2\main\audio_modes\monitoring\monitoring_mode_host_check.c:47:BaseType_t xQueueSend(QueueHandle_t queue,
+.\NuwaxAIPartner-v2\main\audio_modes\monitoring\monitoring_mode_host_check.c:62:BaseType_t xQueueReceive(QueueHandle_t queue,
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:60:        s_init_lock = xSemaphoreCreateMutexStatic(&s_init_lock_storage);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:142:    xSemaphoreTake(s_init_lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:144:        xSemaphoreGive(s_init_lock);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:148:        xSemaphoreGive(s_init_lock);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:154:        s_qmi.lock = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:156:            xSemaphoreGive(s_init_lock);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:212:    xSemaphoreGive(s_init_lock);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:220:    xSemaphoreGive(s_init_lock);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:233:    xSemaphoreTake(s_qmi.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:249:    xSemaphoreGive(s_qmi.lock);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:262:    xSemaphoreTake(s_qmi.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:264:    xSemaphoreGive(s_qmi.lock);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:273:    xSemaphoreTake(s_qmi.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:289:    xSemaphoreGive(s_qmi.lock);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:306:    xSemaphoreTake(s_qmi.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:308:    xSemaphoreGive(s_qmi.lock);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:315:    xSemaphoreTake(s_qmi.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:317:    xSemaphoreGive(s_qmi.lock);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:324:    xSemaphoreTake(s_qmi.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\qmi8658a_driver.c:330:    xSemaphoreGive(s_qmi.lock);
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:87:        s_init_lock = xSemaphoreCreateMutexStatic(&s_init_lock_storage);
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:389:    xSemaphoreTake(s_init_lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:391:        xSemaphoreGive(s_init_lock);
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:396:        s_bq.lock = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:398:            xSemaphoreGive(s_init_lock);
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:438:    xSemaphoreGive(s_init_lock);
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:449:    xSemaphoreGive(s_init_lock);
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:458:    xSemaphoreTake(s_bq.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:460:    xSemaphoreGive(s_bq.lock);
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:470:    xSemaphoreTake(s_bq.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:483:    xSemaphoreGive(s_bq.lock);
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:565:    xSemaphoreTake(s_bq.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\bq27220_driver.c:571:    xSemaphoreGive(s_bq.lock);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:48:        s_service.lock = xSemaphoreCreateMutexStatic(&s_service_lock_storage);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:52:            xSemaphoreCreateBinaryStatic(&s_service_stopped_storage);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:123:    xSemaphoreTake(s_service.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:125:    xSemaphoreGive(s_service.lock);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:134:    xSemaphoreTake(s_service.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:137:    xSemaphoreGive(s_service.lock);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:161:    xSemaphoreTake(s_service.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:229:    xSemaphoreGive(s_service.lock);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:257:    xSemaphoreTake(s_service.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:275:    xSemaphoreGive(s_service.lock);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:281:    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(delay_ms));
+.\NuwaxAIPartner-v2\main\board\battery_service.c:353:    xSemaphoreGive(s_service.stopped);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:369:    xSemaphoreTake(s_service.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:371:        xSemaphoreGive(s_service.lock);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:374:    (void)xSemaphoreTake(s_service.stopped, 0);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:396:        xSemaphoreGive(s_service.lock);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:400:    xSemaphoreGive(s_service.lock);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:417:    xSemaphoreTake(s_service.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:419:        xSemaphoreGive(s_service.lock);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:424:    xSemaphoreGive(s_service.lock);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:426:    if (task) xTaskNotifyGive(task);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:427:    if (xSemaphoreTake(s_service.stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\board\battery_service.c:433:    xSemaphoreTake(s_service.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:438:    xSemaphoreGive(s_service.lock);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:447:    xSemaphoreTake(s_service.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:450:    xSemaphoreGive(s_service.lock);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:468:    xSemaphoreTake(s_service.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\battery_service.c:470:    xSemaphoreGive(s_service.lock);
+.\NuwaxAIPartner-v2\main\board\board_gpio_inputs.c:175:    xSemaphoreGive(s_stopped);
+.\NuwaxAIPartner-v2\main\board\board_gpio_inputs.c:210:    s_stopped = xSemaphoreCreateBinary();
+.\NuwaxAIPartner-v2\main\board\board_gpio_inputs.c:238:    if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(250)) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\board\audio_board.c:63:        SemaphoreHandle_t candidate = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\board\audio_board.c:118:    xSemaphoreTake(lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:135:    xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:143:    xSemaphoreTake(lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:165:    xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:179:    xSemaphoreTake(lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:200:    xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:222:    xSemaphoreTake(lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:241:    xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:252:        xSemaphoreTake(lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:254:        xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:262:        xSemaphoreTake(lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:264:        xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:322:    xSemaphoreTake(lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\audio_board.c:324:    xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\board\led_status.c:23:        s_lock = xSemaphoreCreateMutexStatic(&s_lock_storage);
+.\NuwaxAIPartner-v2\main\board\led_status.c:90:    xSemaphoreTake(s_lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\led_status.c:92:        xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\board\led_status.c:97:        xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\board\led_status.c:110:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\board\led_status.c:123:    xSemaphoreTake(s_lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\led_status.c:125:        xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\board\led_status.c:140:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\board\led_status.c:149:    xSemaphoreTake(s_lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\led_status.c:151:        xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\board\led_status.c:156:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\board\led_status.c:165:    xSemaphoreTake(s_lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\led_status.c:167:        xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\board\led_status.c:172:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\board\led_status.c:187:    xSemaphoreTake(s_lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\led_status.c:189:        xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\board\led_status.c:201:    xSemaphoreGive(s_lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:81:        xSemaphoreTake(s_led.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:84:            xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:111:        xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:118:        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
+.\NuwaxAIPartner-v2\main\board\led_driver.c:121:    xSemaphoreTake(s_led.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:126:    xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:129:    xSemaphoreGive(s_led.stopped);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:136:    s_led.lock = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\board\led_driver.c:137:    s_led.stopped = xSemaphoreCreateBinary();
+.\NuwaxAIPartner-v2\main\board\led_driver.c:203:    xSemaphoreTake(s_led.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:205:        xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:213:        xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:218:    xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:219:    if (task) xTaskNotifyGive(task);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:237:    xSemaphoreTake(s_led.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:239:        xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:248:        xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:253:    xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:254:    if (task) xTaskNotifyGive(task);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:262:    xSemaphoreTake(s_led.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:264:        xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:272:        xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:278:    xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:279:    if (task) xTaskNotifyGive(task);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:291:    xSemaphoreTake(s_led.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:294:    xSemaphoreGive(s_led.lock);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:295:    if (task) xTaskNotifyGive(task);
+.\NuwaxAIPartner-v2\main\board\led_driver.c:296:    if (xSemaphoreTake(s_led.stopped, pdMS_TO_TICKS(500)) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\audio_modes\monitoring\monitoring_capture_host_check.c:70:QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t item_size) {
+.\NuwaxAIPartner-v2\main\audio_modes\monitoring\monitoring_capture_host_check.c:83:BaseType_t xQueueSend(QueueHandle_t queue,
+.\NuwaxAIPartner-v2\main\audio_modes\monitoring\monitoring_capture_host_check.c:98:BaseType_t xQueueReceive(QueueHandle_t queue,
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\host_stubs\freertos\queue.h:7:QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t item_size);
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\host_stubs\freertos\queue.h:8:BaseType_t xQueueSend(QueueHandle_t queue, const void *item, TickType_t wait_ticks);
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\host_stubs\freertos\queue.h:9:BaseType_t xQueueOverwrite(QueueHandle_t queue, const void *item);
+.\NuwaxAIPartner-v2\main\audio_modes\meeting\host_stubs\freertos\queue.h:10:BaseType_t xQueueReceive(QueueHandle_t queue, void *item, TickType_t wait_ticks);
+.\NuwaxAIPartner-v2\main\audio_modes\monitoring\monitoring_mode.c:183:    if (xQueueSend(mode->events, event, 0) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\audio_modes\monitoring\monitoring_mode.c:195:    while (xQueueReceive(mode->events, &event, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\audio_modes\monitoring\monitoring_mode.c:370:    while (xQueueReceive(mode->events, &event, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\audio_modes\monitoring\monitoring_mode.c:1123:    mode->events = xQueueCreate(NUWAX_MONITORING_EVENT_QUEUE_DEPTH,
+.\NuwaxAIPartner-v2\main\mic_input.c:64:        s_mic_owner_lock = xSemaphoreCreateMutexStatic(&s_mic_owner_lock_storage);
+.\NuwaxAIPartner-v2\main\mic_input.c:79:    if (xSemaphoreTake(s_mic_owner_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\mic_input.c:88:        xSemaphoreGive(s_mic_owner_lock);
+.\NuwaxAIPartner-v2\main\mic_input.c:95:    xSemaphoreGive(s_mic_owner_lock);
+.\NuwaxAIPartner-v2\main\mic_input.c:104:    if (xSemaphoreTake(s_mic_owner_lock, portMAX_DELAY) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\mic_input.c:114:        xSemaphoreGive(s_mic_owner_lock);
+.\NuwaxAIPartner-v2\main\nuwax_lvgl_port.c:360:        if (xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(50))) {
+.\NuwaxAIPartner-v2\main\nuwax_lvgl_port.c:399:            xSemaphoreGive(s_lvgl_mutex);
+.\NuwaxAIPartner-v2\main\nuwax_lvgl_port.c:421:    s_lvgl_mutex = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\nuwax_lvgl_port.c:575:    return xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+.\NuwaxAIPartner-v2\main\nuwax_lvgl_port.c:580:    xSemaphoreGive(s_lvgl_mutex);
+.\NuwaxAIPartner-v2\main\conversation\conversation_metrics.c:136:    lock->handle = xSemaphoreCreateMutexStatic(&lock->storage);
+.\NuwaxAIPartner-v2\main\conversation\conversation_metrics.c:146:    (void)xSemaphoreTake(lock->handle, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\conversation\conversation_metrics.c:155:    (void)xSemaphoreGive(lock->handle);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:961:    QueueHandle_t queue = xQueueCreateWithCaps(depth, item_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:973:    queue = xQueueCreate(depth, item_size);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:2294:    if (s_wake_word_events && xQueueSend(s_wake_word_events, &event, 0) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:2296:        if (xQueueReceive(s_wake_word_events, &dropped, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:2297:            (void)xQueueSend(s_wake_word_events, &event, 0);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:2975:        xQueueSend(s_speaker_owner_events, &event, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3186:    while (xQueueReceive(s_speaker_owner_events, &event, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3496:                if (xQueueSendToFront(s_speaker_owner_events, &deferred, 0) !=
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3732:    if (xQueueSend(s_p3_softref_ab_requests, &request, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3742:    if (xQueueReceive(s_p3_softref_ab_requests, &dropped, 0) == pdTRUE &&
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3743:        xQueueSend(s_p3_softref_ab_requests, &request, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3787:    if (xQueueSend(s_p5_during_playback_candidate_requests, &request, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3799:    if (xQueueReceive(s_p5_during_playback_candidate_requests, &dropped, 0) == pdTRUE &&
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3800:        xQueueSend(s_p5_during_playback_candidate_requests, &request, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3862:    while (xQueueReceive(s_session_commands, &stale, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3913:        (void)xQueueReset(s_session_commands);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3917:        (void)xQueueReset(s_p3_softref_ab_requests);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3922:        (void)xQueueReset(s_p5_during_playback_candidate_requests);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:3929:        (void)xQueueReset(s_speaker_owner_events);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4064:        if (xQueueSend(s_session_commands, &envelope, enqueue_wait) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4375:        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4386:                xQueueOverwrite(s_wifi_scan_results, &s_wifi_scan_work_report);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4409:            xQueueOverwrite(s_wifi_scan_results, &s_wifi_scan_work_report);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4417:        xTaskNotifyGive(s_wifi_scan_task);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4522:    xQueueOverwrite(s_wifi_status_reports, &report);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4526:    if (s_wifi_connect_mutex && xSemaphoreTake(s_wifi_connect_mutex, wait_ticks) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4537:        xSemaphoreGive(s_wifi_connect_mutex);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4580:    while (xQueuePeek(s_wifi_status_reports, &report, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4598:        (void)xQueueReceive(s_wifi_status_reports, &report, 0);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4607:    while (xQueuePeek(s_wifi_scan_results, &report, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4623:        (void)xQueueReceive(s_wifi_scan_results, &report, 0);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4793:    if (xSemaphoreTake(s_ws_pointer_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4800:    xSemaphoreGive(s_ws_pointer_mutex);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4810:    if (xSemaphoreTake(s_ws_pointer_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4819:    xSemaphoreGive(s_ws_pointer_mutex);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4830:                xSemaphoreTake(s_ws_pointer_mutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4838:                xSemaphoreGive(s_ws_pointer_mutex);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4853:        xSemaphoreTake(s_ws_pointer_mutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4860:        xSemaphoreGive(s_ws_pointer_mutex);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:4963:        xQueueReset(s_session_commands);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:5188:    if (s_wifi_connect_requests && xQueueSend(s_wifi_connect_requests, &request, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:5201:        xTaskNotifyWait(0, UINT32_MAX, &operations, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:5277:    if (xTaskNotify(s_flash_ops_task,
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:5323:        if (xQueueReceive(s_wifi_connect_requests, &request, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:5423:        if (xQueueReceive(s_shell_actions, &action, pdMS_TO_TICKS(100)) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:5650:            if (xQueueReceive(s_wake_word_events, &wake_event, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:5686:        if (xQueueReceive(s_shell_actions, &action, pdMS_TO_TICKS(100)) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:5730:    while (xQueueReceive(s_shell_actions, &action, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:7023:            xQueueReceive(ctx->free_slots, &slot, 0) == pdTRUE &&
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:7028:                xQueueReceive(ctx->free_slots,
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:7040:            if (xQueueReceive(ctx->ready_slots, &stale_slot, 0) == pdTRUE &&
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:7056:            xQueueReceive(ctx->fir_ref_delay_requests, &fir_delay_request, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:7070:        if (xQueueSend(ctx->ready_slots, &slot, 0) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:7073:            (void)xQueueSend(ctx->free_slots, &slot, 0);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:7156:        xQueueCreate(1U, sizeof(nuwax_aec_fir_delay_request_t));
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:7233:        (void)xQueueSend(ctx->free_slots, &slot, 0);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:7299:    if (xQueueReceive(ctx->ready_slots, &slot, pdMS_TO_TICKS(timeout_ms)) != pdTRUE ||
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:7313:    (void)xQueueSend(ctx->free_slots, &slot, 0);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:7351:    while (ctx->ready_slots && xQueueReceive(ctx->ready_slots, &pending_slot, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:7601:            if (xQueueOverwrite(ctx->fir_ref_delay_requests, &request) == pdPASS) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:13960:    if (!s_wifi_connect_requests || xQueueSend(s_wifi_connect_requests, &request, 0) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:13982:            xQueueReceive(s_p3_softref_ab_requests, &request, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:14020:            xQueueReceive(s_p5_during_playback_candidate_requests, &request, portMAX_DELAY) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:14526:           xQueueReceive(s_session_commands, &s_session_command_work, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:14564:    while (xQueueReceive(s_shell_actions, &action, 0) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:15551:    s_ws_pointer_mutex = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:15630:    s_touch_trigger = xSemaphoreCreateBinary();
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:15636:    s_touch_events = xQueueCreate(4, sizeof(nuwax_touch_point_t));
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:15655:    s_wake_word_events = xQueueCreate(2, sizeof(wake_word_event_t));
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:15662:    s_wifi_connect_mutex = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:16184:        xSemaphoreTake(s_ws_pointer_mutex, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:16186:        xSemaphoreGive(s_ws_pointer_mutex);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:16219:            xSemaphoreTake(s_ws_pointer_mutex, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:16221:            xSemaphoreGive(s_ws_pointer_mutex);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:16350:        xSemaphoreTake(s_ws_pointer_mutex, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\nuwax_ai_partner_main.c:16352:        xSemaphoreGive(s_ws_pointer_mutex);
+.\NuwaxAIPartner-v2\main\nuwax_provision_new\nuwax_provision_main.c:811:        s_vox_config_jobs = xQueueCreateWithCaps(
+.\NuwaxAIPartner-v2\main\nuwax_provision_new\nuwax_provision_main.c:818:        s_vox_config_gate = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\nuwax_provision_new\nuwax_provision_main.c:821:        /* xQueueCreateWithCaps() owns both the queue control block and its
+.\NuwaxAIPartner-v2\main\nuwax_provision_new\nuwax_provision_main.c:834:        xQueueReceive(s_vox_config_jobs, &job, wait_ticks) != pdTRUE || !job) {
+.\NuwaxAIPartner-v2\main\nuwax_provision_new\nuwax_provision_main.c:839:    xSemaphoreGive(job->done);
+.\NuwaxAIPartner-v2\main\nuwax_provision_new\nuwax_provision_main.c:847:    if (xSemaphoreTake(s_vox_config_gate, pdMS_TO_TICKS(1000)) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_provision_new\nuwax_provision_main.c:849:        xSemaphoreGive(s_vox_config_gate);
+.\NuwaxAIPartner-v2\main\nuwax_provision_new\nuwax_provision_main.c:876:    job->done = xSemaphoreCreateBinary();
+.\NuwaxAIPartner-v2\main\nuwax_provision_new\nuwax_provision_main.c:888:    if (xSemaphoreTake(s_vox_config_gate, pdMS_TO_TICKS(1000)) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_provision_new\nuwax_provision_main.c:896:                                  ? xQueueSend(s_vox_config_jobs, &job, 0)
+.\NuwaxAIPartner-v2\main\nuwax_provision_new\nuwax_provision_main.c:898:    xSemaphoreGive(s_vox_config_gate);
+.\NuwaxAIPartner-v2\main\nuwax_provision_new\nuwax_provision_main.c:905:    xSemaphoreTake(job->done, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\nuwax_ota_new\nuwax_ota_device.c:456:        (void)xTaskNotifyWait(0U, OTA_NOTIFY_RESULT_ACK, &notified,
+.\NuwaxAIPartner-v2\main\nuwax_ota_new\nuwax_ota_device.c:527:        (void)xTaskNotify(controller, OTA_NOTIFY_RESULT_ACK, eSetBits);
+.\NuwaxAIPartner-v2\main\nuwax_ota_new\nuwax_ota_device.c:1138:        if (xQueueReceive(s_commands, &item, pdMS_TO_TICKS(100)) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ota_new\nuwax_ota_device.c:1147:        (void)xTaskNotifyWait(0U, UINT32_MAX, &notifications, 0);
+.\NuwaxAIPartner-v2\main\nuwax_ota_new\nuwax_ota_device.c:1195:    s_commands = xQueueCreate(1, sizeof(ota_command_item_t *));
+.\NuwaxAIPartner-v2\main\nuwax_ota_new\nuwax_ota_device.c:1497:    if (xQueueSend(s_commands, &item, 0) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ota_new\nuwax_ota_device.c:1578:    if (xTaskNotify(controller, OTA_NOTIFY_CLOUD_READY, eSetBits) == pdPASS) {
+.\NuwaxAIPartner-v2\main\conversation\speaker_playback.c:199:        xSemaphoreTake(s_speaker_ctx.mutex, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\conversation\speaker_playback.c:205:        xSemaphoreGive(s_speaker_ctx.mutex);
+.\NuwaxAIPartner-v2\main\conversation\speaker_playback.c:952:                (void)xQueueReset(s_speaker_ctx.packets);
+.\NuwaxAIPartner-v2\main\conversation\speaker_playback.c:1200:                (void)xQueueReset(s_speaker_ctx.packets);
+.\NuwaxAIPartner-v2\main\conversation\speaker_playback.c:1451:            queued = xQueueSend(s_speaker_ctx.packets, &packet, 0) ==
+.\NuwaxAIPartner-v2\main\conversation\speaker_playback.c:1546:    s_speaker_ctx.packets = xQueueCreateWithCaps(NUWAX_SPEAKER_QUEUE_DEPTH,
+.\NuwaxAIPartner-v2\main\conversation\speaker_playback.c:1558:    s_speaker_ctx.mutex = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\conversation\speaker_playback.c:2006:        (void)xQueueReset(s_speaker_ctx.packets);
+.\NuwaxAIPartner-v2\main\conversation\speaker_playback.c:2767:                (void)xQueueReset(s_speaker_ctx.packets);
+.\NuwaxAIPartner-v2\main\conversation\speaker_playback.c:3076:            (void)xQueueReset(s_speaker_ctx.packets);
+.\NuwaxAIPartner-v2\main\conversation\speaker_playback.c:3369:                (void)xQueueReset(s_speaker_ctx.packets);
+.\NuwaxAIPartner-v2\main\conversation\speaker_playback.c:3439:        if (xQueueReceive(s_speaker_ctx.packets,
+.\NuwaxAIPartner-v2\main\conversation\touch_gesture.c:126:        if (xQueueSend(s_shell_actions, result, 0) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ui_v28\face\face_cache.c:471:        s_preload_queue = xQueueCreateWithCaps(
+.\NuwaxAIPartner-v2\main\nuwax_ui_v28\face\face_cache.c:595:        if (xQueueReceive(s_preload_queue, &emotion, portMAX_DELAY) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\nuwax_ui_v28\face\face_cache.c:632:        s_preload_queue = xQueueCreateWithCaps(
+.\NuwaxAIPartner-v2\main\nuwax_ui_v28\face\face_cache.c:642:    (void)xQueueSend(s_preload_queue, &queued, 0);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:113:        xSemaphoreTake(s_ref.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:140:        xSemaphoreGive(s_ref.lock);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:173:        s_ref.lock = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:179:    xSemaphoreTake(s_ref.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:185:        xSemaphoreGive(s_ref.lock);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:197:        xSemaphoreGive(s_ref.lock);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:226:    xSemaphoreGive(s_ref.lock);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:246:        xSemaphoreTake(s_ref.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:262:        xSemaphoreGive(s_ref.lock);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:335:        xSemaphoreTake(s_ref.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:344:                xSemaphoreGive(s_ref.lock);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:353:        xSemaphoreGive(s_ref.lock);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:386:        xSemaphoreTake(s_ref.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:407:        xSemaphoreGive(s_ref.lock);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:433:        xSemaphoreTake(s_ref.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:445:        xSemaphoreGive(s_ref.lock);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:478:        xSemaphoreTake(s_ref.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:583:        xSemaphoreGive(s_ref.lock);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:605:        xSemaphoreTake(s_ref.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:621:        xSemaphoreGive(s_ref.lock);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:667:    xSemaphoreTake(s_ref.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\p3_software_ref.c:717:    xSemaphoreGive(s_ref.lock);
+.\NuwaxAIPartner-v2\main\speaker_output.c:76:    return xSemaphoreTake(lock, ticks) == pdTRUE;
+.\NuwaxAIPartner-v2\main\speaker_output.c:209:    SemaphoreHandle_t lock = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\speaker_output.c:409:        xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\speaker_output.c:454:                xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\speaker_output.c:479:                xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\speaker_output.c:584:        xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\speaker_output.c:611:                xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\speaker_output.c:625:            xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\speaker_output.c:691:            xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\speaker_output.c:707:            xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\speaker_output.c:724:        xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\speaker_output.c:758:            xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\speaker_output.c:804:                xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\speaker_output.c:810:        xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\state_cmd_fast.c:25:    s_q = xQueueCreate(CMD_QUEUE_LEN, sizeof(cmd_t));
+.\NuwaxAIPartner-v2\main\state_cmd_fast.c:31:int state_cmd_push_volume(int vol, cmd_prio_t p) { cmd_t c={p, CMD_VOLUME, {.volume=vol}}; return xQueueSend(s_q,&c,0)==pdTRUE?0:-1; }
+.\NuwaxAIPartner-v2\main\state_cmd_fast.c:32:int state_cmd_push_emotion(int emo, cmd_prio_t p) { cmd_t c={p, CMD_EMOTION, {.emotion=emo}}; return xQueueSend(s_q,&c,0)==pdTRUE?0:-1; }
+.\NuwaxAIPartner-v2\main\state_cmd_fast.c:33:int state_cmd_push_led(int led, cmd_prio_t p) { cmd_t c={p, CMD_LED, {.led=led}}; return xQueueSend(s_q,&c,0)==pdTRUE?0:-1; }
+.\NuwaxAIPartner-v2\main\state_cmd_fast.c:37:    cmd_t c; if (xQueueReceive(s_q,&c,0)!=pdTRUE) return 0;
+.\NuwaxAIPartner-v2\main\touch_input.c:92:        s_touch_io_lock = xSemaphoreCreateMutexStatic(&s_touch_io_lock_storage);
+.\NuwaxAIPartner-v2\main\touch_input.c:115:    if (xQueueSend(s_touch_queue, point, wait_ticks) == pdTRUE) {
+.\NuwaxAIPartner-v2\main\touch_input.c:119:    (void)xQueueReceive(s_touch_queue, &dropped, 0);
+.\NuwaxAIPartner-v2\main\touch_input.c:120:    return xQueueSend(s_touch_queue, point, 0) == pdTRUE;
+.\NuwaxAIPartner-v2\main\touch_input.c:363:    xSemaphoreTake(s_touch_io_lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\touch_input.c:370:    xSemaphoreGive(s_touch_io_lock);
+.\NuwaxAIPartner-v2\main\touch_input.c:495:        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
+.\NuwaxAIPartner-v2\main\touch_input.c:556:    xSemaphoreTake(s_touch_io_lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\touch_input.c:558:        xSemaphoreGive(s_touch_io_lock);
+.\NuwaxAIPartner-v2\main\touch_input.c:563:        xSemaphoreGive(s_touch_io_lock);
+.\NuwaxAIPartner-v2\main\touch_input.c:567:        s_touch_queue = xQueueCreate(8, sizeof(nuwax_touch_point_t));
+.\NuwaxAIPartner-v2\main\touch_input.c:570:            xSemaphoreGive(s_touch_io_lock);
+.\NuwaxAIPartner-v2\main\touch_input.c:611:    xSemaphoreGive(s_touch_io_lock);
+.\NuwaxAIPartner-v2\main\touch_input.c:630:        xSemaphoreGive(s_touch_io_lock);
+.\NuwaxAIPartner-v2\main\touch_input.c:640:    xSemaphoreTake(s_touch_io_lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\touch_input.c:646:    xSemaphoreGive(s_touch_io_lock);
+.\NuwaxAIPartner-v2\main\touch_input.c:658:    xSemaphoreTake(s_touch_io_lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\touch_input.c:664:        xSemaphoreGive(s_touch_io_lock);
+.\NuwaxAIPartner-v2\main\touch_input.c:680:    xSemaphoreGive(s_touch_io_lock);
+.\NuwaxAIPartner-v2\main\touch_input.c:706:    return xQueueReceive(s_touch_queue, point, pdMS_TO_TICKS(timeout_ms)) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+.\NuwaxAIPartner-v2\main\touch_input.c:713:    xSemaphoreTake(s_touch_io_lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\touch_input.c:715:        xSemaphoreGive(s_touch_io_lock);
+.\NuwaxAIPartner-v2\main\touch_input.c:728:        xSemaphoreGive(s_touch_io_lock);
+.\NuwaxAIPartner-v2\main\touch_input.c:750:    xSemaphoreGive(s_touch_io_lock);
+.\NuwaxAIPartner-v2\main\wake_word_detector.c:171:        xSemaphoreTake(s_detector.lock, portMAX_DELAY);
+.\NuwaxAIPartner-v2\main\wake_word_detector.c:177:        xSemaphoreGive(s_detector.lock);
+.\NuwaxAIPartner-v2\main\wake_word_detector.c:593:    s_detector.lock = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\wifi_manager.c:251:            xEventGroupSetBits(s_wifi_event_group, WIFI_SCAN_DONE_BIT);
+.\NuwaxAIPartner-v2\main\wifi_manager.c:261:            xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+.\NuwaxAIPartner-v2\main\wifi_manager.c:275:            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+.\NuwaxAIPartner-v2\main\wifi_manager.c:278:                xEventGroupSetBits(s_wifi_event_group, WIFI_FALLBACK_BIT);
+.\NuwaxAIPartner-v2\main\wifi_manager.c:293:            xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+.\NuwaxAIPartner-v2\main\wifi_manager.c:304:    s_wifi_event_group = xEventGroupCreate();
+.\NuwaxAIPartner-v2\main\wifi_manager.c:379:        EventBits_t bits = xEventGroupWaitBits(
+.\NuwaxAIPartner-v2\main\wifi_manager.c:431:    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+.\NuwaxAIPartner-v2\main\wifi_manager.c:459:    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE,
+.\NuwaxAIPartner-v2\main\wifi_manager.c:561:        xEventGroupClearBits(s_wifi_event_group, WIFI_FALLBACK_BIT | WIFI_FAIL_BIT);
+.\NuwaxAIPartner-v2\main\wifi_manager.c:612:    EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
+.\NuwaxAIPartner-v2\main\wifi_manager.c:712:    xEventGroupClearBits(s_wifi_event_group, WIFI_SCAN_DONE_BIT);
+.\NuwaxAIPartner-v2\main\wifi_manager.c:716:    const EventBits_t scan_bits = xEventGroupWaitBits(
+.\NuwaxAIPartner-v2\main\ws_transport.c:84:    client->io_lock = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\ws_transport.c:104:    return xSemaphoreTake((SemaphoreHandle_t)client->io_lock, timeout_ticks) ==
+.\NuwaxAIPartner-v2\main\ws_transport.c:422:    xSemaphoreGive(io_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:432:        xSemaphoreTake(io_lock,
+.\NuwaxAIPartner-v2\main\ws_transport.c:444:        xSemaphoreGive(io_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:524:    if (xSemaphoreTake(lock, ticks) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\ws_transport.c:528:        xSemaphoreGive(lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:536:        xSemaphoreGive((SemaphoreHandle_t)client->io_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:761:    xSemaphoreGive(io_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:871:    s_lifecycle_lock = xSemaphoreCreateMutex();
+.\NuwaxAIPartner-v2\main\ws_transport.c:959:    if (xSemaphoreTake(s_lifecycle_lock,
+.\NuwaxAIPartner-v2\main\ws_transport.c:967:        xSemaphoreGive(s_lifecycle_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:981:            xSemaphoreGive(s_lifecycle_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:999:    xSemaphoreGive(s_lifecycle_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:1031:    if (xSemaphoreTake(s_lifecycle_lock, wait_ticks) != pdTRUE) {
+.\NuwaxAIPartner-v2\main\ws_transport.c:1036:        xSemaphoreGive(s_lifecycle_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:1040:        xSemaphoreGive(s_lifecycle_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:1052:    xSemaphoreGive(s_lifecycle_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:1108:    if (xSemaphoreTake(
+.\NuwaxAIPartner-v2\main\ws_transport.c:1112:        xSemaphoreGive(s_lifecycle_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:1438:    if (xSemaphoreTake(
+.\NuwaxAIPartner-v2\main\ws_transport.c:1450:    xSemaphoreGive(s_lifecycle_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:1481:                xSemaphoreGive(io_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:1717:    if (xSemaphoreTake(
+.\NuwaxAIPartner-v2\main\ws_transport.c:1727:        xSemaphoreGive(s_lifecycle_lock);
+.\NuwaxAIPartner-v2\main\ws_transport.c:1737:    xSemaphoreGive(s_lifecycle_lock);

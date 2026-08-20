@@ -1,0 +1,91 @@
+﻿NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:846:            vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:601:            vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:1146:            vTaskDelay(pdMS_TO_TICKS(20));
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:474:    vTaskDelay(pdMS_TO_TICKS(20));
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:829:    if (xSemaphoreTake(handle->done, pdMS_TO_TICKS(2000)) != pdTRUE) {
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1085:    vTaskDelay(pdMS_TO_TICKS(120));
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1122:    vTaskDelay(pdMS_TO_TICKS(120));
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1135:    vTaskDelay(pdMS_TO_TICKS(80));
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1152:    vTaskDelay(pdMS_TO_TICKS(80));
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1290:    vTaskDelay(pdMS_TO_TICKS(20));
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1311:        vTaskDelay(pdMS_TO_TICKS(80));
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1322:        vTaskDelay(pdMS_TO_TICKS(80));
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1400:        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1500)) == 0 && result == ESP_OK) {
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1570:        vTaskDelay(pdMS_TO_TICKS(80));
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1650:    if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1500)) == 0) {
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1834:    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1500));
+NuwaxAIPartner-v2/main\board\qmi8658a_driver.c:205:    vTaskDelay(pdMS_TO_TICKS(50));
+NuwaxAIPartner-v2/main\board\uart_driver.c:86:    return uart_wait_tx_done(cfg->port, pdMS_TO_TICKS(250));
+NuwaxAIPartner-v2/main\display.c:662:    vTaskDelay(pdMS_TO_TICKS(100));
+NuwaxAIPartner-v2/main\board\hardware_selftest.c:123:        vTaskDelay(pdMS_TO_TICKS(20));
+NuwaxAIPartner-v2/main\board\hardware_selftest.c:142:        vTaskDelay(pdMS_TO_TICKS(100));
+NuwaxAIPartner-v2/main\board\hardware_selftest.c:177:    vTaskDelay(pdMS_TO_TICKS(350));
+NuwaxAIPartner-v2/main\board\hardware_selftest.c:179:    vTaskDelay(pdMS_TO_TICKS(800));
+NuwaxAIPartner-v2/main\board\hardware_selftest.c:181:    vTaskDelay(pdMS_TO_TICKS(1200));
+NuwaxAIPartner-v2/main\board\hardware_selftest.c:190:    vTaskDelay(pdMS_TO_TICKS(300));
+NuwaxAIPartner-v2/main\board\hardware_selftest.c:192:    vTaskDelay(pdMS_TO_TICKS(300));
+NuwaxAIPartner-v2/main\board\led_driver.c:296:    if (xSemaphoreTake(s_led.stopped, pdMS_TO_TICKS(500)) != pdTRUE) {
+NuwaxAIPartner-v2/main\board\i2c_bus_manager.c:85:        if ((xTaskGetTickCount() - wait_started) >= pdMS_TO_TICKS(2000)) {
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:171:        vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:238:    if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(250)) != pdTRUE) {
+NuwaxAIPartner-v2/main\mic_input.c:79:    if (xSemaphoreTake(s_mic_owner_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+NuwaxAIPartner-v2/main\nuwax_lvgl_port.c:360:        if (xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(50))) {
+NuwaxAIPartner-v2/main\board\bq27220_driver.c:123:    vTaskDelay(pdMS_TO_TICKS(15));
+NuwaxAIPartner-v2/main\board\bq27220_driver.c:158:        vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\board\bq27220_driver.c:179:        vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\board\bq27220_driver.c:210:        vTaskDelay(pdMS_TO_TICKS(20));
+NuwaxAIPartner-v2/main\board\bq27220_driver.c:229:    vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4276:            vTaskDelay(pdMS_TO_TICKS(80));
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4793:    if (xSemaphoreTake(s_ws_pointer_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4810:    if (xSemaphoreTake(s_ws_pointer_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4830:                xSemaphoreTake(s_ws_pointer_mutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4853:        xSemaphoreTake(s_ws_pointer_mutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4980:        vTaskDelay(pdMS_TO_TICKS(20));
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:5223:                vTaskDelay(pdMS_TO_TICKS(500));
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:5423:        if (xQueueReceive(s_shell_actions, &action, pdMS_TO_TICKS(100)) != pdTRUE) {
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:5686:        if (xQueueReceive(s_shell_actions, &action, pdMS_TO_TICKS(100)) != pdTRUE) {
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7328:        vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13323:                vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13605:        vTaskDelay(pdMS_TO_TICKS(100));
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:15796:        vTaskDelay(pdMS_TO_TICKS(1000));
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:15904:        vTaskDelay(pdMS_TO_TICKS(1000));
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:16267:            vTaskDelay(pdMS_TO_TICKS(500));
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:16314:                        vTaskDelay(pdMS_TO_TICKS(100));
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_transport.c:449:        vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_transport.c:607:                vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_transport.c:623:        vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\touch_input.c:527:                    if (!touch_queue_send_latest(&point, pdMS_TO_TICKS(20))) {
+NuwaxAIPartner-v2/main\touch_input.c:538:            if (!touch_queue_send_latest(&cancelled, pdMS_TO_TICKS(20))) {
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1105:    vTaskDelay(pdMS_TO_TICKS(250));
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1138:        if (xQueueReceive(s_commands, &item, pdMS_TO_TICKS(100)) == pdTRUE) {
+NuwaxAIPartner-v2/main\wake_word_detector.c:466:            vTaskDelay(pdMS_TO_TICKS(20));
+NuwaxAIPartner-v2/main\wake_word_detector.c:842:        vTaskDelay(pdMS_TO_TICKS(20));
+NuwaxAIPartner-v2/main\ws_transport.c:602:            vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\ws_transport.c:646:            vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\ws_transport.c:1142:        vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:255:        if (xQueueReceive(ctx->ready_packets, &packet, pdMS_TO_TICKS(100)) != pdTRUE) {
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:1135:        vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:1175:                vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:1187:        vTaskDelay(pdMS_TO_TICKS(20));
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:1214:            vTaskDelay(pdMS_TO_TICKS(10));
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:847:    if (xSemaphoreTake(s_vox_config_gate, pdMS_TO_TICKS(1000)) == pdTRUE) {
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:888:    if (xSemaphoreTake(s_vox_config_gate, pdMS_TO_TICKS(1000)) != pdTRUE) {
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:1356:        process_vox_config_job(pdMS_TO_TICKS(100));
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:1406:            process_vox_config_job(pdMS_TO_TICKS(100));
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:1576:        vTaskDelay(pdMS_TO_TICKS(100));
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:1605:        vTaskDelay(pdMS_TO_TICKS(50));
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:1618:        vTaskDelay(pdMS_TO_TICKS(100));
+NuwaxAIPartner-v2/main\wifi_manager.c:384:            pdMS_TO_TICKS(1000));
+NuwaxAIPartner-v2/main\wifi_manager.c:451:        vTaskDelay(pdMS_TO_TICKS(120));
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_usb_control.c:22:                                      pdMS_TO_TICKS(100));
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_usb_control.c:23:    (void)usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_usb_control.c:50:                                                  pdMS_TO_TICKS(20));
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:564:        vTaskDelay(pdMS_TO_TICKS(1));
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:964:            vTaskDelay(pdMS_TO_TICKS(1));
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:1772:        vTaskDelay(pdMS_TO_TICKS(1));
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:2050:        vTaskDelay(pdMS_TO_TICKS(1));
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:2115:            vTaskDelay(pdMS_TO_TICKS(1));
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:2746:            vTaskDelay(pdMS_TO_TICKS(1));
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:2856:        vTaskDelay(pdMS_TO_TICKS(1));
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:3393:        vTaskDelay(pdMS_TO_TICKS(1));
+NuwaxAIPartner-v2/main\conversation\touch_gesture.c:242:            vTaskDelay(pdMS_TO_TICKS(20));

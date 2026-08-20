@@ -1,0 +1,3 @@
+# COM5-only overlay: preserve the vendor V2 audio diagnostics, then enable
+# CST816S and local UI gestures after every P2/AEC measurement has completed.
+CONFIG_NUWAX_P2_POST_DIAG_TOUCH_UI_ENABLE=y

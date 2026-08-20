@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Nuwax BLE Provisioning Simulator</title>
+  <link rel="stylesheet" href="style.css?v=5">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">ESP32-S3 / Android Provider</p>
+      <h1>BLE Wi-Fi 配网模拟器</h1>
+    </div>
+    <div class="header-status">
+      <span id="execution-mode" class="badge badge-warning">MOCK ONLY</span>
+      <span id="contract-status" class="badge">正在加载契约</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="toolbar" aria-label="模拟控制">
+      <label>
+        运行模式
+        <select id="mode">
+          <option value="mock">Mock协议模拟</option>
+          <option value="real">真实ESP32-S3</option>
+        </select>
+      </label>
+      <label>
+        测试场景
+        <select id="scenario">
+          <option value="success">配网成功</option>
+          <option value="security_auth_failed">Security 2 凭据错误</option>
+          <option value="wifi_auth_failed">Wi-Fi 密码错误</option>
+          <option value="network_not_found">SSID 不存在</option>
+          <option value="timeout">连接超时</option>
+          <option value="internal_error">内部错误</option>
+          <option value="disconnect_reconnect">BLE 断线重连</option>
+          <option value="window_expired">300 秒窗口结束</option>
+        </select>
+      </label>
+      <label>
+        演示速度
+        <select id="speed">
+          <option value="1">正常</option>
+          <option value="2" selected>2x</option>
+          <option value="4">4x</option>
+        </select>
+      </label>
+      <button id="run" class="primary" type="button">开始模拟</button>
+      <button id="reset" type="button">重置</button>
+    </section>
+
+    <section id="real-controls" class="real-controls" hidden>
+      <div class="qr-acquisition">
+        <div class="real-control-heading">
+          <div>
+            <p class="eyebrow">Device QR</p>
+            <h2>扫码锁定配网设备</h2>
+          </div>
+          <div class="qr-actions">
+            <button id="scan-qr" class="primary" type="button">扫描设备二维码</button>
+            <label class="button-label">
+              选择二维码图片
+              <input id="qr-file" type="file" accept="image/*">
+            </label>
+            <button id="clear-qr" type="button" hidden>改用手动输入</button>
+          </div>
+        </div>
+        <p id="qr-status" class="qr-status" aria-live="polite">扫描设备屏幕上的 Nuwax v1 二维码。</p>
+        <div id="qr-target" class="qr-target" hidden>
+          <div><span>目标设备</span><strong id="qr-device-name">--</strong></div>
+          <div><span>设备身份</span><strong id="qr-device-id">--</strong></div>
+          <div><span>协议</span><strong>BLE / Security 2</strong></div>
+          <span id="qr-match-status" class="badge badge-warning">等待BLE广播</span>
+        </div>
+        <details class="diagnostic-qr">
+          <summary>诊断：粘贴二维码内容</summary>
+          <div class="diagnostic-row">
+            <textarea id="qr-text" rows="3" placeholder="仅用于无摄像头测试；内容不会写入日志"></textarea>
+            <button id="parse-qr-text" type="button">解析</button>
+          </div>
+        </details>
+      </div>
+
+      <div class="real-device-field">
+        <label>
+          BLE目标设备
+          <select id="real-device"><option value="">请先扫描二维码或BLE设备</option></select>
+        </label>
+        <button id="scan-devices" type="button">手动扫描BLE设备</button>
+        <button id="remote-reprovision" type="button" disabled>让设备进入配网模式</button>
+      </div>
+      <p id="remote-reprovision-status" class="qr-status" aria-live="polite">联调电脑直连设备 USB 时可用；本地测试网关是备用入口</p>
+      <div class="bridge-state">
+        <span id="bridge-status" class="badge">Bridge检测中</span>
+        <span id="test-gateway-status">正在检测测试网关</span>
+      </div>
+    </section>
+
+    <section id="load-error" class="notice error" hidden>
+      <strong>协议契约加载失败</strong>
+      <span>请确认本地 Bridge 正在运行，或手动选择契约 JSON。</span>
+      <label class="file-button">
+        选择契约
+        <input id="contract-file" type="file" accept="application/json,.json">
+      </label>
+    </section>
+
+    <section class="status-strip" aria-live="polite">
+      <div>
+        <span>当前阶段</span>
+        <strong id="current-stage">待机</strong>
+      </div>
+      <div>
+        <span>模拟时间</span>
+        <strong id="elapsed">0.0 s</strong>
+      </div>
+      <div>
+        <span>BLE 窗口</span>
+        <strong id="window-left">--</strong>
+      </div>
+      <div>
+        <span>最终结果</span>
+        <strong id="final-result">--</strong>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <div class="main-column">
+        <section class="panel flow-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Provider flow</p>
+              <h2>协议执行链</h2>
+            </div>
+            <span id="connection-badge" class="badge">未连接</span>
+          </div>
+          <ol id="flow" class="flow" aria-label="配网协议执行进度"></ol>
+        </section>
+
+        <section class="panel timeline-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Event trace</p>
+              <h2>事件记录</h2>
+            </div>
+            <button id="export-log" type="button">导出记录</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>时间</th><th>来源</th><th>事件</th><th>结果</th></tr>
+              </thead>
+              <tbody id="event-log"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <aside class="side-column">
+        <section class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Test input</p>
+              <h2>联调参数</h2>
+            </div>
+          </div>
+          <details id="manual-identity" class="manual-identity" open>
+            <summary>设备身份与 Security 2 凭据</summary>
+            <div class="form-grid identity-grid">
+              <label>Username<input id="username" type="text" placeholder="设备UID" autocomplete="off"></label>
+              <label>PoP<input id="pop" type="password" autocomplete="off"></label>
+            </div>
+          </details>
+          <div class="wifi-fields">
+            <div class="wifi-heading">
+              <strong>动态云端配置</strong>
+              <span>通过 Security 2 下发，不写入模拟器日志</span>
+            </div>
+            <div class="form-grid">
+              <label>Gateway URL<input id="gateway-url" type="url" value="wss://testagent.xspaceagi.com/api/device/ws" maxlength="191" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+              <label>
+                Device Secret
+                <span class="password-input">
+                  <input id="device-secret" type="password" maxlength="95" autocomplete="new-password" autocapitalize="none" spellcheck="false">
+                  <button id="toggle-device-secret" class="password-toggle" type="button" aria-label="显示设备密钥" aria-pressed="false">显示</button>
+                </span>
+              </label>
+            </div>
+          </div>
+          <div id="wifi-fields" class="wifi-fields">
+            <div class="wifi-heading">
+              <strong>目标 Wi-Fi</strong>
+              <span id="wifi-step-state">输入 2.4 GHz Wi-Fi 信息</span>
+            </div>
+            <div class="form-grid wifi-grid">
+              <label>SSID<input id="ssid" type="text" placeholder="请选择或输入 2.4 GHz Wi-Fi" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+              <label>
+                Wi-Fi 密码
+                <span class="password-input">
+                  <input id="wifi-password" type="password" placeholder="请输入 Wi-Fi 密码" maxlength="64" autocomplete="new-password" autocapitalize="none" spellcheck="false">
+                  <button id="toggle-wifi-password" class="password-toggle" type="button" aria-label="显示 Wi-Fi 密码" aria-pressed="false">显示</button>
+                </span>
+              </label>
+            </div>
+            <div class="wifi-scan-block">
+              <div class="wifi-scan-toolbar">
+                <div class="wifi-scan-copy">
+                  <strong>设备扫描到的 Wi-Fi（自动刷新）</strong>
+                  <span id="wifi-scan-status" aria-live="polite">锁定 BLE 设备后可扫描</span>
+                </div>
+                <button id="scan-wifi" type="button" disabled>扫描设备 Wi-Fi</button>
+              </div>
+              <div id="wifi-network-list" class="wifi-network-list" role="list" aria-label="设备扫描到的 Wi-Fi 列表">
+                <p class="wifi-network-empty">尚未扫描</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Frozen contract</p>
+              <h2>固件契约</h2>
+            </div>
+          </div>
+          <dl id="contract-summary" class="definition-list"></dl>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Assertions</p>
+              <h2>模拟断言</h2>
+            </div>
+          </div>
+          <ul id="assertions" class="assertions"></ul>
+        </section>
+      </aside>
+    </section>
+  </main>
+
+  <template id="flow-item-template">
+    <li class="flow-item" data-state="pending">
+      <span class="flow-marker" aria-hidden="true"></span>
+      <div><strong></strong><span></span></div>
+    </li>
+  </template>
+
+  <dialog id="qr-scanner" class="qr-scanner" aria-labelledby="qr-scanner-title">
+    <div class="scanner-heading">
+      <div>
+        <p class="eyebrow">Camera</p>
+        <h2 id="qr-scanner-title">扫描设备二维码</h2>
+      </div>
+      <button id="close-qr-scanner" type="button" aria-label="关闭扫码">关闭</button>
+    </div>
+    <div class="camera-frame">
+      <video id="qr-video" autoplay muted playsinline></video>
+      <div class="camera-guide" aria-hidden="true"></div>
+    </div>
+    <p id="camera-status" class="qr-status">正在打开摄像头</p>
+  </dialog>
+
+  <canvas id="qr-canvas" hidden></canvas>
+  <script src="vendor/jsQR.js?v=1.4.0" defer></script>
+  <script src="qr-codec.js?v=3" defer></script>
+  <script src="app.js?v=17" defer></script>
+</body>
+</html>

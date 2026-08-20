@@ -1,0 +1,4 @@
+bleak==0.22.3
+protobuf==7.35.1
+cryptography==48.0.1
+pyserial==3.5

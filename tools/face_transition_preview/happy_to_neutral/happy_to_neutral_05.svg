@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 360 360">
+<rect x="0" y="0" width="360" height="360" fill="#FFFFFF" />
+<line x1="77" y1="212" x2="85" y2="208" stroke="#FFB0B8" stroke-width="3" stroke-linecap="round" stroke-opacity="0.898" />
+<line x1="253" y1="212" x2="261" y2="208" stroke="#FFB0B8" stroke-width="3" stroke-linecap="round" stroke-opacity="0.898" />
+<line x1="77" y1="218" x2="85" y2="214" stroke="#FFB0B8" stroke-width="3" stroke-linecap="round" stroke-opacity="0.898" />
+<line x1="253" y1="218" x2="261" y2="214" stroke="#FFB0B8" stroke-width="3" stroke-linecap="round" stroke-opacity="0.898" />
+<line x1="77" y1="224" x2="85" y2="220" stroke="#FFB0B8" stroke-width="3" stroke-linecap="round" stroke-opacity="0.898" />
+<line x1="253" y1="224" x2="261" y2="220" stroke="#FFB0B8" stroke-width="3" stroke-linecap="round" stroke-opacity="0.898" />
+<ellipse cx="105" cy="181" rx="26" ry="16" fill="#050505" />
+<rect x="84" y="175" width="42" height="29" rx="14.5" ry="14.5" fill="#FFFFFF" />
+<ellipse cx="255" cy="181" rx="26" ry="16" fill="#050505" />
+<rect x="234" y="175" width="42" height="29" rx="14.5" ry="14.5" fill="#FFFFFF" />
+<ellipse cx="180" cy="244" rx="26" ry="23" fill="#050505" />
+<ellipse cx="180" cy="249" rx="13.5" ry="9.5" fill="#FFB0B8" />
+</svg>

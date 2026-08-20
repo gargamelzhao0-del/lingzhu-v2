@@ -1,0 +1,9 @@
+﻿.\NuwaxAIPartner-v2\main\nuwax_lvgl_port.c:505:    const esp_timer_create_args_t tick_args = {
+.\NuwaxAIPartner-v2\main\nuwax_lvgl_port.c:509:    ESP_RETURN_ON_ERROR(esp_timer_create(&tick_args, &s_tick_timer), TAG, "tick timer create failed");
+.\NuwaxAIPartner-v2\main\nuwax_lvgl_port.c:510:    ESP_RETURN_ON_ERROR(esp_timer_start_periodic(s_tick_timer, LVGL_TICK_PERIOD_MS * 1000),
+.\NuwaxAIPartner-v2\main\wifi_manager.c:339:    esp_event_handler_instance_t instance_any_id;
+.\NuwaxAIPartner-v2\main\wifi_manager.c:340:    esp_event_handler_instance_t instance_got_ip;
+.\NuwaxAIPartner-v2\main\wifi_manager.c:342:    err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL,
+.\NuwaxAIPartner-v2\main\wifi_manager.c:350:    err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL,
+.\NuwaxAIPartner-v2\main\touch_input.c:76:static void IRAM_ATTR touch_int_isr(void *arg)
+.\NuwaxAIPartner-v2\main\touch_input.c:738:        isr_err = gpio_isr_handler_add(CONFIG_NUWAX_TOUCH_PIN_INT,

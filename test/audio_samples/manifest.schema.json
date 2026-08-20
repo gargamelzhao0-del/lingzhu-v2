@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Nuwax AI Partner 7.0 audio sample manifest entry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sample_id",
+    "category",
+    "label_status",
+    "audio_path",
+    "runtime_log",
+    "recorded_at",
+    "device_profile",
+    "firmware_build",
+    "route",
+    "scenario",
+    "distance_cm",
+    "volume_percent",
+    "ambient",
+    "expected_candidate",
+    "expected_cancel_candidate",
+    "expected_cancel",
+    "notes"
+  ],
+  "properties": {
+    "sample_id": {
+      "type": "string",
+      "pattern": "^(INT|NON|NOI|EDG)-[0-9]{4}$"
+    },
+    "category": {
+      "type": "string",
+      "enum": ["interrupt", "non_interrupt", "noise_background", "edge"]
+    },
+    "label_status": {
+      "type": "string",
+      "enum": ["planned", "recorded", "labeled", "validated", "rejected"]
+    },
+    "audio_path": {
+      "type": "string"
+    },
+    "runtime_log": {
+      "type": "string"
+    },
+    "recorded_at": {
+      "type": "string"
+    },
+    "device_profile": {
+      "type": "string",
+      "enum": ["esp_vocat_v1_0"]
+    },
+    "firmware_build": {
+      "type": "string"
+    },
+    "route": {
+      "type": "string",
+      "enum": ["p3_softref_fastpath"]
+    },
+    "scenario": {
+      "type": "string",
+      "enum": [
+        "playback_only",
+        "nearend_interrupt_word",
+        "nearend_question_change",
+        "nearend_negation",
+        "nearend_long_sentence",
+        "background_speech",
+        "tv_music",
+        "ambient_noise",
+        "edge_low_voice",
+        "edge_far_field",
+        "edge_overlap"
+      ]
+    },
+    "distance_cm": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "volume_percent": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "ambient": {
+      "type": "string",
+      "enum": ["quiet", "office", "home", "tv", "music", "crowd", "outdoor", "other"]
+    },
+    "utterance_text": {
+      "type": "string"
+    },
+    "expected_candidate": {
+      "type": "boolean"
+    },
+    "expected_cancel_candidate": {
+      "type": "boolean"
+    },
+    "expected_cancel": {
+      "type": "boolean"
+    },
+    "observed_candidate": {
+      "type": ["boolean", "null"]
+    },
+    "observed_cancel_candidate": {
+      "type": ["boolean", "null"]
+    },
+    "observed_cancel": {
+      "type": ["boolean", "null"]
+    },
+    "pass": {
+      "type": ["boolean", "null"]
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "erle_db": { "type": ["number", "null"] },
+        "active_ref_ratio": { "type": ["number", "null"] },
+        "candidate_to_cancel_ms": { "type": ["number", "null"] },
+        "process_min_internal": { "type": ["integer", "null"] }
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

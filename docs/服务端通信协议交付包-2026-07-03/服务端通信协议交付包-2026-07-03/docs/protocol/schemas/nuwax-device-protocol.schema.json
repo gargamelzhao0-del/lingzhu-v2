@@ -1,0 +1,661 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nuwax.local/schemas/nuwax-device-protocol.schema.json",
+  "title": "Nuwax AI Partner Device WebSocket Protocol",
+  "description": "Machine-readable JSON contract for Nuwax device/server WebSocket text messages. Unknown extension fields are allowed; known fields are constrained to the current device buffer and protocol limits.",
+  "oneOf": [
+    { "$ref": "#/$defs/deviceToServerMessage" },
+    { "$ref": "#/$defs/serverToDeviceMessage" }
+  ],
+  "$defs": {
+    "commandName": {
+      "type": "string",
+      "maxLength": 31
+    },
+    "mode": {
+      "type": "string",
+      "maxLength": 23
+    },
+    "requestId": {
+      "type": "string",
+      "maxLength": 39
+    },
+    "audioSessionId": {
+      "type": "string",
+      "maxLength": 47
+    },
+    "turnId": {
+      "type": "string",
+      "maxLength": 47
+    },
+    "playbackId": {
+      "type": "string",
+      "maxLength": 47
+    },
+    "provider": {
+      "type": "string",
+      "maxLength": 23
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 23
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 39
+    },
+    "line": {
+      "type": "string",
+      "maxLength": 47
+    },
+    "assistantText": {
+      "type": "string",
+      "maxLength": 511
+    },
+    "userText": {
+      "type": "string",
+      "maxLength": 255
+    },
+    "errorText": {
+      "type": "string",
+      "maxLength": 127
+    },
+    "ssid": {
+      "type": "string",
+      "maxLength": 32
+    },
+    "password": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "emotion": {
+      "type": "string",
+      "maxLength": 23,
+      "enum": [
+        "neutral",
+        "normal",
+        "idle",
+        "happy",
+        "smile",
+        "surprised",
+        "wink",
+        "tongue",
+        "thinking",
+        "think",
+        "focused",
+        "pensive",
+        "analyzing",
+        "analysis",
+        "processing",
+        "received",
+        "what",
+        "confused",
+        "understood",
+        "ok",
+        "awesome",
+        "great",
+        "like",
+        "sad",
+        "sorry",
+        "error",
+        "lost",
+        "angry",
+        "shy",
+        "tired"
+      ]
+    },
+    "deviceState": {
+      "type": "string",
+      "maxLength": 23,
+      "enum": [
+        "booting",
+        "wifi_connecting",
+        "ws_connecting",
+        "idle",
+        "sleeping",
+        "wake_only",
+        "listening",
+        "thinking",
+        "speaking",
+        "error"
+      ]
+    },
+    "sampleRate": {
+      "type": "integer",
+      "minimum": 8000,
+      "maximum": 48000
+    },
+    "channels": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4
+    },
+    "frameDurationMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    "nonNegativeInt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "audioParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "input_format",
+        "codec",
+        "opus",
+        "output_format",
+        "sample_rate",
+        "output_sample_rate",
+        "channels",
+        "frame_duration_ms"
+      ],
+      "properties": {
+        "input_format": { "type": "string", "enum": ["pcm16", "opus"] },
+        "codec": { "type": "string", "enum": ["pcm16", "opus"] },
+        "opus": { "type": "boolean" },
+        "output_format": { "type": "string", "enum": ["pcm16"] },
+        "sample_rate": { "$ref": "#/$defs/sampleRate" },
+        "output_sample_rate": { "$ref": "#/$defs/sampleRate" },
+        "channels": { "$ref": "#/$defs/channels" },
+        "mic_channels": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "frame_duration_ms": { "$ref": "#/$defs/frameDurationMs" },
+        "speaker": { "type": "boolean" },
+        "wake_word": { "type": "boolean" },
+        "vad": { "type": "boolean" },
+        "full_duplex": { "type": "boolean" },
+        "shared_i2s": { "type": "boolean" },
+        "hardware_profile": { "type": "string", "maxLength": 63 },
+        "aec": { "type": "boolean" },
+        "aec_reference": {
+          "type": "string",
+          "enum": [
+            "none",
+            "es7210_slot2",
+            "software",
+            "es7210_slot2_software_fallback"
+          ]
+        },
+        "has_ref": { "type": "boolean" },
+        "ref_slot": { "type": "integer", "minimum": 0, "maximum": 7 },
+        "afe_input_format": { "type": "string", "enum": ["MM", "MR", "MMR"] }
+      }
+    },
+    "deviceToServerMessage": {
+      "oneOf": [
+        { "$ref": "#/$defs/hello" },
+        { "$ref": "#/$defs/devicePing" },
+        { "$ref": "#/$defs/listen" },
+        { "$ref": "#/$defs/textRequest" },
+        { "$ref": "#/$defs/cancelTurn" },
+        { "$ref": "#/$defs/inputEvent" },
+        { "$ref": "#/$defs/wifiScanResult" },
+        { "$ref": "#/$defs/wifiStatus" },
+        { "$ref": "#/$defs/deviceCommandAck" }
+      ]
+    },
+    "serverToDeviceMessage": {
+      "oneOf": [
+        { "$ref": "#/$defs/pong" },
+        { "$ref": "#/$defs/deviceCommand" },
+        { "$ref": "#/$defs/asrPartial" },
+        { "$ref": "#/$defs/asrFinal" },
+        { "$ref": "#/$defs/asrResult" },
+        { "$ref": "#/$defs/audioSession" },
+        { "$ref": "#/$defs/textResponse" },
+        { "$ref": "#/$defs/playbackBegin" },
+        { "$ref": "#/$defs/playbackEnd" },
+        { "$ref": "#/$defs/ttsResult" },
+        { "$ref": "#/$defs/mcp" },
+        { "$ref": "#/$defs/inputEventAck" },
+        { "$ref": "#/$defs/cancelTurnAck" }
+      ]
+    },
+    "hello": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "version", "device_id", "transport", "features", "audio_params"],
+      "properties": {
+        "type": { "const": "hello" },
+        "version": { "type": "integer", "minimum": 1 },
+        "device_id": { "type": "string", "maxLength": 63 },
+        "transport": { "const": "websocket" },
+        "features": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "audio_upload": { "type": "boolean" },
+            "audio_playback": { "type": "boolean" },
+            "mcp": { "type": "boolean" }
+          }
+        },
+        "audio_params": { "$ref": "#/$defs/audioParams" }
+      }
+    },
+    "devicePing": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "now_ms"],
+      "properties": {
+        "type": { "const": "ping" },
+        "now_ms": { "$ref": "#/$defs/nonNegativeInt" }
+      }
+    },
+    "pong": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "now_ms"],
+      "properties": {
+        "type": { "const": "pong" },
+        "now_ms": { "$ref": "#/$defs/nonNegativeInt" },
+        "server_ms": { "$ref": "#/$defs/nonNegativeInt" }
+      }
+    },
+    "listen": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "state", "mode"],
+      "properties": {
+        "type": { "const": "listen" },
+        "state": { "type": "string", "enum": ["start", "stop"] },
+        "mode": { "$ref": "#/$defs/mode" },
+        "audio_session_id": { "$ref": "#/$defs/audioSessionId" },
+        "audioSessionId": { "$ref": "#/$defs/audioSessionId" },
+        "request_id": { "$ref": "#/$defs/requestId" }
+      }
+    },
+    "textRequest": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "request_id", "text"],
+      "properties": {
+        "type": { "const": "text_request" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "text": { "$ref": "#/$defs/assistantText" }
+      }
+    },
+    "cancelTurn": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "request_id", "turn_id", "reason"],
+      "properties": {
+        "type": { "const": "cancel_turn" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "turn_id": { "$ref": "#/$defs/turnId" },
+        "reason": { "$ref": "#/$defs/reason" }
+      }
+    },
+    "inputEvent": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "source", "action"],
+      "properties": {
+        "type": { "const": "input_event" },
+        "source": { "type": "string", "maxLength": 23 },
+        "action": { "type": "string", "maxLength": 23 },
+        "touch": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "x": { "$ref": "#/$defs/nonNegativeInt" },
+            "y": { "$ref": "#/$defs/nonNegativeInt" },
+            "gesture": { "$ref": "#/$defs/nonNegativeInt" },
+            "points": { "$ref": "#/$defs/nonNegativeInt" },
+            "event": { "$ref": "#/$defs/nonNegativeInt" }
+          }
+        }
+      }
+    },
+    "wifiScanResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "ok", "count", "networks"],
+      "properties": {
+        "type": { "const": "wifi_scan_result" },
+        "ok": { "type": "boolean" },
+        "message": { "$ref": "#/$defs/errorText" },
+        "count": { "$ref": "#/$defs/nonNegativeInt" },
+        "networks": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["ssid", "rssi", "authmode", "secure"],
+            "properties": {
+              "ssid": { "$ref": "#/$defs/ssid" },
+              "rssi": { "type": "integer", "minimum": -127, "maximum": 20 },
+              "authmode": { "$ref": "#/$defs/nonNegativeInt" },
+              "secure": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "wifiStatus": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "phase", "ok"],
+      "properties": {
+        "type": { "const": "wifi_status" },
+        "phase": { "type": "string", "enum": ["connecting", "connected", "failed", "disconnected"] },
+        "ssid": { "$ref": "#/$defs/ssid" },
+        "ip": { "type": "string", "maxLength": 45 },
+        "ok": { "type": "boolean" },
+        "message": { "$ref": "#/$defs/errorText" }
+      }
+    },
+    "deviceCommandAck": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "request_id", "command", "ok"],
+      "properties": {
+        "type": { "const": "device_command_ack" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "command": { "$ref": "#/$defs/commandName" },
+        "ok": { "type": "boolean" },
+        "message": { "$ref": "#/$defs/errorText" }
+      }
+    },
+    "deviceCommand": {
+      "oneOf": [
+        { "$ref": "#/$defs/setEmotionCommand" },
+        { "$ref": "#/$defs/setVolumeCommand" },
+        { "$ref": "#/$defs/stopPlaybackCommand" },
+        { "$ref": "#/$defs/setStateCommand" },
+        { "$ref": "#/$defs/sleepConversationCommand" },
+        { "$ref": "#/$defs/showStatusCommand" },
+        { "$ref": "#/$defs/wifiScanCommand" },
+        { "$ref": "#/$defs/wifiConnectCommand" }
+      ]
+    },
+    "deviceCommandBase": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "request_id", "command"],
+      "properties": {
+        "type": { "const": "device_command" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "command": { "$ref": "#/$defs/commandName" },
+        "turn_id": { "$ref": "#/$defs/turnId" },
+        "audio_session_id": { "$ref": "#/$defs/audioSessionId" },
+        "audioSessionId": { "$ref": "#/$defs/audioSessionId" },
+        "title": { "$ref": "#/$defs/title" },
+        "text": { "$ref": "#/$defs/assistantText" }
+      }
+    },
+    "setEmotionCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/deviceCommandBase" },
+        {
+          "type": "object",
+          "required": ["emotion"],
+          "properties": {
+            "command": { "const": "set_emotion" },
+            "emotion": { "$ref": "#/$defs/emotion" },
+            "assistant_emotion": { "$ref": "#/$defs/emotion" },
+            "assistantEmotion": { "$ref": "#/$defs/emotion" }
+          }
+        }
+      ]
+    },
+    "setVolumeCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/deviceCommandBase" },
+        {
+          "type": "object",
+          "required": ["volume_percent"],
+          "properties": {
+            "command": { "const": "set_volume" },
+            "volume_percent": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "volumePercent": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "persist": { "type": "boolean" },
+            "volume_persist": { "type": "boolean" },
+            "volumePersist": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "stopPlaybackCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/deviceCommandBase" },
+        {
+          "type": "object",
+          "properties": {
+            "command": { "const": "stop_playback" },
+            "playback_id": { "$ref": "#/$defs/playbackId" }
+          }
+        }
+      ]
+    },
+    "setStateCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/deviceCommandBase" },
+        {
+          "type": "object",
+          "required": ["state"],
+          "properties": {
+            "command": { "const": "set_state" },
+            "state": { "$ref": "#/$defs/deviceState" }
+          }
+        }
+      ]
+    },
+    "sleepConversationCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/deviceCommandBase" },
+        {
+          "type": "object",
+          "properties": {
+            "command": { "const": "sleep_conversation" }
+          }
+        }
+      ]
+    },
+    "showStatusCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/deviceCommandBase" },
+        {
+          "type": "object",
+          "properties": {
+            "command": { "const": "show_status" },
+            "lines": {
+              "type": "array",
+              "maxItems": 6,
+              "items": { "$ref": "#/$defs/line" }
+            }
+          }
+        }
+      ]
+    },
+    "wifiScanCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/deviceCommandBase" },
+        {
+          "type": "object",
+          "properties": {
+            "command": { "const": "wifi_scan" }
+          }
+        }
+      ]
+    },
+    "wifiConnectCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/deviceCommandBase" },
+        {
+          "type": "object",
+          "required": ["ssid"],
+          "properties": {
+            "command": { "const": "wifi_connect" },
+            "ssid": { "$ref": "#/$defs/ssid" },
+            "password": { "$ref": "#/$defs/password" }
+          }
+        }
+      ]
+    },
+    "asrPartial": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "asr_partial" },
+        "provider": { "$ref": "#/$defs/provider" },
+        "audio_session_id": { "$ref": "#/$defs/audioSessionId" },
+        "turn_id": { "$ref": "#/$defs/turnId" },
+        "text": { "$ref": "#/$defs/assistantText" },
+        "definite": { "type": "boolean" },
+        "sequence": { "$ref": "#/$defs/nonNegativeInt" },
+        "at_ms": { "$ref": "#/$defs/nonNegativeInt" }
+      }
+    },
+    "asrFinal": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "asr_final" },
+        "provider": { "$ref": "#/$defs/provider" },
+        "audio_session_id": { "$ref": "#/$defs/audioSessionId" },
+        "turn_id": { "$ref": "#/$defs/turnId" },
+        "text": { "$ref": "#/$defs/assistantText" },
+        "definite": { "type": "boolean" },
+        "sequence": { "$ref": "#/$defs/nonNegativeInt" },
+        "at_ms": { "$ref": "#/$defs/nonNegativeInt" }
+      }
+    },
+    "asrResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "ok", "turn_id", "text"],
+      "properties": {
+        "type": { "const": "asr_result" },
+        "ok": { "type": "boolean" },
+        "provider": { "$ref": "#/$defs/provider" },
+        "audio_session_id": { "$ref": "#/$defs/audioSessionId" },
+        "turn_id": { "$ref": "#/$defs/turnId" },
+        "text": { "$ref": "#/$defs/userText" },
+        "error": { "$ref": "#/$defs/errorText" }
+      }
+    },
+    "audioSession": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "state", "audio_session_id"],
+      "properties": {
+        "type": { "const": "audio_session" },
+        "state": { "type": "string", "maxLength": 23 },
+        "audio_session_id": { "$ref": "#/$defs/audioSessionId" },
+        "frames": { "$ref": "#/$defs/nonNegativeInt" },
+        "duration_ms": { "$ref": "#/$defs/nonNegativeInt" },
+        "rms": { "$ref": "#/$defs/nonNegativeInt" }
+      }
+    },
+    "textResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "ok", "turn_id", "tts_pending"],
+      "properties": {
+        "type": { "const": "text_response" },
+        "ok": { "type": "boolean" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "turn_id": { "$ref": "#/$defs/turnId" },
+        "user_text": { "$ref": "#/$defs/userText" },
+        "assistant_text": { "$ref": "#/$defs/assistantText" },
+        "emotion": { "$ref": "#/$defs/emotion" },
+        "assistant_emotion": { "$ref": "#/$defs/emotion" },
+        "assistantEmotion": { "$ref": "#/$defs/emotion" },
+        "tts_pending": { "type": "boolean" },
+        "error": { "$ref": "#/$defs/errorText" }
+      }
+    },
+    "playbackBegin": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "turn_id", "playback_id", "sample_rate", "channels", "frame_duration_ms"],
+      "properties": {
+        "type": { "const": "playback_begin" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "turn_id": { "$ref": "#/$defs/turnId" },
+        "playback_id": { "$ref": "#/$defs/playbackId" },
+        "provider": { "$ref": "#/$defs/provider" },
+        "sample_rate": { "$ref": "#/$defs/sampleRate" },
+        "channels": { "const": 1 },
+        "frame_duration_ms": { "$ref": "#/$defs/frameDurationMs" },
+        "frames": { "$ref": "#/$defs/nonNegativeInt" },
+        "bytes": { "$ref": "#/$defs/nonNegativeInt" }
+      }
+    },
+    "playbackEnd": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "turn_id", "playback_id"],
+      "properties": {
+        "type": { "const": "playback_end" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "turn_id": { "$ref": "#/$defs/turnId" },
+        "playback_id": { "$ref": "#/$defs/playbackId" },
+        "provider": { "$ref": "#/$defs/provider" },
+        "sample_rate": { "$ref": "#/$defs/sampleRate" },
+        "channels": { "const": 1 },
+        "frame_duration_ms": { "$ref": "#/$defs/frameDurationMs" },
+        "frames": { "$ref": "#/$defs/nonNegativeInt" },
+        "bytes": { "$ref": "#/$defs/nonNegativeInt" },
+        "reason": { "$ref": "#/$defs/reason" }
+      }
+    },
+    "ttsResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "ok"],
+      "properties": {
+        "type": { "const": "tts_result" },
+        "ok": { "type": "boolean" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "turn_id": { "$ref": "#/$defs/turnId" },
+        "provider": { "$ref": "#/$defs/provider" },
+        "playback_id": { "$ref": "#/$defs/playbackId" },
+        "frames": { "$ref": "#/$defs/nonNegativeInt" },
+        "duration_ms": { "$ref": "#/$defs/nonNegativeInt" },
+        "sample_rate": { "$ref": "#/$defs/sampleRate" },
+        "channels": { "const": 1 },
+        "playback_start": { "type": "boolean" },
+        "playback_end": { "type": "boolean" },
+        "error": { "$ref": "#/$defs/errorText" }
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "payload"],
+      "properties": {
+        "type": { "const": "mcp" },
+        "payload": { "type": "object" }
+      }
+    },
+    "inputEventAck": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "source", "action"],
+      "properties": {
+        "type": { "const": "input_event_ack" },
+        "source": { "type": "string", "maxLength": 23 },
+        "action": { "type": "string", "maxLength": 23 },
+        "events_received": { "$ref": "#/$defs/nonNegativeInt" }
+      }
+    },
+    "cancelTurnAck": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "ok", "turn_id", "reason"],
+      "properties": {
+        "type": { "const": "cancel_turn_ack" },
+        "ok": { "type": "boolean" },
+        "turn_id": { "$ref": "#/$defs/turnId" },
+        "new_turn_id": { "$ref": "#/$defs/turnId" },
+        "reason": { "$ref": "#/$defs/reason" }
+      }
+    }
+  }
+}

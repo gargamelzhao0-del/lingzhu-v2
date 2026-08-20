@@ -1,0 +1,4 @@
+# Isolated COM5 comparison at the vendor 24 kHz rate with a shared-clock-safe
+# TX layout. The base sdkconfig.defaults supplies all other test settings.
+CONFIG_NUWAX_P3_VENDOR_V2_AUDIO_PROFILE=y
+CONFIG_NUWAX_P3_VENDOR_V2_CLOCK_ALIGNED_TX=y

@@ -1,0 +1,109 @@
+﻿# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Directory metadata
+.directory
+
+# Temporary files
+*~
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# Log files
+*.log
+
+# Build artifacts and directories
+**/build/
+build/
+build-*/
+build_*/
+build-lvgl*/
+build-preflight*/
+*.o
+*.a
+*.out
+*.exe # For any host-side utilities compiled on Windows
+
+# ESP-IDF specific build outputs
+*.bin
+!main/nuwax_ui_v28/assets/face_paths_core.bin
+!docs/protocol/fixtures/na/*.bin
+*.elf
+*.map
+flasher_args.json # Generated in build directory
+sdkconfig.old
+sdkconfig
+
+# ESP-IDF dependencies
+# For older versions or manual component management
+/components/.idf/
+**/components/.idf/
+# For modern ESP-IDF component manager
+managed_components/
+# If ESP-IDF tools are installed/referenced locally to the project
+.espressif/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+
+# Python environment files
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.egg-info/
+dist/
+
+# Virtual environment folders
+venv/
+.venv/
+env/
+
+# Language Servers
+.clangd/
+.ccls-cache/
+compile_commands.json
+
+# Local agent/tool settings
+.claude/settings.local.json
+
+# Nuwax local archives, backups, generated logs and temporary worktrees
+_archive*/
+backups/
+runtime-logs/
+.cache/
+.build-tmp/
+*-log.txt
+build-log.txt
+compile-log.txt
+size-log.txt
+build-prod-log.txt
+
+# Real on-device serial captures hold live runtime data (IP, SSID, session
+# ids); keep them local and out of version control.
+esp32s3串口日志.md
+*串口日志*.md
+
+# Local private build config (real Wi-Fi / device token live here, never commit)
+config/public.local.json
+
+# Windows specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+/CON
+/tmp/
+
+# User-specific configuration files
+*.user
+*.workspace # General workspace files, can be from various tools
+*.suo       # Visual Studio Solution User Options
+*.sln.docstates # Visual Studio

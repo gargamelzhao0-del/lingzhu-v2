@@ -1,0 +1,16 @@
+﻿NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:176:    vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:243:        vTaskDeleteWithCaps(stopped_task);
+NuwaxAIPartner-v2/main\board\battery_service.c:357:    vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\board\battery_service.c:431:        vTaskDeleteWithCaps(task);
+NuwaxAIPartner-v2/main\board\led_driver.c:130:    vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\board\led_driver.c:300:        vTaskDeleteWithCaps(task);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:150:    vTaskDelete(NULL);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:175:    vTaskDelete(NULL);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:205:    vTaskDelete(NULL);
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:403:    vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7014:        vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7083:    vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\wake_word_detector.c:572:        vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\ws_transport.c:1325:    vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\ws_transport.c:1349:    vTaskDeleteWithCaps(rx_task);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_usb_control.c:39:        vTaskDeleteWithCaps(NULL);

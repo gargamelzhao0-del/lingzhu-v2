@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "review_batch": "2026-08-03-A2-08-continuation",
+  "generated_at_local": "2026-08-03T18:16:21+08:00",
+  "authorization": {
+    "level": "A",
+    "allowed": [
+      "read source/configuration/existing build assets",
+      "compute hashes",
+      "write review evidence"
+    ],
+    "not_performed": [
+      "host compile or test execution",
+      "firmware build",
+      "network or gateway functional test",
+      "COM5 access",
+      "NVS write",
+      "OTA or serial flash"
+    ]
+  },
+  "project": {
+    "path": "C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2",
+    "target": "esp32s3",
+    "flash_bytes": 16777216,
+    "git_root": "C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0",
+    "git_branch": "codex/smart-barge-in-v1",
+    "git_head": "8b7cf297460dbb4ffc8a8594a27a1143c199818e",
+    "project_git_state": "entire NuwaxAIPartner-v2 directory is untracked in parent repository"
+  },
+  "release_identity": {
+    "project_version_source": "7.0.24",
+    "compiled_release_sequence": 7000024,
+    "ota_base_release_sequence": 7000000,
+    "status": "source truth only; no current-source release artifact is frozen"
+  },
+  "product_candidate": {
+    "sdkconfig_defaults": [
+      "sdkconfig.defaults",
+      "sdkconfig.product-ota.defaults"
+    ],
+    "sdkconfig_current_sha256": "ea74b3ffc7ce84c2a02af8cf3ef022267bffd12eb6489721d77d2f32ab97e07d",
+    "sdkconfig_defaults_sha256": "22418aa88f1dbd384b1d5a535afe91bd3755ea65230d77dbac2efc1f61236117",
+    "sdkconfig_product_ota_defaults_sha256": "d5e9aabf4ffc78811820a6329936ccc7a47345168705978a417cbb9c30284a6a",
+    "partition_csv": "partitions.customwake.csv",
+    "partition_csv_sha256": "e498063228a1a46792d3243a8ec29c2c5e40b7556e9885f16dc6e5729ee05a19",
+    "partition_schema": 1,
+    "ota_slot_bytes": 4980736,
+    "model_partition_bytes": 4194304
+  },
+  "source_manifest": {
+    "path": "docs/review-2026-08-02/source-manifest.sha256",
+    "entry_count": 7918,
+    "manifest_sha256": "0ec684337512eae921916825db78ca92b56cd7fce1fd8c764359e21fd272ce3e",
+    "verified": {
+      "bad_format": 0,
+      "missing": 0,
+      "hash_mismatch": 0,
+      "path_escape": 0,
+      "exclusion_violation": 0,
+      "immediate_recheck_missing": 0,
+      "immediate_recheck_hash_mismatch": 0,
+      "immediate_recheck_extra": 0,
+      "duplicate_paths": 0
+    }
+  },
+  "concurrent_development": {
+    "detected_since_previous_batch": true,
+    "changed_included_files": 11,
+    "a2_07_reaudited_files": [
+      "main/nuwax_ai_partner_main.c",
+      "main/conversation/speaker_playback.c",
+      "main/ws_transport.c"
+    ],
+    "a2_08_reaudited_files": [
+      "main/nuwax_ai_partner_main.c",
+      "main/conversation/audio_uplink.c"
+    ],
+    "final_full_code_revalidation_required": true,
+    "rule": "any post-freeze source hash change invalidates affected intermediate conclusions until re-reviewed"
+  },
+  "supporting_test_assets_manifest": {
+    "path": "docs/review-2026-08-02/supporting-test-assets-manifest.sha256",
+    "entry_count": 188,
+    "manifest_sha256": "15cc4491154c111f1b600457eaad41cbf7b39ef55588760631759bf3849a93df",
+    "verified": {
+      "bad_format": 0,
+      "missing": 0,
+      "hash_mismatch": 0,
+      "path_escape": 0
+    }
+  },
+  "hardware_and_vendor_evidence": {
+    "hardware_document_count": 8,
+    "hardware_total_bytes": 7902121,
+    "vendor_v2_reference_entry_count": 1221,
+    "vendor_v2_manifest_sha256": "0a2329d5cfcfb1cba8454bfacfd9a370a03bbd54526323d2344f7836b7996e80"
+  },
+  "existing_build_assets": {
+    "project_build_version": "7.0.21",
+    "external_candidate_path": "C:/tmp/nuwax-v2-fix-7.0.23-20260803-d",
+    "external_candidate_version": "7.0.23",
+    "external_candidate_app_sha256": "774c620149ae976f943dd7c2c7b2d2d0b40181f0f1e2bd60c8a1bfbbd47873fe",
+    "release_binding_status": "not bound to source manifest, normalized configuration, or OTA manifest"
+  },
+  "toolchain": {
+    "esp_idf": "v6.0 commit 662a3be354759d9487bf4b1a629fadb766cb1800",
+    "idf_python": "3.13.12",
+    "xtensa_gcc": "15.2.0",
+    "cmake": "4.0.3",
+    "ninja": "1.12.1",
+    "esptool": "5.3.0",
+    "node": "24.15.0",
+    "npm": "11.12.1"
+  },
+  "build_verification": {
+    "status": "pending C-level authorization",
+    "required": [
+      "new external build directory",
+      "new generated sdkconfig",
+      "configure",
+      "build",
+      "link and image-info",
+      "artifact and manifest binding"
+    ]
+  },
+  "open_release_blockers": [
+    "BASE-001",
+    "BUILD-001",
+    "PART-001",
+    "CONFIG-001",
+    "CONFIG-002",
+    "DEP-001",
+    "VER-001",
+    "VER-002",
+    "VER-003",
+    "VER-004",
+    "NVS-001",
+    "NVS-002",
+    "BAT-004",
+    "OFFLINE-001",
+    "OFFLINE-002",
+    "RTOS-008",
+    "RTOS-009",
+    "LIFE-004",
+    "LIFE-010",
+    "ERR-001",
+    "OBS-001",
+    "LOG-001",
+    "PRIV-001",
+    "RTOS-001",
+    "NVS-004",
+    "PART-003",
+    "SEC-001",
+    "SEC-002"
+  ]
+}

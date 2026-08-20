@@ -1,0 +1,309 @@
+﻿NuwaxAIPartner-v2/main\audio_reliable_playback.c:19:static volatile uint32_t s_pw = 0, s_pr = 0;
+NuwaxAIPartner-v2/main\audio_reliable_playback.c:20:static volatile bool s_playing = false;
+NuwaxAIPartner-v2/main\app_shell.c:180:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:196:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:211:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:225:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:275:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:282:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:289:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:298:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:306:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:314:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:323:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:331:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:338:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:361:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:410:        taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:450:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\app_shell.c:580:    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+NuwaxAIPartner-v2/main\audio_reliable_capture.c:26:static volatile uint32_t s_head = 0;  /* 写指针 */
+NuwaxAIPartner-v2/main\audio_reliable_capture.c:27:static volatile uint32_t s_tail = 0;  /* 读指针 */
+NuwaxAIPartner-v2/main\audio_reliable_capture.c:28:static volatile bool s_capture_running = false;
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.h:47:    volatile nuwax_monitoring_state_t state;
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:73:    return atomic_load_explicit(flag, memory_order_acquire);
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:77:    atomic_store_explicit(flag, value, memory_order_release);
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:81:    return ctx ? (esp_err_t)atomic_load_explicit(&ctx->send_result,
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:408:    portENTER_CRITICAL(&s_audio_uplink_task_lock);
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:418:    portENTER_CRITICAL(&s_audio_uplink_task_lock);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:52:    portENTER_CRITICAL(&s_head_touch_config_lock);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:72:    if (!atomic_load_explicit(&s_initialized, memory_order_acquire)) {
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:99:    while (!atomic_load_explicit(&s_stop_requested, memory_order_acquire)) {
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:116:                portENTER_CRITICAL(&s_head_touch_config_lock);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:156:            portENTER_CRITICAL(&s_head_touch_config_lock);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:182:    if (atomic_load_explicit(&s_initialized, memory_order_acquire)) {
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:183:        portENTER_CRITICAL(&s_head_touch_config_lock);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:212:    portENTER_CRITICAL(&s_head_touch_config_lock);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:216:    atomic_store_explicit(&s_stop_requested, false, memory_order_release);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:217:    atomic_store_explicit(&s_initialized, true, memory_order_release);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:221:        atomic_store_explicit(&s_initialized, false, memory_order_release);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:234:    if (!atomic_load_explicit(&s_initialized, memory_order_acquire)) {
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:237:    atomic_store_explicit(&s_stop_requested, true, memory_order_release);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:248:    portENTER_CRITICAL(&s_head_touch_config_lock);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:254:    atomic_store_explicit(&s_initialized, false, memory_order_release);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:261:    portENTER_CRITICAL(&s_head_touch_config_lock);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:274:    portENTER_CRITICAL(&s_head_touch_config_lock);
+NuwaxAIPartner-v2/main\board\audio_board.c:61:    SemaphoreHandle_t lock = atomic_load_explicit(&s_lock, memory_order_acquire);
+NuwaxAIPartner-v2/main\board\audio_board.c:101:    portENTER_CRITICAL(&s_ref_health_lock);
+NuwaxAIPartner-v2/main\board\audio_board.c:108:    portENTER_CRITICAL(&s_ref_health_lock);
+NuwaxAIPartner-v2/main\board\audio_board.c:250:    SemaphoreHandle_t lock = atomic_load_explicit(&s_lock, memory_order_acquire);
+NuwaxAIPartner-v2/main\board\audio_board.c:260:    SemaphoreHandle_t lock = atomic_load_explicit(&s_lock, memory_order_acquire);
+NuwaxAIPartner-v2/main\board\battery_service.c:46:    taskENTER_CRITICAL(&s_service_init_mux);
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.h:56:    volatile nuwax_meeting_state_t state;
+NuwaxAIPartner-v2/main\board\bq27220_driver.c:85:    taskENTER_CRITICAL(&s_init_lock_mux);
+NuwaxAIPartner-v2/main\board\i2c_bus_manager.c:42:        int state = atomic_load_explicit(&s_i2c_state, memory_order_acquire);
+NuwaxAIPartner-v2/main\board\i2c_bus_manager.c:66:                    atomic_store_explicit(&s_i2c_state,
+NuwaxAIPartner-v2/main\board\i2c_bus_manager.c:74:                atomic_store_explicit(&s_i2c_state, NUWAX_I2C_READY,
+NuwaxAIPartner-v2/main\board\led_status.c:21:    portENTER_CRITICAL(&s_init_mux);
+NuwaxAIPartner-v2/main\board\led_status.c:67:    if (resolved == (nuwax_led_status_t)atomic_load_explicit(
+NuwaxAIPartner-v2/main\board\led_status.c:73:        atomic_store_explicit(&s_status, resolved, memory_order_release);
+NuwaxAIPartner-v2/main\board\led_status.c:103:        atomic_store_explicit(&s_status, NUWAX_LED_STATUS_OFF,
+NuwaxAIPartner-v2/main\board\led_status.c:178:    return (nuwax_led_status_t)atomic_load_explicit(&s_status,
+NuwaxAIPartner-v2/main\board\led_status.c:195:        atomic_store_explicit(&s_status, NUWAX_LED_STATUS_OFF,
+NuwaxAIPartner-v2/main\board\qmi8658a_driver.c:58:    taskENTER_CRITICAL(&s_init_lock_mux);
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:285:        atomic_store_explicit(&s_shutdown_gate, NUWAX_SHUTDOWN_GATE_OPEN,
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:294:        atomic_store_explicit(&s_shutdown_gate, NUWAX_SHUTDOWN_GATE_OPEN,
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:323:    atomic_store_explicit(&s_shutdown_gate, NUWAX_SHUTDOWN_GATE_OPEN,
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:451:    int current = atomic_load_explicit(&s_shutdown_gate, memory_order_acquire);
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:471:    return atomic_load_explicit(&s_shutdown_gate, memory_order_acquire) ==
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:84:    volatile bool stop;
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:91:    volatile bool stop;
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:92:    volatile bool tone;
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:99:    volatile bool stop;
+NuwaxAIPartner-v2/main\conversation\prelisten_state.h:14:    volatile bool cancel_capture;
+NuwaxAIPartner-v2/main\mic_input.c:62:    taskENTER_CRITICAL(&s_mic_owner_init_mux);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:109:    volatile uint8_t *cursor = (volatile uint8_t *)memory;
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:526:static volatile bool s_wifi_connect_in_progress;
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:527:static volatile int64_t s_ws_last_rx_activity_ms;
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:538:static volatile bool s_audio_cleaner_runtime_enabled = CONFIG_NUWAX_AUDIO_CLEANER_ENABLE;
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:542:        const uint32_t epoch_before = (uint32_t)atomic_load_explicit(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:544:        nuwax_ws_client_t *ws = atomic_load_explicit(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:546:        const uint32_t epoch_after = (uint32_t)atomic_load_explicit(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:574:    atomic_store_explicit(&s_active_ws, ws, memory_order_release);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:575:    atomic_store_explicit(&s_active_ws_epoch, epoch, memory_order_release);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:579:    atomic_store_explicit(&s_active_ws_epoch, 0U, memory_order_release);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:580:    atomic_store_explicit(&s_active_ws, NULL, memory_order_release);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:621:    atomic_fetch_or_explicit(&s_ota_boot_health_flags, flag,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:627:    return (atomic_load_explicit(&s_ota_boot_health_flags,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:747:static volatile bool s_during_playback_handoff_pending;
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:748:static volatile bool s_during_playback_handoff_playback_started;
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:749:static volatile bool s_during_playback_handoff_seamless;
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:753:static volatile bool s_during_playback_wake_stop_pending;
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:755:static volatile bool s_post_playback_resume_pending;
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:765:static volatile bool s_hw_ref_health_passed;
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1012:        atomic_store_explicit(&s_normal_downlink_allowed,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1016:    uint32_t epoch = (uint32_t)(atomic_fetch_add_explicit(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1023:        atomic_store_explicit(&s_normal_downlink_epoch,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1029:        atomic_store_explicit(&s_normal_downlink_allowed,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1039:    atomic_store_explicit(&s_pending_speaker_start_generation,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1312:    portENTER_CRITICAL(&s_wake_stop_handoff_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1768:    portENTER_CRITICAL(&s_conversation_live_aec_pool_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1858:        portENTER_CRITICAL(&s_conversation_live_aec_pool_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1872:    portENTER_CRITICAL(&s_conversation_live_aec_pool_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1972:    portENTER_CRITICAL(&s_conversation_state_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2000:    portENTER_CRITICAL(&s_conversation_state_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2024:    portENTER_CRITICAL(&s_conversation_state_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2072:        portENTER_CRITICAL(&s_conversation_state_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2079:            portENTER_CRITICAL(&s_conversation_state_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2099:    portENTER_CRITICAL(&s_conversation_state_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2116:    portENTER_CRITICAL(&s_conversation_state_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2123:        portENTER_CRITICAL(&s_conversation_state_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2137:    portENTER_CRITICAL(&s_emotion_ui_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2159:    portENTER_CRITICAL(&s_emotion_ui_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2167:        portENTER_CRITICAL(&s_emotion_ui_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2199:    portENTER_CRITICAL(&s_emotion_ui_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2347:    portENTER_CRITICAL(&s_wake_stop_handoff_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2403:        portENTER_CRITICAL(&s_wake_stop_handoff_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2413:    portENTER_CRITICAL(&s_wake_stop_handoff_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2448:    portENTER_CRITICAL(&s_wake_stop_handoff_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2953:    uint_fast32_t observed = atomic_load_explicit(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2993:    atomic_store_explicit(&s_pending_speaker_start_generation,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3028:    atomic_store_explicit(&s_reported_speaker_fault_generation,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3135:        const uint32_t reported_generation = (uint32_t)atomic_load_explicit(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3141:            atomic_store_explicit(&s_reported_speaker_fault_generation,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3154:        (uint32_t)atomic_exchange_explicit(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3209:                    atomic_load_explicit(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3378:                    atomic_load_explicit(&s_pending_speaker_start_generation,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3570:    portENTER_CRITICAL(&s_cloud_auth_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3583:    portENTER_CRITICAL(&s_cloud_auth_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3592:    portENTER_CRITICAL(&s_cloud_auth_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3609:    portENTER_CRITICAL(&s_cloud_auth_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3625:    portENTER_CRITICAL(&s_cloud_auth_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3662:    portENTER_CRITICAL(&s_cloud_auth_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3931:    atomic_store_explicit(&s_speaker_owner_event_overflow_epoch,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3934:    atomic_store_explicit(&s_pending_speaker_start_generation,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3937:    atomic_store_explicit(&s_reported_speaker_fault_generation,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4118:    if (!atomic_load_explicit(&s_normal_downlink_allowed,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4132:        atomic_load_explicit(&s_normal_downlink_epoch, memory_order_acquire);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4140:        if (!atomic_load_explicit(&s_normal_downlink_allowed,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4142:            atomic_load_explicit(&s_normal_downlink_epoch,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4217:        if (!atomic_load_explicit(&s_normal_downlink_allowed,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4219:            atomic_load_explicit(&s_normal_downlink_epoch,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4871:    portENTER_CRITICAL(&s_flash_ops_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4920:    portENTER_CRITICAL(&s_flash_ops_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:5233:    portENTER_CRITICAL(&s_flash_ops_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:6644:    portENTER_CRITICAL(&s_rt_capture_task_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:6654:    portENTER_CRITICAL(&s_rt_capture_task_lock);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7017:    while (!atomic_load_explicit(&ctx->stop_requested,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7082:    atomic_store_explicit(&ctx->stopped, true, memory_order_release);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7324:    atomic_store_explicit(&ctx->stop_requested, true, memory_order_release);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7326:    while (!atomic_load_explicit(&ctx->stopped, memory_order_acquire) &&
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7331:        !atomic_load_explicit(&ctx->stopped, memory_order_acquire)) {
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:15757:        portENTER_CRITICAL(&s_conversation_state_lock);
+NuwaxAIPartner-v2/main\conversation\conversation_state.h:13:    volatile nuwax_app_state_t current;
+NuwaxAIPartner-v2/main\conversation\conversation_state.h:14:    volatile uint32_t generation;
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:386:    portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:393:    portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:523:            portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:528:            portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:555:            portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:567:            portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:583:        portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:607:        portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:611:        portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:1323:        portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:1378:            portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:1391:        portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:1464:            portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:1474:            portENTER_CRITICAL(&s_state_lock);
+NuwaxAIPartner-v2/main\ws_transport.c:37:    volatile uint8_t *cursor = (volatile uint8_t *)memory;
+NuwaxAIPartner-v2/main\ws_transport.c:368:           atomic_load_explicit(&client->connected, memory_order_acquire);
+NuwaxAIPartner-v2/main\ws_transport.c:552:    if (atomic_load_explicit(&client->rx_task_running,
+NuwaxAIPartner-v2/main\ws_transport.c:554:        !atomic_load_explicit(&client->connected,
+NuwaxAIPartner-v2/main\ws_transport.c:582:        if (atomic_load_explicit(&client->rx_task_running,
+NuwaxAIPartner-v2/main\ws_transport.c:584:            !atomic_load_explicit(&client->connected,
+NuwaxAIPartner-v2/main\ws_transport.c:625:        if (atomic_load_explicit(&client->rx_task_running,
+NuwaxAIPartner-v2/main\ws_transport.c:627:            !atomic_load_explicit(&client->connected,
+NuwaxAIPartner-v2/main\ws_transport.c:995:        atomic_store_explicit(&client->connected, false,
+NuwaxAIPartner-v2/main\ws_transport.c:1048:        atomic_store_explicit(&client->connected, false,
+NuwaxAIPartner-v2/main\ws_transport.c:1073:        atomic_store_explicit(&client->lifecycle_state,
+NuwaxAIPartner-v2/main\ws_transport.c:1080:    uint32_t epoch = (uint32_t)(atomic_fetch_add_explicit(
+NuwaxAIPartner-v2/main\ws_transport.c:1087:        atomic_store_explicit(&client->connection_epoch,
+NuwaxAIPartner-v2/main\ws_transport.c:1130:    while (atomic_load_explicit(&client->rx_task_running,
+NuwaxAIPartner-v2/main\ws_transport.c:1135:                     atomic_load_explicit(&client->rx_task_running,
+NuwaxAIPartner-v2/main\ws_transport.c:1166:    while (atomic_load_explicit(&client->connected, memory_order_acquire)) {
+NuwaxAIPartner-v2/main\ws_transport.c:1305:            if (atomic_load_explicit(&client->connected,
+NuwaxAIPartner-v2/main\ws_transport.c:1318:    atomic_store_explicit(&client->connected, false, memory_order_release);
+NuwaxAIPartner-v2/main\ws_transport.c:1323:    atomic_store_explicit(&client->rx_task_running, false,
+NuwaxAIPartner-v2/main\ws_transport.c:1331:            atomic_store_explicit(&client->rx_task_running, false,
+NuwaxAIPartner-v2/main\ws_transport.c:1351:    atomic_store_explicit(&client->rx_task_running, false,
+NuwaxAIPartner-v2/main\ws_transport.c:1362:    atomic_store_explicit(&client->close_failure_stage,
+NuwaxAIPartner-v2/main\ws_transport.c:1365:    atomic_store_explicit(&client->last_close_result,
+NuwaxAIPartner-v2/main\ws_transport.c:1449:    atomic_store_explicit(&client->connected, false, memory_order_release);
+NuwaxAIPartner-v2/main\ws_transport.c:1511:    atomic_store_explicit(&client->connected, true, memory_order_release);
+NuwaxAIPartner-v2/main\ws_transport.c:1518:    atomic_store_explicit(&client->rx_task_running, true,
+NuwaxAIPartner-v2/main\ws_transport.c:1529:        atomic_store_explicit(&client->rx_task_running, false,
+NuwaxAIPartner-v2/main\ws_transport.c:1531:        atomic_store_explicit(&client->connected, false,
+NuwaxAIPartner-v2/main\ws_transport.c:1666:    atomic_store_explicit(&client->connected, false, memory_order_release);
+NuwaxAIPartner-v2/main\ws_transport.c:1735:    atomic_store_explicit(&client->connected, false, memory_order_release);
+NuwaxAIPartner-v2/main\ws_transport.c:1743:               ? (uint32_t)atomic_load_explicit(&client->connection_epoch,
+NuwaxAIPartner-v2/main\ws_transport.c:1750:           !atomic_load_explicit(&client->rx_task_running,
+NuwaxAIPartner-v2/main\ws_transport.c:1763:    const int stage = atomic_load_explicit(&client->close_failure_stage,
+NuwaxAIPartner-v2/main\ws_transport.c:1773:               ? (esp_err_t)atomic_load_explicit(&client->last_close_result,
+NuwaxAIPartner-v2/main\ws_transport.c:1791:    const int state = atomic_load_explicit(&client->lifecycle_state,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:380:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:388:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:634:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:662:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:707:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:747:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:757:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:768:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:853:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:866:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:889:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:912:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:1028:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:1177:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:170:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:183:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:194:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:225:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:242:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:290:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:303:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:432:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:444:        portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:511:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:538:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:556:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:595:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:631:        portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:663:        portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:672:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:689:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:749:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:761:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:772:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:825:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:862:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:912:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:929:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:944:            portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:966:        portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:987:        portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1020:        portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1056:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1065:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1081:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1109:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1150:        portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1156:            portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1220:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1256:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1279:        portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1289:            portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1411:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1436:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1470:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1509:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1518:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1536:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1544:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1559:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1569:        portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1582:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1599:        portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1609:            portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1625:            portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1662:            portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1677:            portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1689:            portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1705:        portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:55:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:77:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:128:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:137:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:151:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:174:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:193:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:216:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:226:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:247:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:312:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:326:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:358:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:368:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:379:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:391:    portENTER_CRITICAL(&s_lock);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_state_bridge.c:45:    taskENTER_CRITICAL(&s_bridge_state_mux);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_state_bridge.c:291:    taskENTER_CRITICAL(&s_bridge_state_mux);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_state_bridge.c:303:    taskENTER_CRITICAL(&s_bridge_state_mux);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_state_bridge.c:316:    taskENTER_CRITICAL(&s_bridge_state_mux);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_state_bridge.c:397:    taskENTER_CRITICAL(&s_bridge_state_mux);
+NuwaxAIPartner-v2/main\session_protocol.c:195:    volatile unsigned char *cursor = (volatile unsigned char *)memory;
+NuwaxAIPartner-v2/main\touch_input.c:90:    taskENTER_CRITICAL(&s_touch_lock_init_mux);
+NuwaxAIPartner-v2/main\touch_input.c:510:                    taskENTER_CRITICAL(&s_touch_callback_mux);
+NuwaxAIPartner-v2/main\touch_input.c:550:    if (atomic_load_explicit(&s_initialized, memory_order_acquire)) {
+NuwaxAIPartner-v2/main\touch_input.c:557:    if (atomic_load_explicit(&s_initialized, memory_order_acquire)) {
+NuwaxAIPartner-v2/main\touch_input.c:609:    atomic_store_explicit(&s_initialized, true, memory_order_release);
+NuwaxAIPartner-v2/main\touch_input.c:626:        atomic_store_explicit(&s_initialized, false, memory_order_release);
+NuwaxAIPartner-v2/main\touch_input.c:641:    status->initialized = atomic_load_explicit(&s_initialized,
+NuwaxAIPartner-v2/main\touch_input.c:686:    taskENTER_CRITICAL(&s_touch_callback_mux);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\face\face_cache.c:20:static volatile bool s_suspended;
+NuwaxAIPartner-v2/main\nuwax_ui_v28\face\face_cache.c:21:static volatile uint32_t s_defer_until_ms;
+NuwaxAIPartner-v2/main\wake_word_detector.c:89:    volatile bool initialized;
+NuwaxAIPartner-v2/main\wake_word_detector.c:299:        atomic_store_explicit(&s_detector.stop_requested,
+NuwaxAIPartner-v2/main\wake_word_detector.c:456:    while (!atomic_load_explicit(&s_detector.stop_requested,
+NuwaxAIPartner-v2/main\wake_word_detector.c:756:    atomic_store_explicit(&s_detector.stop_requested,
+NuwaxAIPartner-v2/main\wake_word_detector.c:822:        atomic_store_explicit(&s_detector.stop_requested,

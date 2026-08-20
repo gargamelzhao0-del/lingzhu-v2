@@ -1,0 +1,16 @@
+﻿NuwaxAIPartner-v2/main\nuwax_lvgl_port.c:505:    const esp_timer_create_args_t tick_args = {
+NuwaxAIPartner-v2/main\nuwax_lvgl_port.c:509:    ESP_RETURN_ON_ERROR(esp_timer_create(&tick_args, &s_tick_timer), TAG, "tick timer create failed");
+NuwaxAIPartner-v2/main\nuwax_lvgl_port.c:510:    ESP_RETURN_ON_ERROR(esp_timer_start_periodic(s_tick_timer, LVGL_TICK_PERIOD_MS * 1000),
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:329:    (void)esp_event_handler_unregister(NETWORK_PROV_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:332:    (void)esp_event_handler_unregister(PROTOCOMM_SECURITY_SESSION_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:335:    (void)esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:337:    (void)esp_event_handler_unregister(WIFI_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:347:    esp_err_t err = esp_event_handler_register(NETWORK_PROV_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:351:        err = esp_event_handler_register(PROTOCOMM_SECURITY_SESSION_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:356:        err = esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:360:        err = esp_event_handler_register(WIFI_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:367:        (void)esp_event_handler_unregister(NETWORK_PROV_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:370:        (void)esp_event_handler_unregister(PROTOCOMM_SECURITY_SESSION_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:373:        (void)esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:375:        (void)esp_event_handler_unregister(WIFI_EVENT,
+NuwaxAIPartner-v2/main\touch_input.c:738:        isr_err = gpio_isr_handler_add(CONFIG_NUWAX_TOUCH_PIN_INT,

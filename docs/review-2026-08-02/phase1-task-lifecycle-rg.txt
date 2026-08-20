@@ -1,0 +1,66 @@
+﻿NuwaxAIPartner-v2/main\board\battery_service.c:281:    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(delay_ms));
+NuwaxAIPartner-v2/main\board\battery_service.c:357:    vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\board\battery_service.c:386:    BaseType_t created = xTaskCreateWithCaps(
+NuwaxAIPartner-v2/main\board\battery_service.c:426:    if (task) xTaskNotifyGive(task);
+NuwaxAIPartner-v2/main\board\battery_service.c:431:        vTaskDeleteWithCaps(task);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:176:    vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:218:    if (xTaskCreateWithCaps(input_task, "board_inputs", 2560, NULL, 4,
+NuwaxAIPartner-v2/main\board\board_gpio_inputs.c:243:        vTaskDeleteWithCaps(stopped_task);
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:403:    vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:428:    vTaskSuspend(ctx->task);
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:432:    vTaskDelete(ctx->task);
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:590:    ctx->task = xTaskCreateStaticPinnedToCore(
+NuwaxAIPartner-v2/main\nuwax_lvgl_port.c:543:    TaskHandle_t lvgl_handle = xTaskCreateStaticPinnedToCore(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4307:    TaskHandle_t h = xTaskCreateStatic(task, name, stack_bytes, NULL, priority, stack, tcb);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4334:    TaskHandle_t h = xTaskCreateStatic(task, name, stack_bytes, NULL,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4361:    TaskHandle_t h = xTaskCreateStaticPinnedToCore(task, name, stack_bytes, NULL, priority, stack, tcb, core_id);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4375:        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4417:        xTaskNotifyGive(s_wifi_scan_task);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:5201:        xTaskNotifyWait(0, UINT32_MAX, &operations, portMAX_DELAY);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:5277:    if (xTaskNotify(s_flash_ops_task,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7014:        vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7083:    vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7263:    ctx->task = xTaskCreateStaticPinnedToCore(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7340:        vTaskSuspend(ctx->task);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7344:        vTaskDelete(ctx->task);
+NuwaxAIPartner-v2/main\board\led_driver.c:118:        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
+NuwaxAIPartner-v2/main\board\led_driver.c:130:    vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\board\led_driver.c:172:    if (xTaskCreateWithCaps(led_task, "nuwax_led", 2048, NULL, 3,
+NuwaxAIPartner-v2/main\board\led_driver.c:219:    if (task) xTaskNotifyGive(task);
+NuwaxAIPartner-v2/main\board\led_driver.c:254:    if (task) xTaskNotifyGive(task);
+NuwaxAIPartner-v2/main\board\led_driver.c:279:    if (task) xTaskNotifyGive(task);
+NuwaxAIPartner-v2/main\board\led_driver.c:295:    if (task) xTaskNotifyGive(task);
+NuwaxAIPartner-v2/main\board\led_driver.c:300:        vTaskDeleteWithCaps(task);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:456:        (void)xTaskNotifyWait(0U, OTA_NOTIFY_RESULT_ACK, &notified,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:527:        (void)xTaskNotify(controller, OTA_NOTIFY_RESULT_ACK, eSetBits);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1147:        (void)xTaskNotifyWait(0U, UINT32_MAX, &notifications, 0);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1237:    BaseType_t created = xTaskCreate(ota_controller_task, "ota_controller",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1578:    if (xTaskNotify(controller, OTA_NOTIFY_CLOUD_READY, eSetBits) == pdPASS) {
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:387:    BaseType_t created = xTaskCreate(power_key_task,
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:149:    xTaskNotifyGive(ctx->owner);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:150:    vTaskDelete(NULL);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:174:    xTaskNotifyGive(ctx->owner);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:175:    vTaskDelete(NULL);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:205:    vTaskDelete(NULL);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:806:    BaseType_t task_ok = xTaskCreate(test_tone_task,
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1274:    BaseType_t task_ok = xTaskCreate(health_tx_task, "p3_chmap_tx", 4096, &tx_ctx, 5, NULL);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1400:        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1500)) == 0 && result == ESP_OK) {
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1561:    BaseType_t task_ok = xTaskCreate(health_tx_task, "p3_health_tx", 4096, &tx_ctx, 5, NULL);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1650:    if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1500)) == 0) {
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1776:    BaseType_t task_ok = xTaskCreate(smoke_tx_task, "p2_smoke_tx", 4096, &tx_ctx, 5, NULL);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1834:    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1500));
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_usb_control.c:39:        vTaskDeleteWithCaps(NULL);
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_usb_control.c:97:    if (xTaskCreateWithCaps(usb_control_task, "nuwax_usb_ctrl",
+NuwaxAIPartner-v2/main\ws_transport.c:1325:    vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\ws_transport.c:1349:    vTaskDeleteWithCaps(rx_task);
+NuwaxAIPartner-v2/main\ws_transport.c:1520:    BaseType_t task_ok = xTaskCreateWithCaps(websocket_receive_task,
+NuwaxAIPartner-v2/main\touch_input.c:495:        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
+NuwaxAIPartner-v2/main\touch_input.c:719:    BaseType_t ok = xTaskCreateWithCaps(touch_log_task,
+NuwaxAIPartner-v2/main\touch_input.c:775:    BaseType_t ok = xTaskCreate(p1_touch_diag_task,
+NuwaxAIPartner-v2/main\wifi_manager.c:400:    BaseType_t ok = xTaskCreate(wifi_fallback_watcher_task, "wifi_fb_watch",
+NuwaxAIPartner-v2/main\wake_word_detector.c:265:    vTaskSuspend(task);
+NuwaxAIPartner-v2/main\wake_word_detector.c:293:    vTaskDelete(task);
+NuwaxAIPartner-v2/main\wake_word_detector.c:572:        vTaskSuspend(NULL);
+NuwaxAIPartner-v2/main\wake_word_detector.c:788:    s_detector.task = xTaskCreateStatic(wake_word_task,
+NuwaxAIPartner-v2/main\nuwax_ui_v28\face\face_cache.c:476:        BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(
+NuwaxAIPartner-v2/main\conversation\barge_in_dispatcher.c:352:        BaseType_t created = xTaskCreateWithCaps(

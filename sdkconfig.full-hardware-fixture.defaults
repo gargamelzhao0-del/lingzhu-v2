@@ -1,0 +1,11 @@
+# Build-only overlay for external-fixture driver coverage.
+# Do not flash unless a 4G module is installed and GPIO43/44 are looped back.
+CONFIG_NUWAX_HW_ACCEPTANCE_BASE_UART_LOOPBACK_ENABLE=y
+CONFIG_NUWAX_HW_ACCEPTANCE_4G_AT_ENABLE=y
+
+# GPIO43/44 are the default UART0 console pins and the base UART pins. Route
+# application logs only through native USB Serial/JTAG before using UART1 there.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# CONFIG_ESP_CONSOLE_UART is not set
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG is not set

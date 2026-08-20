@@ -1,0 +1,324 @@
+﻿NuwaxAIPartner-v2/main\aec_delay_shadow_host_check.c:139:        (void)nuwax_aec_delay_shadow_process(state,
+NuwaxAIPartner-v2/main\aec_delay_shadow_host_check.c:175:    (void)nuwax_aec_delay_shadow_process(state,
+NuwaxAIPartner-v2/main\app_shell.c:183:    (void)app_shell_next_state_revision_locked();
+NuwaxAIPartner-v2/main\app_shell.c:201:    (void)app_shell_next_state_revision_locked();
+NuwaxAIPartner-v2/main\app_shell.c:242:    (void)app_shell_next_state_revision_locked();
+NuwaxAIPartner-v2/main\app_shell.c:248:    (void)nuwax_app_shell_publish_device_state_delta(
+NuwaxAIPartner-v2/main\app_shell.c:254:    (void)nuwax_app_shell_publish_device_state_delta(
+NuwaxAIPartner-v2/main\app_shell.c:260:    (void)nuwax_app_shell_publish_device_state_delta(
+NuwaxAIPartner-v2/main\app_shell.c:552:    (void)nuwax_app_shell_publish_device_state_delta(
+NuwaxAIPartner-v2/main\app_shell.c:562:    (void)nuwax_app_shell_publish_device_state_delta(
+NuwaxAIPartner-v2/main\app_shell.c:569:    (void)nuwax_app_shell_publish_device_state_delta(
+NuwaxAIPartner-v2/main\app_shell.c:591:    (void)app_shell_next_state_revision_locked();
+NuwaxAIPartner-v2/main\app_shell.c:647:    (void)nuwax_app_shell_publish_device_state_delta(
+NuwaxAIPartner-v2/main\barge_in_detector_host_check.c:490:    (void)nuwax_barge_in_nearfield_tracker_update(&tracker, true, UINT32_MAX - 10U);
+NuwaxAIPartner-v2/main\barge_in_detector_host_check.c:671:    (void)nuwax_barge_in_symmetric_tracker_update_with_support(
+NuwaxAIPartner-v2/main\board\audio_board.c:296:                (void)nuwax_audio_board_deinit();
+NuwaxAIPartner-v2/main\board\audio_board.c:305:                (void)nuwax_audio_board_deinit();
+NuwaxAIPartner-v2/main\board\battery_service.c:281:    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(delay_ms));
+NuwaxAIPartner-v2/main\board\battery_service.c:374:    (void)xSemaphoreTake(s_service.stopped, 0);
+NuwaxAIPartner-v2/main\board\bq27220_driver.c:277:            (void)restore_sealed_state(true);
+NuwaxAIPartner-v2/main\board\hardware_selftest.c:219:    (void)nuwax_4g_power_set(false);
+NuwaxAIPartner-v2/main\board\hardware_selftest.c:243:    (void)nuwax_sd_card_unmount();
+NuwaxAIPartner-v2/main\board\hardware_selftest.c:253:    (void)nuwax_uart_deinit(NUWAX_UART_BASE);
+NuwaxAIPartner-v2/main\board\led_driver.c:118:        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:270:        (void)nuwax_monitoring_protocol_send_command_ack(ws,
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:288:                (void)nuwax_monitoring_protocol_send_command_ack(ws,
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:332:            (void)nuwax_monitoring_protocol_send_command_ack(ws,
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:355:        (void)nuwax_monitoring_protocol_send_command_ack(
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:690:            (void)nuwax_ws_request_close_if_epoch(ws, ws_epoch);
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:699:        (void)nuwax_ws_request_close_if_epoch(ws, ws_epoch);
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:760:            (void)nuwax_ws_request_close_if_epoch(ws, ws_epoch);
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:796:            (void)nuwax_ws_request_close_if_epoch(ws, ws_epoch);
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:800:            (void)nuwax_ws_request_close_if_epoch(ws, ws_epoch);
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:1007:                    (void)monitoring_stream_close(&stream, mode, ws);
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:1091:        (void)nuwax_mic_input_deinit(&mic);
+NuwaxAIPartner-v2/main\audio_modes\monitoring\monitoring_mode.c:1186:            (void)nuwax_monitoring_protocol_send_command_ack(
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:90:    (void)gpio_set_level((gpio_num_t)pin, hold_level);
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:91:    (void)gpio_config(&io);
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:92:    (void)gpio_set_level((gpio_num_t)pin, hold_level);
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:95:    (void)gpio_set_level((gpio_num_t)pin, hold_level);
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:255:    (void)gpio_set_level(pin, release_level);
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:256:    (void)gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:257:    (void)gpio_set_level(pin, release_level);
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:317:    (void)gpio_set_level(hold_pin, release_level);
+NuwaxAIPartner-v2/main\board\nuwax_power_ctrl.c:433:    (void)gpio_config(&io);
+NuwaxAIPartner-v2/main\board\qmi8658a_driver.c:184:    (void)read_reg(QMI8658A_REG_REVISION, &revision);
+NuwaxAIPartner-v2/main\board\sd_card_driver.c:103:        (void)remove(path);
+NuwaxAIPartner-v2/main\board\sd_card_driver.c:111:        (void)remove(path);
+NuwaxAIPartner-v2/main\board\uart_driver.c:107:    (void)uart_flush_input(cfg->port);
+NuwaxAIPartner-v2/main\board\uart_driver.c:185:        (void)uart_flush_input(cfg->port);
+NuwaxAIPartner-v2/main\board\uart_driver.c:217:    (void)nuwax_uart_deinit(NUWAX_UART_4G);
+NuwaxAIPartner-v2/main\board\uart_driver.c:219:        (void)nuwax_4g_power_set(false);
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_processor_host_check.c:119:    (void)nuwax_meeting_inactivity_update(&inactivity,
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:255:        (void)i2s_channel_read(s_rx, s_rx_frame, sizeof(s_rx_frame), &bytes_done, 20);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:461:        (void)i2s_del_channel(s_tx);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:465:        (void)i2s_del_channel(s_rx);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:683:        (void)nuwax_vocat_audio_board_deinit();
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:787:        (void)nuwax_audio_board_deinit();
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:794:        (void)nuwax_audio_board_deinit();
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:802:        (void)nuwax_audio_board_deinit();
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:816:        (void)nuwax_audio_board_deinit();
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:837:    (void)nuwax_audio_board_deinit();
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1432:    (void)set_es8311_volume_db(0.0f, "REF probe volume"); /* max for probe */
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1442:            (void)i2s_channel_read(s_rx, s_rx_frame, sizeof(s_rx_frame), &b, 20);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1451:            (void)i2s_channel_write(s_tx, s_tx_frame, sizeof(s_tx_frame), &wb, 100);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1575:            (void)i2s_channel_read(s_rx, s_rx_frame, sizeof(s_rx_frame), &b, 20);
+NuwaxAIPartner-v2/main\board\vocat_audio_board.c:1834:    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1500));
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:307:                (void)nuwax_meeting_protocol_send_command_ack(ws,
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:327:                (void)nuwax_meeting_protocol_send_command_ack(ws,
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:338:                (void)nuwax_meeting_protocol_send_command_ack(ws,
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:378:            (void)nuwax_meeting_protocol_send_command_ack(ws,
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:396:            (void)nuwax_meeting_protocol_send_command_ack(ws,
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:690:            (void)nuwax_ws_request_close_if_epoch(ws, ws_epoch);
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:700:        (void)nuwax_ws_request_close_if_epoch(ws, ws_epoch);
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:870:            (void)nuwax_ws_request_close_if_epoch(ws, ws_epoch);
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:901:        (void)nuwax_mic_input_deinit(&mic);
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:919:            (void)nuwax_ws_request_close_if_epoch(ws, ws_epoch);
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:926:        (void)nuwax_ws_request_close_if_epoch(ws, ws_epoch);
+NuwaxAIPartner-v2/main\audio_modes\meeting\meeting_mode.c:1070:            (void)nuwax_meeting_protocol_send_command_ack(ws,
+NuwaxAIPartner-v2/main\display.c:774:    (void)spi_command(ST77916_TEOFF);
+NuwaxAIPartner-v2/main\emotion_ui_pending_host_check.c:35:    (void)nuwax_emotion_ui_submit(&pending, oversized, oversized);
+NuwaxAIPartner-v2/main\conversation\aec_delay_shadow.c:307:        (void)append_candidate(state, delay, mic, frame_samples, history, mic_moments);
+NuwaxAIPartner-v2/main\conversation\aec_delay_shadow.c:315:        (void)append_candidate(state,
+NuwaxAIPartner-v2/main\conversation\aec_delay_shadow.c:340:        (void)append_candidate(state, delay, mic, frame_samples, history, mic_moments);
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:92:    (void)atomic_compare_exchange_strong_explicit(&ctx->send_result,
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:112:    (void)xQueueSend(ctx->free_slots, &slot, 0);
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:299:                (void)nuwax_ws_request_close_if_epoch(
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:372:                (void)nuwax_ws_request_close_if_epoch(
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:391:                    (void)nuwax_ws_request_close_if_epoch(
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:563:        (void)xQueueSend(ctx->free_slots, &slot, 0);
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:1058:            (void)nuwax_ws_request_close_if_epoch(
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:1168:                (void)nuwax_ws_request_close_if_epoch(
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:1190:    (void)nuwax_audio_uplink_finish_is_complete(ctx, &finish_result);
+NuwaxAIPartner-v2/main\conversation\audio_uplink.c:1207:            (void)nuwax_ws_request_close_if_epoch(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:564:    (void)active_ws_snapshot(&epoch);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1046:    (void)update_normal_downlink_admission(false);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1066:        (void)nuwax_speaker_playback_reject_start_generation(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1071:        (void)nuwax_speaker_playback_reject_start_generation(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1080:        (void)nuwax_speaker_playback_request_cancel_generation(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1137:    (void)update_normal_downlink_admission(true);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1604:    (void)nuwax_conversation_metrics_record_duration(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:1613:    (void)nuwax_conversation_metrics_record_duration(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2058:    (void)set_state_logical(state, NULL, false);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2080:            (void)nuwax_ui_sync_complete(&s_ui_state_sync, state, generation);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2124:        (void)nuwax_ui_sync_complete(&s_ui_state_sync, state, generation);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2169:            (void)nuwax_emotion_ui_complete(&s_emotion_ui_sync,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2297:            (void)xQueueSend(s_wake_word_events, &event, 0);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:2996:    (void)enqueue_speaker_owner_event((nuwax_speaker_owner_event_t){
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3005:    (void)enqueue_speaker_owner_event((nuwax_speaker_owner_event_t){
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3017:    (void)atomic_compare_exchange_strong_explicit(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3031:    (void)enqueue_speaker_owner_event((nuwax_speaker_owner_event_t){
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3043:    (void)enqueue_speaker_owner_event((nuwax_speaker_owner_event_t){
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3060:    (void)enqueue_speaker_owner_event((nuwax_speaker_owner_event_t){
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3079:    (void)enqueue_speaker_owner_event((nuwax_speaker_owner_event_t){
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3092:    (void)enqueue_speaker_owner_event((nuwax_speaker_owner_event_t){
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3100:    (void)enqueue_speaker_owner_event((nuwax_speaker_owner_event_t){
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3111:        (void)nuwax_speaker_playback_reject_start_generation(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3144:            (void)enqueue_speaker_owner_event((nuwax_speaker_owner_event_t){
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3177:        (void)request_active_ws_close_for_epoch(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3235:                    (void)nuwax_speaker_playback_reject_start_generation(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3264:                    (void)nuwax_speaker_playback_reject_start_generation(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3268:                    (void)request_active_ws_close_for_epoch(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3275:                (void)set_active_turn_phase(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3289:                    (void)set_active_turn_phase(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3406:                (void)nuwax_speaker_playback_reject_start_generation(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3411:                (void)request_active_ws_close_for_epoch(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3437:                    (void)request_active_ws_close_for_epoch(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3448:                (void)request_active_ws_close_for_epoch(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3477:                    (void)nuwax_speaker_playback_request_cancel_generation(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3501:                    (void)enqueue_speaker_owner_event(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3546:        (void)nuwax_speaker_playback_request_cancel_generation(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3913:        (void)xQueueReset(s_session_commands);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3917:        (void)xQueueReset(s_p3_softref_ab_requests);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3922:        (void)xQueueReset(s_p5_during_playback_candidate_requests);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3929:        (void)xQueueReset(s_speaker_owner_events);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:3983:        (void)nuwax_ws_request_close_if_epoch(ws, ws_connection_epoch);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4027:        (void)preserve_filtered_text_response_emotion(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4169:            (void)nuwax_ws_request_close_if_epoch(ws,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4184:            (void)nuwax_ws_request_close_if_epoch(ws,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4211:            (void)nuwax_ws_request_close_if_epoch(ws,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4246:            (void)nuwax_ws_request_close_if_epoch(ws,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4598:        (void)xQueueReceive(s_wifi_status_reports, &report, 0);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4623:        (void)xQueueReceive(s_wifi_scan_results, &report, 0);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4817:        (void)nuwax_ws_request_close_if_epoch(ws, ws_epoch);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:4928:        (void)nuwax_power_ctrl_set_shutdown_inhibited(false);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:5297:    (void)queue_ble_reprovision_request("device_menu");
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:5643:                (void)activate_pending_prelisten_capture(now32, "started");
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:5700:                    (void)activate_pending_prelisten_capture(now32, "touch_start");
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7063:        (void)rt_capture_read_frame(ctx, frame);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7073:            (void)xQueueSend(ctx->free_slots, &slot, 0);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7233:        (void)xQueueSend(ctx->free_slots, &slot, 0);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7313:    (void)xQueueSend(ctx->free_slots, &slot, 0);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:7503:        (void)nuwax_aec_delay_shadow_process(shadow,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:8869:                    (void)nuwax_ws_request_close_if_epoch(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:9063:                    (void)nuwax_conversation_metrics_count_event(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:9104:                (void)nuwax_conversation_metrics_observe_queue(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:9266:                        (void)nuwax_conversation_metrics_count_event(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:10937:            (void)nuwax_p3_l3_process_chunk(s_audio_samples, samples_read);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:11223:                (void)nuwax_barge_controller_begin_playback(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:11274:                    (void)nuwax_conversation_metrics_set_aec_runtime(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:11317:                    (void)nuwax_conversation_metrics_count_event(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:12544:                (void)nuwax_barge_controller_mark_uplink_active(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:12948:        (void)nuwax_conversation_metrics_observe_queue(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:12953:        (void)nuwax_conversation_metrics_observe_queue(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:12961:            (void)nuwax_conversation_metrics_count_event(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:12967:            (void)nuwax_conversation_metrics_count_event(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13311:            (void)nuwax_barge_dispatcher_cancel(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13716:                    (void)request_active_ws_close(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13726:                    (void)request_active_ws_close(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13785:                        (void)set_active_turn_phase(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13845:                    (void)authorize_speaker_generation_for_active_turn(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13852:                (void)set_active_turn_phase(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13858:                    (void)set_active_turn_phase(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13862:                    (void)set_active_turn_phase(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13866:                    (void)set_active_turn_phase(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13891:            (void)set_active_turn_phase(NUWAX_TURN_PHASE_PLAYING,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13908:                (void)authorize_speaker_generation_for_active_turn(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:13934:            (void)set_active_turn_phase(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:14499:        (void)preserve_filtered_text_response_emotion(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:15758:        (void)nuwax_ui_sync_complete(&s_ui_state_sync,
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:15931:    (void)run_p3_aec_ref_health_gate("P3-0 boot gate", true);
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:15952:        (void)nuwax_provision_main_stop();
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:15966:            (void)nuwax_provision_main_stop();
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:15981:                (void)nuwax_provision_main_stop();
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:16000:                (void)nuwax_provision_main_stop();
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:16012:        (void)nuwax_provision_main_stop();
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:16020:    (void)nuwax_p3_l3_init();
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:16203:            (void)nuwax_ws_request_close_if_epoch(
+NuwaxAIPartner-v2/main\nuwax_ai_partner_main.c:16375:            (void)recover_wifi_if_needed();
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_device_uid.c:153:        (void)persist_uid_to_nvs();
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_usb_control.c:21:    (void)usb_serial_jtag_write_bytes(response, strlen(response),
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_usb_control.c:23:    (void)usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:329:    (void)esp_event_handler_unregister(NETWORK_PROV_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:332:    (void)esp_event_handler_unregister(PROTOCOMM_SECURITY_SESSION_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:335:    (void)esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:337:    (void)esp_event_handler_unregister(WIFI_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:367:        (void)esp_event_handler_unregister(NETWORK_PROV_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:370:        (void)esp_event_handler_unregister(PROTOCOMM_SECURITY_SESSION_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:373:        (void)esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:375:        (void)esp_event_handler_unregister(WIFI_EVENT,
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:563:            (void)network_prov_mgr_reset_wifi_sm_state_on_failure();
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:1244:        (void)network_prov_mgr_deinit();
+NuwaxAIPartner-v2/main\nuwax_provision_new\nuwax_provision_main.c:1386:            (void)network_prov_mgr_reset_wifi_sm_state_on_failure();
+NuwaxAIPartner-v2/main\conversation\conversation_metrics.c:146:    (void)xSemaphoreTake(lock->handle, portMAX_DELAY);
+NuwaxAIPartner-v2/main\conversation\conversation_metrics.c:155:    (void)xSemaphoreGive(lock->handle);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota.c:269:            (void)set_state(NUWAX_OTA_STATE_FAILED,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:642:    (void)json_escape(detail, escaped_detail, sizeof(escaped_detail));
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:682:        (void)nvs_set_status(NVS_KEY_LAST, persisted);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:686:        (void)nvs_set_status(NVS_KEY_LAST, persisted);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:735:        (void)nvs_set_status(NVS_KEY_LAST, s_status_text);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:807:        (void)nvs_set_status(NVS_KEY_LAST,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:817:        (void)nvs_set_status(NVS_KEY_LAST, "manifest_invalid");
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:824:        (void)nvs_set_status(NVS_KEY_LAST, "ota_partition_not_found");
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:835:        (void)nvs_set_status(NVS_KEY_LAST, "pending_metadata_persist_failed");
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:851:    (void)nvs_set_status(NVS_KEY_LAST, "downloading");
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:908:    (void)nuwax_ota_tick(current_ms);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:1009:    (void)nvs_set_status(NVS_KEY_LAST, "running_image_valid");
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_main.c:1016:    (void)nvs_set_status(NVS_KEY_LAST, "rollback_requested");
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:456:        (void)xTaskNotifyWait(0U, OTA_NOTIFY_RESULT_ACK, &notified,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:527:        (void)xTaskNotify(controller, OTA_NOTIFY_RESULT_ACK, eSetBits);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:747:        (void)clear_report_context();
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:779:        (void)emit_cancelled_item_result(item);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:785:        (void)emit_ack(item->request_id, item->update_id, false, false,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:799:        (void)emit_ack(item->request_id, item->update_id, false, false,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:808:        (void)emit_ack(item->request_id, item->update_id, false, false,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:818:        (void)emit_ack(item->request_id, item->update_id, false, false,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:830:        (void)emit_ack(item->request_id, item->update_id, false, false,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:838:        (void)emit_ack(item->request_id, item->update_id, false, false,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:855:        (void)emit_ack(item->request_id, item->update_id, false, false,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:879:        (void)clear_report_context();
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:881:        (void)emit_ack(item->request_id, item->update_id, false, false,
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:927:    (void)emit_progress(NUWAX_OTA_STATE_IDLE, 0, "quiescing");
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1033:        (void)emit_progress(NUWAX_OTA_STATE_DONE, 100, "rebooting");
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1147:        (void)xTaskNotifyWait(0U, UINT32_MAX, &notifications, 0);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1177:            (void)execute_timeout_rollback();
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1266:        (void)emit_ack(request_id, update_id, true, false, "cancelling",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1271:        (void)emit_ack(request_id, update_id, false, false, "rejected",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1298:        (void)emit_ack(request_id, update_id, true, false, "cancelling",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1307:    (void)emit_progress(stats.state, stats.pct, NULL);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1383:        (void)emit_ack(request_id, update_id, false, false, "rejected",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1388:        (void)emit_ack(request_id, update_id, false, false, "rejected",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1402:        (void)emit_ack(request_id, update_id, false, false, "rejected",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1421:        (void)emit_ack(request_id, update_id, true, true, "in_progress",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1426:        (void)emit_ack(request_id, update_id, false, false, "rejected",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1441:        (void)emit_ack(request_id, update_id, false, false, "rejected",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1447:        (void)emit_ack(request_id, update_id, false, false, "rejected",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1454:        (void)emit_ack(request_id, update_id, false, false, "rejected",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1489:        (void)emit_ack(request_id, update_id, false, false, "rejected",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1500:        (void)emit_ack(request_id, update_id, false, false, "rejected",
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1688:            (void)nuwax_ota_main_running_image_pending_verify(&still_pending);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1703:        if (err == ESP_OK) (void)clear_report_context();
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_device.c:1780:    if (err == ESP_OK) (void)clear_report_context();
+NuwaxAIPartner-v2/main\conversation\live_aec.c:2848:        (void)fifo_append(aec,
+NuwaxAIPartner-v2/main\conversation\live_aec.c:2882:    (void)apply_dual_mic_nearend_restore(aec, aec->out_chunk, chunk, zero_metrics, false);
+NuwaxAIPartner-v2/main\conversation\live_aec.c:2888:        (void)fifo_append(aec,
+NuwaxAIPartner-v2/main\conversation\live_aec.c:2933:    (void)apply_dual_mic_nearend_restore(aec, aec->out_chunk, chunk, zero_metrics, false);
+NuwaxAIPartner-v2/main\conversation\live_aec.c:2939:        (void)fifo_append(aec,
+NuwaxAIPartner-v2/main\conversation\live_aec.c:3144:        (void)fifo_append_pair(aec,
+NuwaxAIPartner-v2/main\conversation\p5_fullduplex_overlap_probe.c:661:            (void)nuwax_p3_nearend_candidate_evaluate(aec.duration_ms,
+NuwaxAIPartner-v2/main\conversation\p5_fullduplex_overlap_probe.c:912:            (void)nuwax_ws_request_close_if_epoch(ws, expected_ws_epoch);
+NuwaxAIPartner-v2/main\conversation\p5_fullduplex_overlap_probe.c:922:        (void)nuwax_ws_request_close_if_epoch(ws, expected_ws_epoch);
+NuwaxAIPartner-v2/main\conversation\p5_fullduplex_overlap_probe.c:1055:            (void)nuwax_ws_request_close_if_epoch(ws, expected_ws_epoch);
+NuwaxAIPartner-v2/main\conversation\p5_fullduplex_overlap_probe.c:1075:            (void)nuwax_ws_request_close_if_epoch(ws, expected_ws_epoch);
+NuwaxAIPartner-v2/main\conversation\p5_fullduplex_overlap_probe.c:1085:        (void)nuwax_ws_request_close_if_epoch(ws, expected_ws_epoch);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:760:    (void)speaker_clear_probe_duck_locked(false);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:952:                (void)xQueueReset(s_speaker_ctx.packets);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:1200:                (void)xQueueReset(s_speaker_ctx.packets);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:1978:    (void)speaker_clear_probe_duck_locked(false);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:2006:        (void)xQueueReset(s_speaker_ctx.packets);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:2251:    (void)speaker_cancel_now_if_current(0, source);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:2549:    (void)nuwax_speaker_playback_request_cancel_generation(
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:2585:        (void)speaker_cancel_now_if_current(expected_generation, source);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:2632:    (void)speaker_cancel_now_if_current(expected_generation, source);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:2767:                (void)xQueueReset(s_speaker_ctx.packets);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:2806:            (void)speaker_clear_probe_duck_locked(false);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:3076:            (void)xQueueReset(s_speaker_ctx.packets);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:3107:    (void)speaker_clear_probe_duck_locked(false);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:3134:    (void)speaker_clear_probe_duck_locked(false);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:3369:                (void)xQueueReset(s_speaker_ctx.packets);
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:3404:        (void)speaker_restore_probe_duck_if_due(monotonic_ms());
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:3445:            (void)speaker_restore_probe_duck_if_due(monotonic_ms());
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:3452:                (void)speaker_cancel_now_if_current(
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:3628:                (void)speaker_cancel_now_if_current_epoch(
+NuwaxAIPartner-v2/main\conversation\speaker_playback.c:3820:            (void)speaker_cancel_now_if_current_epoch(
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_manifest.c:549:        (void)psa_hash_abort(&hash->ctx);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_manifest.c:584:        (void)psa_hash_abort(&hash->ctx);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_manifest.c:602:        (void)psa_hash_abort(&hash->ctx);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_transport.c:234:    (void)nuwax_ota_tick((uint32_t)(esp_timer_get_time() / 1000ULL));
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_transport.c:727:        (void)esp_http_client_close(client);
+NuwaxAIPartner-v2/main\nuwax_ota_new\nuwax_ota_transport.c:760:        (void)esp_http_client_close(client);
+NuwaxAIPartner-v2/main\session_protocol.c:285:    (void)nuwax_ota_main_running_image_pending_verify(&pending_verify);
+NuwaxAIPartner-v2/main\session_protocol.c:286:    (void)nuwax_ota_main_get_release_sequence(&release_sequence);
+NuwaxAIPartner-v2/main\touch_input.c:119:    (void)xQueueReceive(s_touch_queue, &dropped, 0);
+NuwaxAIPartner-v2/main\touch_input.c:495:        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
+NuwaxAIPartner-v2/main\touch_input.c:519:                    (void)touch_queue_send_latest(&point, 0);
+NuwaxAIPartner-v2/main\touch_input.c:743:            (void)gpio_intr_enable(CONFIG_NUWAX_TOUCH_PIN_INT);
+NuwaxAIPartner-v2/main\wake_word_detector.c:565:        (void)nuwax_mic_input_deinit(&mic);
+NuwaxAIPartner-v2/main\wake_word_detector.c:730:    (void)detector_reap_exited_task();
+NuwaxAIPartner-v2/main\wake_word_detector.c:849:    (void)detector_reap_exited_task();
+NuwaxAIPartner-v2/main\wake_word_detector.c:916:        (void)detector_reap_exited_task();
+NuwaxAIPartner-v2/main\wifi_manager.c:170:            (void)nuwax_wifi_saved_network_append(
+NuwaxAIPartner-v2/main\ws_transport.c:441:        (void)shutdown(sock, SHUT_RDWR);
+NuwaxAIPartner-v2/main\ws_transport.c:962:            (void)nuwax_ws_request_close_if_epoch(client, expected_epoch);
+NuwaxAIPartner-v2/main\ws_transport.c:1020:        (void)nuwax_ws_request_close_if_epoch(client, expected_epoch);
+NuwaxAIPartner-v2/main\ws_transport.c:1032:        (void)nuwax_ws_request_close_if_epoch(client, expected_epoch);
+NuwaxAIPartner-v2/main\ws_transport.c:1041:        (void)nuwax_ws_request_close_if_epoch(client, expected_epoch);
+NuwaxAIPartner-v2/main\ws_transport.c:1152:    (void)send_frame(client, 0x8, payload, sizeof(payload));
+NuwaxAIPartner-v2/main\ws_transport.c:1307:                (void)send_frame(client, 0x8, payload, payload_size);
+NuwaxAIPartner-v2/main\ws_transport.c:1709:    (void)nuwax_ws_request_close_if_epoch(client, epoch);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\face\face_cache.c:642:    (void)xQueueSend(s_preload_queue, &queued, 0);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\assets\nuwax_menu_icon_assets.c:213:        (void)nuwax_menu_icon_assets_get_cached(item, false);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\assets\nuwax_menu_icon_assets.c:214:        (void)nuwax_menu_icon_assets_get_cached(item, true);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_focus_menu.c:248:    (void)nuwax_focus_menu_set_size_if_changed(s_dots[i], w, 4);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_focus_menu.c:249:    (void)nuwax_focus_menu_set_pos_if_changed(s_dots[i], x, 2);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_focus_menu.c:883:        (void)menu_bg_snapshot_activate();
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_focus_menu.c:903:        (void)menu_bg_snapshot_activate();
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_focus_menu.c:965:    (void)nuwax_focus_menu_set_pos_if_changed(view->issue_dot, (width + icon_size) / 2 - 5, 2);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_focus_menu.c:988:    (void)nuwax_focus_menu_set_size_if_changed(view->wrap, style.w, style.h);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_focus_menu.c:989:    (void)nuwax_focus_menu_set_pos_if_changed(view->wrap, style.x, style.y);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_focus_menu.c:1025:    (void)nuwax_focus_menu_set_width_if_changed(view->name, style.w);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_focus_menu.c:1026:    (void)nuwax_focus_menu_set_pos_if_changed(view->name, 0, style.label_y);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_focus_menu.c:1038:    (void)nuwax_focus_menu_set_pos_if_changed(view->underline, (style.w - 22) / 2, style.underline_y);
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_focus_menu.c:1481:    (void)menu_bg_snapshot_refresh();
+NuwaxAIPartner-v2/main\nuwax_ui_v28\nuwax_drawer.c:1162:        (void)proxy_activate();

@@ -1,0 +1,5 @@
+# Hardware acceptance overlay. Append this file to SDKCONFIG_DEFAULTS for a
+# diagnostic build; production defaults intentionally keep the telemetry off.
+CONFIG_NUWAX_UI_PERF_LOG_ENABLE=y
+CONFIG_NUWAX_UI_PERF_LOG_INTERVAL_MS=2000
+CONFIG_NUWAX_UI_LONG_HANDLER_WARN_US=33000

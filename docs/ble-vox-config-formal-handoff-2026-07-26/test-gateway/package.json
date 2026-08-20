@@ -1,0 +1,13 @@
+{
+  "name": "nuwax-vox-config-test-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minimal local gateway for BLE vox-config integration testing",
+  "main": "cloud-gateway.js",
+  "scripts": {
+    "start": "node cloud-gateway.js",
+    "test": "node --test test-gateway.test.js"
+  },
+  "license": "UNLICENSED",
+  "type": "commonjs"
+}

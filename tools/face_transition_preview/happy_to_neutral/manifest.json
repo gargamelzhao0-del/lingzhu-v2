@@ -1,0 +1,128 @@
+{
+  "from": "NUWAX_EMOTION_HAPPY",
+  "to": "NUWAX_EMOTION_NEUTRAL",
+  "duration_ms": 720,
+  "path_profile": "neutral_happy",
+  "artifact_type": "png",
+  "frames": [
+    {
+      "file": "happy_to_neutral_00.png",
+      "raw_progress": 0.0,
+      "eased_progress": 0.0,
+      "anim_value": 0,
+      "is_terminal": true
+    },
+    {
+      "file": "happy_to_neutral_01.png",
+      "raw_progress": 0.0625,
+      "eased_progress": 0.007587,
+      "anim_value": 76,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_02.png",
+      "raw_progress": 0.125,
+      "eased_progress": 0.031114,
+      "anim_value": 311,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_03.png",
+      "raw_progress": 0.1875,
+      "eased_progress": 0.071509,
+      "anim_value": 715,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_04.png",
+      "raw_progress": 0.25,
+      "eased_progress": 0.129162,
+      "anim_value": 1292,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_05.png",
+      "raw_progress": 0.3125,
+      "eased_progress": 0.203543,
+      "anim_value": 2035,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_06.png",
+      "raw_progress": 0.375,
+      "eased_progress": 0.292771,
+      "anim_value": 2928,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_07.png",
+      "raw_progress": 0.4375,
+      "eased_progress": 0.393305,
+      "anim_value": 3933,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_08.png",
+      "raw_progress": 0.5,
+      "eased_progress": 0.5,
+      "anim_value": 5000,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_09.png",
+      "raw_progress": 0.5625,
+      "eased_progress": 0.606695,
+      "anim_value": 6067,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_10.png",
+      "raw_progress": 0.625,
+      "eased_progress": 0.707229,
+      "anim_value": 7072,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_11.png",
+      "raw_progress": 0.6875,
+      "eased_progress": 0.796457,
+      "anim_value": 7965,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_12.png",
+      "raw_progress": 0.75,
+      "eased_progress": 0.870838,
+      "anim_value": 8708,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_13.png",
+      "raw_progress": 0.8125,
+      "eased_progress": 0.928491,
+      "anim_value": 9285,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_14.png",
+      "raw_progress": 0.875,
+      "eased_progress": 0.968886,
+      "anim_value": 9689,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_15.png",
+      "raw_progress": 0.9375,
+      "eased_progress": 0.992413,
+      "anim_value": 9924,
+      "is_terminal": false
+    },
+    {
+      "file": "happy_to_neutral_16.png",
+      "raw_progress": 1.0,
+      "eased_progress": 1.0,
+      "anim_value": 10000,
+      "is_terminal": true
+    }
+  ]
+}

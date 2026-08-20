@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "generated_by": "tools/protocol/generate-na-fixtures.js",
+  "header_bytes": 22,
+  "codec": {
+    "pcm16": 1,
+    "opus": 2
+  },
+  "flags": {
+    "START": 1,
+    "END": 2,
+    "VAD_SPEECH": 4
+  },
+  "fixtures": [
+    {
+      "file": "pcm16-mono-16k-20ms-start.bin",
+      "description": "Valid single PCM16 mono NA frame, 16 kHz, 20 ms, START|VAD_SPEECH.",
+      "direction": "device_to_server",
+      "valid_na": true,
+      "expected_frame_count": 1,
+      "expected": {
+        "codec": 1,
+        "codec_name": "pcm16",
+        "flags": 5,
+        "channels": 1,
+        "sample_rate": 16000,
+        "frame_duration_ms": 20,
+        "sequence": 0,
+        "timestamp_ms": 0,
+        "payload_len": 640
+      },
+      "bytes": 662
+    },
+    {
+      "file": "pcm16-batch-3frames-16k-20ms.bin",
+      "description": "Valid WS binary payload containing three consecutive PCM16 NA frames.",
+      "direction": "device_to_server",
+      "valid_na": true,
+      "expected_frame_count": 3,
+      "expected_sequences": [
+        0,
+        1,
+        2
+      ],
+      "bytes": 1986
+    },
+    {
+      "file": "opus-packet-16k-60ms.bin",
+      "description": "Valid NA container with one Opus packet payload. The fixture verifies NA framing; Opus decoder availability is a separate service dependency.",
+      "direction": "device_to_server",
+      "valid_na": true,
+      "expected_frame_count": 1,
+      "expected": {
+        "codec": 2,
+        "codec_name": "opus",
+        "flags": 7,
+        "channels": 1,
+        "sample_rate": 16000,
+        "frame_duration_ms": 60,
+        "sequence": 0,
+        "timestamp_ms": 0,
+        "payload_len": 3
+      },
+      "bytes": 25
+    },
+    {
+      "file": "invalid-bad-magic.bin",
+      "description": "Invalid NA frame: magic is XX instead of NA.",
+      "direction": "device_to_server",
+      "valid_na": false,
+      "expected_error": "bad_magic",
+      "bytes": 662
+    },
+    {
+      "file": "invalid-truncated-payload.bin",
+      "description": "Invalid NA frame: payload_len declares more bytes than the file contains.",
+      "direction": "device_to_server",
+      "valid_na": false,
+      "expected_error": "truncated_payload",
+      "bytes": 34
+    },
+    {
+      "file": "invalid-pcm16-odd-payload.bin",
+      "description": "Invalid PCM16 NA frame: payload_len is odd.",
+      "direction": "device_to_server",
+      "valid_na": false,
+      "expected_error": "bad_pcm16_payload_length",
+      "bytes": 25
+    },
+    {
+      "file": "downlink-stereo-reject.bin",
+      "description": "Valid NA framing but invalid for current server-to-device playback because downlink channels=2. Server must not send this to the device.",
+      "direction": "server_to_device_negative",
+      "valid_na": true,
+      "expected_frame_count": 1,
+      "server_must_not_send_to_device": true,
+      "expected": {
+        "codec": 1,
+        "codec_name": "pcm16",
+        "flags": 3,
+        "channels": 2,
+        "sample_rate": 24000,
+        "frame_duration_ms": 20,
+        "sequence": 0,
+        "timestamp_ms": 0,
+        "payload_len": 1920
+      },
+      "bytes": 1942
+    }
+  ]
+}

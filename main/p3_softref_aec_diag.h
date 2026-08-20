@@ -1,0 +1,94 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "esp_err.h"
+
+typedef struct {
+    uint32_t duration_ms;
+    uint32_t delay_samples;
+    uint32_t frames;
+    uint32_t chunk_samples;
+    size_t samples;
+    size_t ref_copied;
+    size_t ref_underrun;
+    uint32_t read_timeouts;
+    float mic_rms;
+    float mic2_rms;
+    float ref_rms;
+    float out_rms;
+    float dual_mic_corr;
+    float dual_mic_abs_corr;
+    float dual_mic_level_delta_db;
+    float dual_mic_diff_rms;
+    float dual_mic_diff_ratio;
+    int32_t mic_peak;
+    int32_t ref_peak;
+    int32_t out_peak;
+    float erle_db;
+    float corr_before;
+    float corr_after;
+    float corr_abs_before;
+    float corr_abs_after;
+    float corr_abs_delta;
+    float ref_underrun_ratio;
+    uint32_t active_frames;
+    size_t active_samples;
+    float active_ref_ratio;
+    float active_mic_rms;
+    float active_mic2_rms;
+    float active_ref_rms;
+    float active_out_rms;
+    float active_dual_mic_corr;
+    float active_dual_mic_abs_corr;
+    float active_dual_mic_level_delta_db;
+    float active_dual_mic_diff_rms;
+    float active_dual_mic_diff_ratio;
+    float active_erle_db;
+    float active_corr_before;
+    float active_corr_after;
+    float active_corr_abs_after;
+    uint32_t quiet_frames;
+    size_t quiet_samples;
+    float quiet_mic_rms;
+    float quiet_out_rms;
+    float quiet_out_to_mic_db;
+    int64_t cpu_ms;
+    size_t heap_start_internal_free;
+    size_t heap_start_internal_largest;
+    size_t heap_after_softref_internal_free;
+    size_t heap_after_softref_internal_largest;
+    size_t heap_after_mic_internal_free;
+    size_t heap_after_mic_internal_largest;
+    size_t heap_after_aec_internal_free;
+    size_t heap_after_aec_internal_largest;
+    size_t heap_after_buffers_internal_free;
+    size_t heap_after_buffers_internal_largest;
+    size_t heap_process_min_internal_free;
+    size_t heap_process_min_internal_largest;
+    size_t heap_start_dma_free;
+    size_t heap_start_dma_largest;
+    size_t heap_after_buffers_dma_free;
+    size_t heap_after_buffers_dma_largest;
+    size_t heap_process_min_dma_free;
+    size_t heap_process_min_dma_largest;
+    size_t heap_internal_free;
+    size_t heap_internal_largest;
+    size_t heap_psram_free;
+    bool diagnostic_ready;
+    bool dual_mic_ready;
+    bool active_dual_mic_voice_ok;
+    bool data_plane_ok;
+    bool active_quality_ok;
+    bool quality_ok;
+    bool resource_ok;
+    bool passed;
+} nuwax_p3_softref_aec_ab_result_t;
+
+esp_err_t nuwax_p3_softref_aec_ab_run(uint32_t duration_ms,
+                                      uint32_t delay_samples,
+                                      nuwax_p3_softref_aec_ab_result_t *out_result);
+esp_err_t nuwax_p3_hardref_aec_ab_run(uint32_t duration_ms,
+                                      nuwax_p3_softref_aec_ab_result_t *out_result);

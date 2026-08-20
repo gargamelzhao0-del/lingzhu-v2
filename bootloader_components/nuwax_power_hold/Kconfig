@@ -1,0 +1,17 @@
+menu "Nuwax early power hold"
+
+    config BOOTLOADER_NUWAX_EARLY_POWER_HOLD
+        bool "Assert the Miaopan PG2 latch before bootloader initialization"
+        default y
+        help
+            Drives the configured GPIO high at the first second-stage
+            bootloader hook so a normal SW3 click can be released before the
+            application reaches app_main.
+
+    config BOOTLOADER_NUWAX_POWER_HOLD_GPIO
+        int "Miaopan PG2 power-hold GPIO"
+        default 7
+        range 0 21
+        depends on BOOTLOADER_NUWAX_EARLY_POWER_HOLD
+
+endmenu
