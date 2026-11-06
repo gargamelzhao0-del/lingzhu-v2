@@ -1,0 +1,28 @@
+{
+  "revision": "20260924-runtime-v1",
+  "elfSha256": "1b54bd5377b18da26bc03b3996535f7dbf0b46c34276359f5e007acc011d0e7c",
+  "binSha256": "7b782e8840e1ee12effc26dcf9e0cdda03e5966029977c17774e8cdfc7de28d3",
+  "bytes": 3827104,
+  "jsonMaxDepth": 32,
+  "notificationStartupMs": 10000,
+  "hardwareValidated": false,
+  "provisioningProfile": "compatibility",
+  "developmentFlags": [
+    "NUWAX_PROVISION_SEC2_DEV_MODE",
+    "NUWAX_CLOUD_CONFIG_ALLOW_INSECURE_WS",
+    "NUWAX_PROVISION_USB_CONTROL_ENABLE"
+  ],
+  "releaseSecurityValidated": false,
+  "sourceHashes": {
+    "main/conversation/speaker_playback.c": "9308ceceb155613a1decf842d44ea5cfb922bc396a9376c4f33e63cc98ea60b8",
+    "main/conversation/speaker_jitter_policy.h": "80645befc81486a86f02b1d008f248aff8776b33ec4c8c655ccfe4a9125c04a7",
+    "main/session_protocol.c": "867688b83dc7f84495750def49a89d13926b856f127e850b840681f9b49187fa",
+    "main/nuwax_ai_partner_main.c": "4a2c814d76fe15de7720c6cd7a1b970bdc51ce09d037e5d301a3461fb7e1c339",
+    "main/ws_transport.c": "35786a0431339b0d77d7e51f14462c017ee2c1ea4a2c84ca3e317835fa82a525",
+    "main/nuwax_provision_new/nuwax_cloud_config.c": "dd4c94335200dda8e9ba9d802926406e714ae56f7e2cfc8c509f764df55745c4",
+    "CMakeLists.txt": "8b40bdae2f2ad6df338e115fd203c0a9d2035a557bd72b454c922bbac5b14b9c",
+    "sdkconfig.defaults": "9ae94dd5ea0e085ee6da82759516cf4f20f24968975ef802545e26b142acd3f4",
+    "sdkconfig.product-ota.defaults": "ce2e84eceb188ce344dc1504aebb5ea7f31043ab83f6e186cd206a9be8bf3034",
+    "sdkconfig.sd-replay-formal.defaults": "3addd92d0ccd0ffdb0fd384445d1187c576ab8f59d262f631876ae05aea8affe"
+  }
+}

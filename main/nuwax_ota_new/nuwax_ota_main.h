@@ -57,6 +57,10 @@ esp_err_t nuwax_ota_main_get_release_sequence(uint64_t *out_sequence);
  * currently running partition, application version and release sequence. */
 esp_err_t nuwax_ota_main_get_running_identity(
     nuwax_ota_running_identity_t *out_identity);
+/* Metadata/cache only: pending, uncached images return NOT_FINISHED without
+ * hashing. A hello must not block on full-image verification. */
+esp_err_t nuwax_ota_main_peek_running_identity(
+    nuwax_ota_running_identity_t *out_identity);
 esp_err_t nuwax_ota_main_get_running_image_sha256(
     char out_sha256[NUWAX_OTA_RUNNING_IDENTITY_SHA256_LEN]);
 esp_err_t nuwax_ota_main_pending_identity_matches(

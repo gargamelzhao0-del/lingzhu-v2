@@ -25,9 +25,9 @@ int main(void)
     expect_active("downloading", true);
     expect_active("writing", true);
     expect_active("verifying", true);
-    expect_active("done", false);
+    expect_active("done", true);
     expect_active("failed", false);
-    expect_active("rebooting", false);
+    expect_active("rebooting", true);
     expect_active("idle", false);
 
     printf("OTA UI progress policy: %s (%d failures)\n",

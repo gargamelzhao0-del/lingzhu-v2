@@ -5,20 +5,6 @@ bool nuwax_shell_action_is_listen_control(nuwax_app_shell_action_t action) {
            action == NUWAX_APP_SHELL_ACTION_STOP_LISTEN;
 }
 
-static void clear_followup_for_shell_action(const nuwax_app_shell_result_t *action,
-                                            const nuwax_shell_action_dispatch_callbacks_t *callbacks) {
-    if (!action || !callbacks || !callbacks->clear_auto_followup) {
-        return;
-    }
-    if (action->action != NUWAX_APP_SHELL_ACTION_NONE &&
-        action->action != NUWAX_APP_SHELL_ACTION_START_LISTEN &&
-        action->action != NUWAX_APP_SHELL_ACTION_CANCEL &&
-        action->action != NUWAX_APP_SHELL_ACTION_HEAD_TOUCH_AGENT &&
-        action->action != NUWAX_APP_SHELL_ACTION_SHAKE_AGENT) {
-        callbacks->clear_auto_followup(callbacks->ctx, "shell_action");
-    }
-}
-
 void nuwax_shell_action_dispatch(nuwax_ws_client_t *ws,
                                  const nuwax_app_shell_result_t *action,
                                  const nuwax_shell_action_dispatch_callbacks_t *callbacks) {
@@ -26,7 +12,9 @@ void nuwax_shell_action_dispatch(nuwax_ws_client_t *ws,
         return;
     }
 
-    clear_followup_for_shell_action(action, callbacks);
+    /* Ordinary controls do not own the microphone. A successful mode,
+     * provisioning or cancellation controller performs its own handoff;
+     * clearing here also stopped live capture before admission succeeded. */
 
     switch (action->action) {
         case NUWAX_APP_SHELL_ACTION_SCAN_WIFI:
@@ -69,14 +57,28 @@ void nuwax_shell_action_dispatch(nuwax_ws_client_t *ws,
                 callbacks->request_shake_agent(callbacks->ctx, ws);
             }
             break;
+        case NUWAX_APP_SHELL_ACTION_CYCLE_BRIGHTNESS:
+            if (callbacks && callbacks->cycle_brightness) {
+                callbacks->cycle_brightness(callbacks->ctx);
+            }
+            break;
         case NUWAX_APP_SHELL_ACTION_SET_VOLUME:
-            if (callbacks && callbacks->apply_volume_percent) {
+            if (callbacks && callbacks->apply_volume_commit_percent) {
+                callbacks->apply_volume_commit_percent(callbacks->ctx, action->index,
+                                                       action->volume_sequence);
+            } else if (callbacks && callbacks->apply_volume_percent) {
                 callbacks->apply_volume_percent(callbacks->ctx, action->index);
             }
             break;
         case NUWAX_APP_SHELL_ACTION_SET_MEETING_MODE:
             if (callbacks && callbacks->set_meeting_mode) {
                 callbacks->set_meeting_mode(callbacks->ctx, ws, action->index != 0);
+            }
+            break;
+        case NUWAX_APP_SHELL_ACTION_SET_SIMULATED_OFFLINE:
+            if (callbacks && callbacks->set_simulated_offline) {
+                callbacks->set_simulated_offline(callbacks->ctx, ws,
+                                                 action->index != 0);
             }
             break;
         case NUWAX_APP_SHELL_ACTION_SELECT_WIFI:

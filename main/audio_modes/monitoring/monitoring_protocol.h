@@ -17,6 +17,7 @@ typedef enum {
     NUWAX_MONITORING_PROTOCOL_EVENT_NONE = 0,
     NUWAX_MONITORING_PROTOCOL_EVENT_CAPTURE_CONTROL_ACK,
     NUWAX_MONITORING_PROTOCOL_EVENT_SET_COMMAND,
+    NUWAX_MONITORING_PROTOCOL_EVENT_REQUEST_ACK,
 } nuwax_monitoring_protocol_event_type_t;
 
 typedef struct {
@@ -35,6 +36,11 @@ bool nuwax_monitoring_protocol_parse(const char *payload,
                                      int len,
                                      nuwax_monitoring_protocol_event_t *event);
 
+esp_err_t nuwax_monitoring_protocol_send_request(nuwax_ws_client_t *ws,
+                                                  const char *request_id,
+                                                  bool enabled,
+                                                  const char *reason);
+
 esp_err_t nuwax_monitoring_protocol_send_capture_control(
     nuwax_ws_client_t *ws,
     const char *request_id,
@@ -48,3 +54,15 @@ esp_err_t nuwax_monitoring_protocol_send_command_ack(nuwax_ws_client_t *ws,
                                                       bool enabled,
                                                       bool ok,
                                                       const char *message);
+
+esp_err_t nuwax_monitoring_protocol_send_command_ack_with_session(nuwax_ws_client_t *ws,
+    const char *request_id, bool enabled, bool ok, const char *message,
+    const char *audio_session_id);
+
+esp_err_t nuwax_monitoring_protocol_send_resume_request(nuwax_ws_client_t *ws,
+    const char *request_id, const char *audio_session_id);
+
+/* Same wire ACK, bounded by the original command deadline and connection. */
+esp_err_t nuwax_monitoring_protocol_send_command_ack_until(nuwax_ws_client_t *ws,
+    const char *request_id, bool enabled, bool ok, const char *message,
+    const char *audio_session_id, int64_t deadline_us, uint32_t expected_epoch);

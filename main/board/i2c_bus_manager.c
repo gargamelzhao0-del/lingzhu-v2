@@ -3,12 +3,14 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdatomic.h>
 
 #include "board/esp_vocat_v1_0_pins.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -30,6 +32,25 @@ static portMUX_TYPE s_recovery_lock_init_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_transaction_lock;
 static StaticSemaphore_t s_transaction_lock_storage;
 static portMUX_TYPE s_transaction_lock_init_mux = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE s_stats_mux = portMUX_INITIALIZER_UNLOCKED;
+static nuwax_i2c_bus_stats_t s_stats;
+static int64_t s_transaction_started_us; /* Protected by transaction lock. */
+static int64_t s_sample_driver_done_us;
+static esp_err_t s_sample_result;
+static nuwax_i2c_client_t s_transaction_client;
+static int64_t s_driver_done_us;
+static esp_err_t s_driver_result;
+
+void nuwax_i2c_bus_get_stats(nuwax_i2c_bus_stats_t *stats)
+{
+    if (!stats) return;
+    taskENTER_CRITICAL(&s_stats_mux);
+    *stats = s_stats;
+    s_stats.sample_window_driver_max_us = 0U;
+    s_stats.sample_window_release_max_us = 0U;
+    memset(s_stats.clients, 0, sizeof(s_stats.clients));
+    taskEXIT_CRITICAL(&s_stats_mux);
+}
 
 #if CONFIG_NUWAX_BOARD_ESP_VOCAT_V1_0
 #define NUWAX_I2C_SCL_GPIO NUWAX_VOCAT_I2C_SCL_GPIO
@@ -206,16 +227,88 @@ esp_err_t nuwax_i2c_bus_transaction_begin(uint32_t timeout_ms)
                         "shared I2C transaction init failed");
     ESP_RETURN_ON_ERROR(ensure_transaction_lock(), TAG,
                         "shared I2C transaction lock unavailable");
-    const TickType_t timeout = delay_ticks_ceil(timeout_ms);
+    const TickType_t timeout = timeout_ms ? delay_ticks_ceil(timeout_ms) : 0U;
+    const int64_t started_us = esp_timer_get_time();
     if (xSemaphoreTake(s_transaction_lock, timeout) != pdTRUE) {
+        const char *task_name = pcTaskGetName(NULL);
+        taskENTER_CRITICAL(&s_stats_mux);
+        if (timeout_ms == 0U) {
+            s_stats.try_skips++;
+        } else {
+            s_stats.lock_timeouts++;
+            strlcpy(s_stats.last_timeout_task, task_name,
+                    sizeof(s_stats.last_timeout_task));
+        }
+        taskEXIT_CRITICAL(&s_stats_mux);
         return ESP_ERR_TIMEOUT;
     }
+    s_transaction_started_us = esp_timer_get_time();
+    s_sample_driver_done_us = 0;
+    s_transaction_client = NUWAX_I2C_CLIENT_OTHER;
+    s_driver_done_us = 0;
+    s_driver_result = ESP_OK;
+    const uint32_t waited_us = (uint32_t)(s_transaction_started_us - started_us);
+    const char *task_name = pcTaskGetName(NULL);
+    taskENTER_CRITICAL(&s_stats_mux);
+    s_stats.transactions++;
+    s_stats.total_wait_us += waited_us;
+    if (waited_us > s_stats.max_wait_us) {
+        s_stats.max_wait_us = waited_us;
+        strlcpy(s_stats.max_wait_task, task_name, sizeof(s_stats.max_wait_task));
+    }
+    taskEXIT_CRITICAL(&s_stats_mux);
     return ESP_OK;
+}
+
+void nuwax_i2c_bus_transfer_done(nuwax_i2c_client_t client, esp_err_t result)
+{
+    s_driver_done_us = esp_timer_get_time();
+    s_transaction_client = (unsigned)client < NUWAX_I2C_CLIENT_COUNT
+                               ? client : NUWAX_I2C_CLIENT_OTHER;
+    s_driver_result = result;
+}
+
+void nuwax_i2c_bus_sample_transfer_done(esp_err_t result)
+{
+    nuwax_i2c_bus_transfer_done(NUWAX_I2C_CLIENT_QMI, result);
+    s_sample_driver_done_us = s_driver_done_us;
+    s_sample_result = result;
 }
 
 void nuwax_i2c_bus_transaction_end(void)
 {
     if (s_transaction_lock) {
+        const uint32_t held_us = (uint32_t)(esp_timer_get_time() - s_transaction_started_us);
+        const char *task_name = pcTaskGetName(NULL);
+        taskENTER_CRITICAL(&s_stats_mux);
+        nuwax_i2c_client_window_t *client = &s_stats.clients[s_transaction_client];
+        client->calls++;
+        if (held_us > client->hold_max_us) client->hold_max_us = held_us;
+        if (held_us > 10000U) client->long_holds++;
+        if (s_driver_done_us != 0) {
+            const uint32_t driver_us = (uint32_t)(s_driver_done_us - s_transaction_started_us);
+            const uint32_t release_us = held_us >= driver_us ? held_us - driver_us : 0U;
+            if (s_driver_result != ESP_OK) client->errors++;
+            if (driver_us > client->driver_max_us) client->driver_max_us = driver_us;
+            if (release_us > client->release_max_us) client->release_max_us = release_us;
+        }
+        if (s_sample_driver_done_us != 0) {
+            const uint32_t driver_us = (uint32_t)(s_sample_driver_done_us - s_transaction_started_us);
+            const uint32_t release_us = held_us >= driver_us ? held_us - driver_us : 0U;
+            s_stats.sample_calls++;
+            if (s_sample_result != ESP_OK) s_stats.sample_errors++;
+            if (driver_us > s_stats.sample_driver_max_us) s_stats.sample_driver_max_us = driver_us;
+            if (release_us > s_stats.sample_release_max_us) s_stats.sample_release_max_us = release_us;
+            if (driver_us > s_stats.sample_window_driver_max_us) s_stats.sample_window_driver_max_us = driver_us;
+            if (release_us > s_stats.sample_window_release_max_us) s_stats.sample_window_release_max_us = release_us;
+        }
+        s_stats.total_hold_us += held_us;
+        if (held_us > 10000U) s_stats.long_holds++;
+        if (held_us > s_stats.max_hold_us) {
+            s_stats.max_hold_us = held_us;
+            strlcpy(s_stats.max_hold_task, task_name, sizeof(s_stats.max_hold_task));
+        }
+        taskEXIT_CRITICAL(&s_stats_mux);
         (void)xSemaphoreGive(s_transaction_lock);
     }
 }
@@ -257,6 +350,9 @@ esp_err_t nuwax_i2c_bus_recover(const char *reason)
              scl_before,
              sda_before);
     const esp_err_t err = i2c_master_bus_reset(s_i2c_bus);
+    taskENTER_CRITICAL(&s_stats_mux);
+    s_stats.recoveries++;
+    taskEXIT_CRITICAL(&s_stats_mux);
     if (err == ESP_OK) {
         vTaskDelay(delay_ticks_ceil(NUWAX_I2C_RECOVERY_SETTLE_MS));
     }

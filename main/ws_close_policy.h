@@ -13,6 +13,7 @@ typedef enum {
     NUWAX_WS_CLOSE_CAUSE_AUTH_REJECTED,
     NUWAX_WS_CLOSE_CAUSE_OTA_STATE_REFRESH,
     NUWAX_WS_CLOSE_CAUSE_OWNERSHIP_TRANSFER,
+    NUWAX_WS_CLOSE_CAUSE_WAKE_GREETING_TIMEOUT,
 } nuwax_ws_close_cause_t;
 
 static inline bool nuwax_ws_close_cause_bypasses_heartbeat(
@@ -20,7 +21,8 @@ static inline bool nuwax_ws_close_cause_bypasses_heartbeat(
     return cause == NUWAX_WS_CLOSE_CAUSE_TRANSPORT_INTEGRITY ||
            cause == NUWAX_WS_CLOSE_CAUSE_AUTH_REJECTED ||
            cause == NUWAX_WS_CLOSE_CAUSE_OTA_STATE_REFRESH ||
-           cause == NUWAX_WS_CLOSE_CAUSE_OWNERSHIP_TRANSFER;
+           cause == NUWAX_WS_CLOSE_CAUSE_OWNERSHIP_TRANSFER ||
+           cause == NUWAX_WS_CLOSE_CAUSE_WAKE_GREETING_TIMEOUT;
 }
 
 static inline bool nuwax_ws_close_policy_admits(
@@ -53,6 +55,8 @@ static inline const char *nuwax_ws_close_cause_name(
             return "ota_state_refresh";
         case NUWAX_WS_CLOSE_CAUSE_OWNERSHIP_TRANSFER:
             return "ownership_transfer";
+        case NUWAX_WS_CLOSE_CAUSE_WAKE_GREETING_TIMEOUT:
+            return "wake_greeting_timeout";
         default:
             return "invalid";
     }

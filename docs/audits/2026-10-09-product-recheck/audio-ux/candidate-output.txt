@@ -1,0 +1,7 @@
+PASS generic close stays suppressed with healthy heartbeat; new scoped cause is required
+CANDIDATE scenario=0 real_wait_ms=15100 requests_one_epoch_rotation; original preserve+reconnect functions arm listening on epoch=2
+CANDIDATE scenario=1 real_wait_ms=31100 requests_one_epoch_rotation; original preserve+reconnect functions arm listening on epoch=2
+PASS reconnect preserves open menu; closing menu resumes via original idle code
+PASS ticket identity/first-PCM/active sleep/shutdown/OTA/reprovision/notification/exclusive/disconnect policy fences
+PASS an old-epoch close does not affect the replacement connection
+PASS reconnect grace expiry condition releases awake owner and requests wake-ready sleep (hardware wake startup not simulated)

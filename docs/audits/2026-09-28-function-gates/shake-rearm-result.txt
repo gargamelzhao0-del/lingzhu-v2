@@ -1,0 +1,4 @@
+quiet10s periodic20percent=0 inhibited=0
+next_gesture periodic20percent=0 events=1
+quiet10s periodic20percent=1 inhibited=1
+next_gesture periodic20percent=1 events=0

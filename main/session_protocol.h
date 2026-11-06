@@ -11,6 +11,8 @@
 #define NUWAX_SESSION_STATUS_LINES 6
 #define NUWAX_SESSION_TERMINAL_RETRY_ATTEMPTS 3U
 #define NUWAX_SESSION_TERMINAL_RETRY_DELAY_MS 20U
+#define NUWAX_SESSION_MUSIC_URL_MAX_LEN 256U
+#define NUWAX_SESSION_MUSIC_FORMAT_MAX_LEN 16U
 
 typedef enum {
     NUWAX_SESSION_EVENT_NONE = 0,
@@ -33,6 +35,9 @@ typedef struct {
     bool has_mcp;
     bool has_event;
     bool has_pong;
+    uint64_t pong_server_ms; /* Valid UTC milliseconds, or zero when unavailable. */
+    /* Local RX outcome only; never populated from cloud JSON. */
+    bool rx_playback_rejected;
     nuwax_session_event_t event;
     bool ok;
     bool definite;
@@ -81,6 +86,8 @@ typedef struct {
     char playback_codec[16];
     char playback_reason[24];
     char provider[24];
+    char url[NUWAX_SESSION_MUSIC_URL_MAX_LEN];
+    char format[NUWAX_SESSION_MUSIC_FORMAT_MAX_LEN];
     char ssid[33];
     char password[65];
     char state[24];
@@ -98,8 +105,11 @@ typedef struct {
     };
 } nuwax_session_command_t;
 
+/* Initial snapshot on each new cloud connection, including reconnects.
+ * Meeting/monitoring transitions must not send an additional hello. */
 esp_err_t nuwax_session_send_hello(nuwax_ws_client_t *ws,
-                                   const char *device_secret);
+                                   const char *device_secret,
+                                   bool has_sd_card);
 
 /* Accepts the strict test-gateway hello ACK and the formal cloud's optional
  * legacy hello/direct-command behavior. */
@@ -246,6 +256,13 @@ esp_err_t nuwax_session_send_command_ack_until_if_epoch(
     const char *command,
     bool ok,
     const char *message,
+    int64_t deadline_us,
+    uint32_t expected_epoch);
+esp_err_t nuwax_session_send_music_playback_status_until_if_epoch(
+    nuwax_ws_client_t *ws,
+    const char *request_id,
+    const char *state,
+    const char *reason,
     int64_t deadline_us,
     uint32_t expected_epoch);
 esp_err_t nuwax_session_send_notify_playback_ack_until_if_epoch(

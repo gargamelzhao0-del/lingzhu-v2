@@ -1,0 +1,348 @@
+{
+  "schema": "nuwax.learning-review.v1",
+  "review_date": "2026-10-09",
+  "stage": "before_content_revision",
+  "scope": "Source/document/packaged-content review; no device test, firmware build or deployment.",
+  "source_baseline": "2026-10-06 / default 7.0.112 / current working tree",
+  "current_default_firmware": "7.0.113",
+  "app_version": "1.10.2",
+  "content_version": "2026.10.08.3",
+  "source_manifest_files": 118,
+  "source_changes": [
+    {
+      "path": "CMakeLists.txt",
+      "previous_sha256": "92b7cb9bba2cb5d76d646bd6cd503682007cda860ad69a739e4f639d54cb6f17",
+      "current_sha256": "3363d05b7a6d121718569bdde5cae9816a8dfd53a362e1d242635e4d3e5c6b0e"
+    },
+    {
+      "path": "main/conversation/wake_word_detection_policy.h",
+      "previous_sha256": "80560aad0d8c436d7b6f5d51e43162fe982acf0245cb5552a261fbe528273654",
+      "current_sha256": "f3bfbdff04dbf53d85fab02aaae5a5a0ecade369042c3909ad83e72f3e203bc6"
+    },
+    {
+      "path": "main/Kconfig.projbuild",
+      "previous_sha256": "4a74872a73a8eb12a94ce2b47c3f4262f96f7ce582bdced4e2d3679349620489",
+      "current_sha256": "4ce455cb3391b770379f73fab4c0a43d25070ce6d5f87d3373783791bea85c99"
+    },
+    {
+      "path": "main/wake_word_detector.c",
+      "previous_sha256": "4f587c38c01079556e8523d61b665cf51b7cebb24e1dcbc3eb6d7650aabc5b84",
+      "current_sha256": "4271b00306228658393ddd9cc85a08a277144676c47f0c665e91ef121af9e113"
+    },
+    {
+      "path": "sdkconfig.defaults",
+      "previous_sha256": "a8be3fc81b78de679aa7a899fdccec00badbfdfa035834315c0b66c5d62a82ba",
+      "current_sha256": "f3c1d1668baea7a0ce18ae61a11b0fb5f29ee6cb97a5a714356f0c2bfe5dd5e9"
+    },
+    {
+      "path": "sdkconfig.product-ota.defaults",
+      "previous_sha256": "31d9fe6a00a506e69f9f16d767705148e75440c506a5966280ac2410f735e07a",
+      "current_sha256": "b62e1f69aa0c174310e4c61a47f5547b75724239c4907c568e352e1cc3873242"
+    },
+    {
+      "path": "tools/test-wake-response.py",
+      "previous_sha256": "7b5592a107708dba90671de8e1a49a42c0a953303c9f9f5bc48c3478662f09f9",
+      "current_sha256": "df6774b4e0ca817155a7383052a45fd98e65af1c119d07040b9f4fd8f47b70cd"
+    }
+  ],
+  "config_allowlist_keys": 59,
+  "config_changes": [
+    {
+      "key": "CONFIG_NUWAX_CUSTOM_WAKE_WORD_THRESHOLD_PERCENT",
+      "previous": "9",
+      "current": "10"
+    }
+  ],
+  "bundled_source_assets": 114,
+  "bundled_source_changes": [
+    {
+      "path": "CMakeLists.txt",
+      "bundled_sha256": "92b7cb9bba2cb5d76d646bd6cd503682007cda860ad69a739e4f639d54cb6f17",
+      "current_sha256": "3363d05b7a6d121718569bdde5cae9816a8dfd53a362e1d242635e4d3e5c6b0e"
+    },
+    {
+      "path": "sdkconfig.product-ota.defaults",
+      "bundled_sha256": "31d9fe6a00a506e69f9f16d767705148e75440c506a5966280ac2410f735e07a",
+      "current_sha256": "b62e1f69aa0c174310e4c61a47f5547b75724239c4907c568e352e1cc3873242"
+    },
+    {
+      "path": "main/wake_word_detector.c",
+      "bundled_sha256": "4f587c38c01079556e8523d61b665cf51b7cebb24e1dcbc3eb6d7650aabc5b84",
+      "current_sha256": "4271b00306228658393ddd9cc85a08a277144676c47f0c665e91ef121af9e113"
+    },
+    {
+      "path": "main/conversation/wake_word_detection_policy.h",
+      "bundled_sha256": "80560aad0d8c436d7b6f5d51e43162fe982acf0245cb5552a261fbe528273654",
+      "current_sha256": "f3bfbdff04dbf53d85fab02aaae5a5a0ecade369042c3909ad83e72f3e203bc6"
+    },
+    {
+      "path": "tools/test-wake-response.py",
+      "bundled_sha256": "7b5592a107708dba90671de8e1a49a42c0a953303c9f9f5bc48c3478662f09f9",
+      "current_sha256": "df6774b4e0ca817155a7383052a45fd98e65af1c119d07040b9f4fd8f47b70cd"
+    }
+  ],
+  "chapter_count": 30,
+  "chapters": [
+    {
+      "path": "00-baseline.md",
+      "title": "00 基线、证据与阅读方法",
+      "characters": 2347,
+      "sections": 5,
+      "article_id": "handbook-00",
+      "source_sha256": "3d227acc1d9be15eea449383d2a3e8e28188a8aec3557a8e48811a4796c13608"
+    },
+    {
+      "path": "01-foundations.md",
+      "title": "01 C 语言与嵌入式基础",
+      "characters": 2180,
+      "sections": 8,
+      "article_id": "handbook-01",
+      "source_sha256": "479117ddc118a029e9a8495f063698e34019c5e401cea181dbf25def7e226c68"
+    },
+    {
+      "path": "02-architecture.md",
+      "title": "02 系统架构与源码导航",
+      "characters": 3161,
+      "sections": 7,
+      "article_id": "handbook-02",
+      "source_sha256": "ad7aa13a7ddb1edf4f849c62e3c8652476c635dd15e022a00e0c187eb62d93ed"
+    },
+    {
+      "path": "03-build.md",
+      "title": "03 环境、配置、构建与烧录",
+      "characters": 2971,
+      "sections": 7,
+      "article_id": "handbook-03",
+      "source_sha256": "9ae639006f4a1f8f624c993d24e4c42acb87c011f5f675323fd2b0de69473b21"
+    },
+    {
+      "path": "04-hardware.md",
+      "title": "04 硬件地图与引脚",
+      "characters": 1944,
+      "sections": 5,
+      "article_id": "handbook-04",
+      "source_sha256": "84f013bef485ac6819a2b50e32fd0f393e1b6cba3de579f50560d93868b61c8a"
+    },
+    {
+      "path": "05-power.md",
+      "title": "05 启动、电源、电池与状态灯",
+      "characters": 2595,
+      "sections": 7,
+      "article_id": "handbook-05",
+      "source_sha256": "a9fa882a252f10b701892ead54d4ffb3db9f94363efe2a20429b8bf2e6cd6a67"
+    },
+    {
+      "path": "06-drivers.md",
+      "title": "06 总线与驱动开发",
+      "characters": 1778,
+      "sections": 6,
+      "article_id": "handbook-06",
+      "source_sha256": "437d270aadb3e2290bbc7b5630bc69453e1f48ceac646beffdc0f1816fea3c32"
+    },
+    {
+      "path": "07-runtime.md",
+      "title": "07 FreeRTOS、内存与资源所有权",
+      "characters": 2119,
+      "sections": 7,
+      "article_id": "handbook-07",
+      "source_sha256": "2f16fc5364c5af395bc8c1faef9f1cae501d97086585e9f5ccc4669a23275411"
+    },
+    {
+      "path": "08-audio.md",
+      "title": "08 音频采集、帧与实时上传",
+      "characters": 1682,
+      "sections": 6,
+      "article_id": "handbook-08",
+      "source_sha256": "85de0eeea0a0f1ee577bd75f5959ba8d7af8f697b2ee5aeb7806ee58dd11b0f5"
+    },
+    {
+      "path": "09-dsp.md",
+      "title": "09 DSP、VAD、AEC 与音质",
+      "characters": 1662,
+      "sections": 6,
+      "article_id": "handbook-09",
+      "source_sha256": "079709958e7d3582ba5155b500a3396fae68c7b3fefeba9d23ee7c924bbd30f3"
+    },
+    {
+      "path": "10-wake.md",
+      "title": "10 唤醒识别与快速响应",
+      "characters": 2079,
+      "sections": 6,
+      "article_id": "handbook-10",
+      "source_sha256": "10597ff1bd236e0d53687590fadb54f9b6b2d572c8375f5b616d05138bc15dde"
+    },
+    {
+      "path": "11-conversation.md",
+      "title": "11 对话状态机与交互所有权",
+      "characters": 2134,
+      "sections": 7,
+      "article_id": "handbook-11",
+      "source_sha256": "47f1e96866de3fd5490505ddbae5c614a68ec2dda3e5e5fbc4f97c81788ccd4e"
+    },
+    {
+      "path": "12-playback.md",
+      "title": "12 播放、抖动缓冲与音画同步",
+      "characters": 1480,
+      "sections": 6,
+      "article_id": "handbook-12",
+      "source_sha256": "ef7f8a607e076b176f94579690d594ebde9a7b4805de870018d33f5b3ac42510"
+    },
+    {
+      "path": "13-modes.md",
+      "title": "13 会议、监控与离线恢复",
+      "characters": 2265,
+      "sections": 7,
+      "article_id": "handbook-13",
+      "source_sha256": "76a8fb2c0fe2d87c39a86b4f18f41adc5be803e17e755c28a82306fc15fb7c1b"
+    },
+    {
+      "path": "14-storage.md",
+      "title": "14 SD 归档、掉电恢复与八小时容量",
+      "characters": 2501,
+      "sections": 7,
+      "article_id": "handbook-14",
+      "source_sha256": "3df67603b71d4afc662e18e972d353322a46144125670e7b496a3665c2a63113"
+    },
+    {
+      "path": "15-replay.md",
+      "title": "15 补传协议与吞吐优化",
+      "characters": 3982,
+      "sections": 8,
+      "article_id": "handbook-15",
+      "source_sha256": "d90bff56f5ee8408bc5cc58a63463558c5778afbd8eebbc8184a59f247aae232"
+    },
+    {
+      "path": "16-network.md",
+      "title": "16 Wi-Fi、WebSocket 与连接恢复",
+      "characters": 2130,
+      "sections": 8,
+      "article_id": "handbook-16",
+      "source_sha256": "8ffb967601bd7156016dd27cde3a0b11c3b64783dbae3e7d4231c415aaf68441"
+    },
+    {
+      "path": "17-provisioning.md",
+      "title": "17 蓝牙安全配网与设备绑定",
+      "characters": 2613,
+      "sections": 7,
+      "article_id": "handbook-17",
+      "source_sha256": "c6a38d61411760776777d8a9ba9ecca421754d47aad485953db03c9367b8569c"
+    },
+    {
+      "path": "18-ui.md",
+      "title": "18 LVGL、表情、下拉栏与 OTA 界面",
+      "characters": 1978,
+      "sections": 7,
+      "article_id": "handbook-18",
+      "source_sha256": "2ba31769ae19d784aee01f256cc80a1fd368585639c80ea326ef262aa5cd63fc"
+    },
+    {
+      "path": "19-ota.md",
+      "title": "19 OTA、分区、身份与回滚",
+      "characters": 2227,
+      "sections": 7,
+      "article_id": "handbook-19",
+      "source_sha256": "bd7ddd98095a655aea2736371a275e8d9b055f497c00558e08726e804493f9b1"
+    },
+    {
+      "path": "20-diagnostics.md",
+      "title": "20 日志、性能分析与崩溃定位",
+      "characters": 2252,
+      "sections": 8,
+      "article_id": "handbook-20",
+      "source_sha256": "06cd29c4e1cc516fbbd3f9825a4e08f8743c6957ae5b74e160a6f3a93edd59b5"
+    },
+    {
+      "path": "21-testing.md",
+      "title": "21 测试、验证与发布流程",
+      "characters": 2342,
+      "sections": 7,
+      "article_id": "handbook-21",
+      "source_sha256": "c7217b8150abcfbc601be6e684f3f26296c79c80d45c0ec1c78d70faf3e5daad"
+    },
+    {
+      "path": "22-cases.md",
+      "title": "22 真实问题与解决经验",
+      "characters": 3872,
+      "sections": 12,
+      "article_id": "handbook-22",
+      "source_sha256": "40f45ea50a983124b4d29400d9497c1e7bb98054f307bde0cb04ae30d5569346"
+    },
+    {
+      "path": "23-labs.md",
+      "title": "23 分级实验与参考答案",
+      "characters": 3014,
+      "sections": 12,
+      "article_id": "handbook-23",
+      "source_sha256": "8d404533eca52007ed2ccebf13fe05954229e6279989dc85ed8ae732bf2c944c"
+    },
+    {
+      "path": "24-evolution.md",
+      "title": "24 当前边界与后续开发方法",
+      "characters": 1921,
+      "sections": 7,
+      "article_id": "handbook-24",
+      "source_sha256": "ea338e24ee4d719b9e330aa90110381d9feeb25893dd03ccd767bf06da9c0e50"
+    },
+    {
+      "path": "25-reference.md",
+      "title": "25 术语、辅助模块与源码索引",
+      "characters": 4786,
+      "sections": 5,
+      "article_id": "handbook-25",
+      "source_sha256": "b98d927b8756ef7281051495b5d173ed58c3334d24d24458be050d839e85dedf"
+    },
+    {
+      "path": "26-startup.md",
+      "title": "26 启动就绪、降级与故障恢复",
+      "characters": 2210,
+      "sections": 5,
+      "article_id": "handbook-26",
+      "source_sha256": "db6f7be9516a831f5560ae3e94e59c2290bf7fac901e48b2bfce7390532d5c71"
+    },
+    {
+      "path": "27-persistence.md",
+      "title": "27 NVS 持久化、迁移与掉电边界",
+      "characters": 2326,
+      "sections": 6,
+      "article_id": "handbook-27",
+      "source_sha256": "0b0f9726b08be6d8f716c42eb5817c84285af7fe3c64f46f1dc4089960cc4b1d"
+    },
+    {
+      "path": "28-input-contracts.md",
+      "title": "28 JSON 资源预算、控制接口与能力声明",
+      "characters": 2029,
+      "sections": 6,
+      "article_id": "handbook-28",
+      "source_sha256": "3b2cff605d0bdb289a281b87fe50826d3218011b257b9c650a8fcbedef6fb0e0"
+    },
+    {
+      "path": "29-integration.md",
+      "title": "29 集成阅读、功能开关与首次交付实操",
+      "characters": 2636,
+      "sections": 6,
+      "article_id": "handbook-29",
+      "source_sha256": "4b516f3d1a2b6830b8774b9cf124da346253260299c81314c807b20c49d92376"
+    }
+  ],
+  "import_warnings": [
+    {
+      "file": "03-build.md",
+      "href": "../../artifacts/release-7.0.112/",
+      "error": "EISDIR: illegal operation on a directory, read"
+    }
+  ],
+  "curriculum_shelves": [
+    "cpp",
+    "linux"
+  ],
+  "automated_structure_scope": [
+    "cpp",
+    "linux",
+    "lessons"
+  ],
+  "limits": [
+    "Matching hashes show unchanged files, not proven correctness.",
+    "Course structure keywords do not certify pedagogical quality.",
+    "Hardware and external cloud behavior were not revalidated."
+  ]
+}

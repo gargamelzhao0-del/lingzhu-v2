@@ -2,37 +2,55 @@
 #include "ws_send_failure_policy.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "audio_frame.h"
+#include "audio_runtime_memory_policy.h"
 #include "conversation/audio_terminal_recovery.h"
 #include "conversation/audio_uplink_terminal.h"
 #include "conversation/realtime_log.h"
+#include "device_error_report.h"
 #include "diagnostics.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/idf_additions.h"
+#include "session_protocol.h"
 
 static const char *TAG = "nuwax_audio_uplink";
+
+static void report_audio_uplink_fault(const char *code, esp_err_t result) {
+    (void)nuwax_device_error_report_enqueue(
+        "error", "audio_uplink", code, result, NULL, 0U, NULL);
+}
+
+static void report_audio_uplink_warning(const char *code, esp_err_t result) {
+    (void)nuwax_device_warning_report_enqueue(
+        "audio_uplink", code, result, NULL, 0U, NULL);
+}
 
 #define NUWAX_AUDIO_UPLINK_SEND_TASK_STACK_BYTES 10240
 #define NUWAX_AUDIO_UPLINK_SEND_TASK_PRIORITY 9
 #define NUWAX_AUDIO_UPLINK_SEND_TASK_CORE 1
 #define NUWAX_AUDIO_UPLINK_QUEUE_FINAL_WAIT_MS 2000
-#define NUWAX_AUDIO_UPLINK_REALTIME_FINISH_TIMEOUT_MS 2000U
+#define NUWAX_AUDIO_UPLINK_REALTIME_FINISH_TIMEOUT_MS 12000U
 #define NUWAX_AUDIO_UPLINK_RELIABLE_FINISH_TIMEOUT_MS 10000U
 #define NUWAX_AUDIO_UPLINK_ABORT_WAIT_MS 1000
+#define NUWAX_AUDIO_UPLINK_LOCAL_POWER_PREEMPT_WAIT_MS 1500U
 #define NUWAX_AUDIO_UPLINK_REAPER_STACK_BYTES 4096
 #define NUWAX_AUDIO_UPLINK_REAPER_PRIORITY 4
 #define NUWAX_AUDIO_UPLINK_REAPER_CANCEL_GRACE_MS 250U
+#define NUWAX_AUDIO_UPLINK_REAPER_NO_PROGRESS_MS 2000U
+#define NUWAX_AUDIO_UPLINK_REAPER_CANCEL_LIMIT_MS 5000U
 #define NUWAX_AUDIO_UPLINK_REAPER_DIAGNOSTIC_INTERVAL_MS 2000U
 #define NUWAX_AUDIO_UPLINK_REAPER_FATAL_RESTART_MS 90000U
 #define NUWAX_AUDIO_UPLINK_TASK_SUSPEND_SETTLE_MS 100
 #define NUWAX_AUDIO_UPLINK_TASK_START_TIMEOUT_MS 100
 #define NUWAX_AUDIO_UPLINK_IDLE_FALLBACK_WAIT_MS 500
 #define NUWAX_AUDIO_UPLINK_SEND_SLOW_WARN_MS 180
+#define NUWAX_AUDIO_UPLINK_SEND_SLOW_LOG_INTERVAL_MS 5000U
 #define NUWAX_AUDIO_UPLINK_DROP_LOG_INTERVAL_MS 1000U
 #define NUWAX_AUDIO_UPLINK_TERMINAL_RETRY_ATTEMPTS 3U
 #define NUWAX_AUDIO_UPLINK_TERMINAL_RETRY_DELAY_MS 20U
@@ -43,6 +61,9 @@ _Static_assert(CONFIG_NUWAX_VOICE_SAMPLE_RATE == 16000,
                "formal cloud uplink requires a 16 kHz sample rate");
 _Static_assert(CONFIG_NUWAX_VOICE_CHANNELS == 1,
                "formal cloud uplink requires mono audio");
+_Static_assert(NUWAX_AUDIO_UPLINK_LOCAL_POWER_PREEMPT_WAIT_MS >=
+                   NUWAX_AUDIO_UPLINK_REALTIME_RECOVERY_MAX_AGE_MS,
+               "local power preempt must cover an in-flight realtime packet");
 
 static void audio_uplink_refresh_adaptive_batch(
     nuwax_audio_uplink_t *ctx) {
@@ -85,11 +106,13 @@ static uint8_t s_audio_upload_batch[NUWAX_AUDIO_UPLINK_PACKET_BYTES];
 static StaticTask_t s_audio_uplink_task_tcb;
 static portMUX_TYPE s_audio_uplink_task_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_audio_uplink_task_in_use;
+static nuwax_audio_uplink_t *s_audio_uplink_owner;
 static StaticTask_t s_audio_uplink_reaper_task_tcb;
-static StaticQueue_t s_audio_uplink_reaper_queue_storage;
-static uint8_t s_audio_uplink_reaper_queue_buffer[
-    sizeof(nuwax_audio_uplink_t *)];
-static QueueHandle_t s_audio_uplink_reaper_queue;
+/* Allocation-free ownership transfer. Nodes belong to their heap contexts;
+ * the lock protects only pointer publication, never task deletion or I/O. */
+static portMUX_TYPE s_audio_uplink_cleanup_lock = portMUX_INITIALIZER_UNLOCKED;
+static nuwax_audio_uplink_t *s_audio_uplink_cleanup_head;
+static nuwax_audio_uplink_t *s_audio_uplink_cleanup_tail;
 static TaskHandle_t s_audio_uplink_reaper_task;
 static StackType_t *s_audio_uplink_reaper_stack;
 static _Atomic int s_audio_uplink_reaper_init_state;
@@ -125,6 +148,34 @@ static uint32_t audio_uplink_now_ms(void) {
     return (uint32_t)((uint64_t)esp_timer_get_time() / 1000ULL);
 }
 
+/* Queue metadata is normally external-memory backed.  A fallback into
+ * internal RAM is safe only while the same reserve used by capture/DMA
+ * admission is intact; otherwise TLS, I2S and wake-word allocations compete
+ * with a nonessential audio queue and can fail later in less recoverable
+ * places. */
+static bool audio_uplink_internal_queue_fallback_allowed(const char *name) {
+    const nuwax_audio_runtime_memory_t memory = {
+        .internal_free = heap_caps_get_free_size(
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        .internal_largest = heap_caps_get_largest_free_block(
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        .dma_largest = heap_caps_get_largest_free_block(
+            MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+    };
+    const bool allowed =
+        nuwax_audio_runtime_memory_classify(memory) ==
+        NUWAX_AUDIO_RUNTIME_MEMORY_READY;
+    if (!allowed) {
+        ESP_LOGW(TAG,
+                 "audio uplink queue internal fallback refused name=%s internal=%u largest=%u dma_largest=%u",
+                 name ? name : "-",
+                 (unsigned)memory.internal_free,
+                 (unsigned)memory.internal_largest,
+                 (unsigned)memory.dma_largest);
+    }
+    return allowed;
+}
+
 static void audio_uplink_log_realtime_drop(
     nuwax_audio_uplink_t *ctx,
     const nuwax_audio_uplink_packet_t *packet,
@@ -158,6 +209,25 @@ static void audio_uplink_log_realtime_drop(
              (unsigned long)ctx->realtime_drop_log_suppressed_frames,
              (unsigned long long)
                  ctx->realtime_drop_log_max_queue_wait_us);
+    char result_detail[NUWAX_DEVICE_ERROR_RESULT_BYTES];
+    snprintf(result_detail,
+             sizeof(result_detail),
+             "ESP_ERR_TIMEOUT;reason=%s;seq=%lu;frames=%lu;wait_us=%llu;depth=%u;sup=%lu/%lu",
+             reason ? reason : "bounded_latency",
+             (unsigned long)packet->start_seq,
+             (unsigned long)packet->frames,
+             (unsigned long long)queue_wait_us,
+             ctx->ready_packets ? (unsigned)uxQueueMessagesWaiting(ctx->ready_packets) : 0U,
+             (unsigned long)ctx->realtime_drop_log_suppressed_batches,
+             (unsigned long)ctx->realtime_drop_log_suppressed_frames);
+    (void)nuwax_device_warning_report_enqueue_detail(
+        "audio_uplink",
+        "realtime_packet_skipped",
+        ESP_ERR_TIMEOUT,
+        result_detail,
+        NULL,
+        0U,
+        NULL);
     ctx->realtime_drop_log_ms = now_ms;
     ctx->realtime_drop_log_suppressed_batches = 0U;
     ctx->realtime_drop_log_suppressed_frames = 0U;
@@ -223,6 +293,8 @@ static const char *audio_uplink_sender_stage_name(int stage) {
             return "idle";
         case NUWAX_AUDIO_UPLINK_SENDER_WAIT_PACKET:
             return "wait_packet";
+        case NUWAX_AUDIO_UPLINK_SENDER_LISTEN_START:
+            return "listen_start";
         case NUWAX_AUDIO_UPLINK_SENDER_PREPARE_PACKET:
             return "prepare_packet";
         case NUWAX_AUDIO_UPLINK_SENDER_SEND_PACKET:
@@ -277,6 +349,27 @@ static void audio_uplink_log_stalled_sender(
              ctx->ready_packets
                  ? (unsigned)uxQueueMessagesWaiting(ctx->ready_packets)
                  : 0U);
+    char result_detail[NUWAX_DEVICE_ERROR_RESULT_BYTES];
+    snprintf(result_detail,
+             sizeof(result_detail),
+             "ESP_ERR_TIMEOUT;stage=%s;age=%lu;seq=%lu;bytes=%lu;queued=%lu;sent=%lu;depth=%u;stack=%u",
+             recovery_stage ? recovery_stage : "-",
+             (unsigned long)(audio_uplink_now_ms() - sender_stage_since_ms),
+             (unsigned long)sender_sequence,
+             (unsigned long)sender_bytes,
+             (unsigned long)ctx->queued_batches,
+             (unsigned long)ctx->sent_batches,
+             ctx->ready_packets ? (unsigned)uxQueueMessagesWaiting(ctx->ready_packets) : 0U,
+             (unsigned)stack_min_free);
+    (void)nuwax_device_error_report_enqueue_detail(
+        "error",
+        "audio_uplink",
+        "sender_stall",
+        ESP_ERR_TIMEOUT,
+        result_detail,
+        NULL,
+        0U,
+        NULL);
 }
 
 static esp_err_t audio_uplink_arm_terminal_recovery(
@@ -285,6 +378,7 @@ static esp_err_t audio_uplink_arm_terminal_recovery(
     size_t packet_len,
     bool end_committed) {
     if (!ctx || !ctx->terminal_recovery_bound || !ctx->ws ||
+        !nuwax_audio_uplink_listen_start_committed(ctx) ||
         ctx->ws_connection_epoch == 0U) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -437,6 +531,7 @@ esp_err_t nuwax_audio_uplink_ensure_encoded_frame_capacity(size_t required_bytes
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        report_audio_uplink_fault("encode_buffer_alloc", ESP_ERR_NO_MEM);
         return ESP_ERR_NO_MEM;
     }
     s_audio_encoded_frame = next;
@@ -488,6 +583,91 @@ static esp_err_t build_opus_audio_frame(nuwax_opus_encoder_t *encoder,
 }
 #endif
 
+bool nuwax_audio_uplink_listen_start_committed(const nuwax_audio_uplink_t *ctx) {
+    if (!ctx) {
+        return false;
+    }
+    const int state = atomic_load_explicit(&ctx->listen_start_state,
+                                           memory_order_acquire);
+    return state == NUWAX_AUDIO_UPLINK_LISTEN_START_EXTERNAL ||
+           state == NUWAX_AUDIO_UPLINK_LISTEN_START_COMMITTED;
+}
+
+static esp_err_t audio_uplink_commit_listen_start(nuwax_audio_uplink_t *ctx) {
+    int state = atomic_load_explicit(&ctx->listen_start_state,
+                                     memory_order_acquire);
+    if (state == NUWAX_AUDIO_UPLINK_LISTEN_START_EXTERNAL ||
+        state == NUWAX_AUDIO_UPLINK_LISTEN_START_COMMITTED) {
+        return ESP_OK;
+    }
+    if (state != NUWAX_AUDIO_UPLINK_LISTEN_START_PENDING ||
+        !atomic_compare_exchange_strong_explicit(
+            &ctx->listen_start_state, &state,
+            NUWAX_AUDIO_UPLINK_LISTEN_START_SENDING,
+            memory_order_acq_rel, memory_order_acquire)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    audio_uplink_sender_stage_store(
+        ctx, NUWAX_AUDIO_UPLINK_SENDER_LISTEN_START, 0U, 0U);
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (!audio_uplink_flag_load(&ctx->send_failed) &&
+        nuwax_ws_is_connected(ctx->ws) &&
+        nuwax_ws_connection_epoch(ctx->ws) == ctx->ws_connection_epoch) {
+        if (esp_timer_get_time() >= ctx->listen_start_deadline_us) {
+            result = ESP_ERR_TIMEOUT;
+        } else {
+            result = nuwax_session_send_listen_with_audio_session_until_if_epoch(
+                ctx->ws, "start", ctx->terminal_recovery_mode,
+                ctx->terminal_recovery_audio_session_id[0]
+                    ? ctx->terminal_recovery_audio_session_id : NULL,
+                ctx->terminal_recovery_request_id[0]
+                    ? ctx->terminal_recovery_request_id : NULL,
+                ctx->listen_start_deadline_us, ctx->ws_connection_epoch);
+        }
+    }
+    /* A cancellation can race the bounded send. Preserve its actual commit:
+     * the owner must close a committed start even if no PCM was transmitted.
+     * On failure the transport owns any partial-frame quarantine; no END or
+     * stop may be invented for a start which was safely unsent. */
+    atomic_store_explicit(
+        &ctx->listen_start_state,
+        result == ESP_OK ? NUWAX_AUDIO_UPLINK_LISTEN_START_COMMITTED
+                         : NUWAX_AUDIO_UPLINK_LISTEN_START_FAILED,
+        memory_order_release);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "ordered listen start failed epoch=%lu err=%s; PCM and terminal withheld",
+                 (unsigned long)ctx->ws_connection_epoch,
+                 esp_err_to_name(result));
+    }
+    return result;
+}
+
+esp_err_t nuwax_audio_uplink_schedule_listen_start(
+    nuwax_audio_uplink_t *ctx, uint32_t timeout_ms) {
+    if (!ctx || !ctx->task || !ctx->terminal_recovery_bound ||
+        timeout_ms == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (ctx->frame_seen || ctx->batch_count != 0U || ctx->queued_batches != 0U ||
+        ctx->end_enqueued || audio_uplink_flag_load(&ctx->capture_done) ||
+        audio_uplink_flag_load(&ctx->send_failed) ||
+        audio_uplink_flag_load(&ctx->finished) ||
+        atomic_load_explicit(&ctx->listen_start_state, memory_order_acquire) !=
+            NUWAX_AUDIO_UPLINK_LISTEN_START_EXTERNAL ||
+        !nuwax_ws_is_connected(ctx->ws) ||
+        nuwax_ws_connection_epoch(ctx->ws) != ctx->ws_connection_epoch) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ctx->listen_start_deadline_us =
+        esp_timer_get_time() + (int64_t)timeout_ms * 1000LL;
+    atomic_store_explicit(&ctx->listen_start_state,
+                          NUWAX_AUDIO_UPLINK_LISTEN_START_PENDING,
+                          memory_order_release);
+    audio_uplink_notify_sender(ctx);
+    return ESP_OK;
+}
+
 static void audio_uplink_send_task(void *arg) {
     nuwax_audio_uplink_t *ctx = (nuwax_audio_uplink_t *)arg;
     nuwax_audio_uplink_packet_t packet = {0};
@@ -495,6 +675,15 @@ static void audio_uplink_send_task(void *arg) {
     audio_uplink_sender_stage_store(
         ctx, NUWAX_AUDIO_UPLINK_SENDER_WAIT_PACKET, 0U, 0U);
     while (ctx && ctx->ready_packets) {
+        if (audio_uplink_flag_load(&ctx->send_failed)) {
+            break;
+        }
+        const esp_err_t listen_start_err = audio_uplink_commit_listen_start(ctx);
+        if (listen_start_err != ESP_OK) {
+            audio_uplink_result_store_first_error(ctx, listen_start_err);
+            audio_uplink_flag_store(&ctx->send_failed, true);
+            break;
+        }
         if (audio_uplink_flag_load(&ctx->send_failed)) {
             break;
         }
@@ -507,6 +696,20 @@ static void audio_uplink_send_task(void *arg) {
                 pdTRUE,
                 pdMS_TO_TICKS(NUWAX_AUDIO_UPLINK_IDLE_FALLBACK_WAIT_MS));
             continue;
+        }
+
+        /* The producer can publish the prelude and first packet after the
+         * loop-top EXTERNAL check. Recheck after acquiring the queued packet
+         * so that publication race cannot place PCM ahead of listen/start. */
+        const esp_err_t packet_start_err = audio_uplink_commit_listen_start(ctx);
+        if (packet_start_err != ESP_OK ||
+            audio_uplink_flag_load(&ctx->send_failed)) {
+            audio_uplink_result_store_first_error(
+                ctx, packet_start_err != ESP_OK
+                         ? packet_start_err : ESP_ERR_INVALID_STATE);
+            audio_uplink_flag_store(&ctx->send_failed, true);
+            audio_uplink_release_packet_slot(ctx, packet.slot);
+            break;
         }
 
         audio_uplink_sender_stage_store(
@@ -606,6 +809,7 @@ static void audio_uplink_send_task(void *arg) {
                      recovery_err == ESP_OK ? "terminal_armed"
                                             : "policy_close_requested",
                      (unsigned long)ctx->ws_connection_epoch);
+            report_audio_uplink_fault("start_ownership", start_err);
             break;
         }
         esp_err_t send_err = ESP_FAIL;
@@ -671,13 +875,70 @@ static void audio_uplink_send_task(void *arg) {
                      esp_err_to_name(send_err));
         }
         if (send_ms >= NUWAX_AUDIO_UPLINK_SEND_SLOW_WARN_MS) {
-            ESP_LOGW(TAG,
-                     "mic send queue batch slow start_seq=%lu frames=%lu send_ms=%lld bytes=%u ready_depth=%u",
-                     (unsigned long)packet.start_seq,
-                     (unsigned long)packet.frames,
-                     (long long)send_ms,
-                     (unsigned)packet.len,
-                     ctx->ready_packets ? (unsigned)uxQueueMessagesWaiting(ctx->ready_packets) : 0);
+            const uint32_t slow_now_ms = audio_uplink_now_ms();
+            const uint32_t ready_depth =
+                ctx->ready_packets
+                    ? (uint32_t)uxQueueMessagesWaiting(ctx->ready_packets)
+                    : 0U;
+            const uint32_t bounded_send_ms =
+                send_ms > (int64_t)UINT32_MAX ? UINT32_MAX
+                                                : (uint32_t)send_ms;
+            const bool log_slow_batch =
+                ctx->send_slow_log_ms == 0U ||
+                (uint32_t)(slow_now_ms - ctx->send_slow_log_ms) >=
+                    NUWAX_AUDIO_UPLINK_SEND_SLOW_LOG_INTERVAL_MS;
+            if (!log_slow_batch) {
+                ctx->send_slow_suppressed_batches++;
+                if (bounded_send_ms > ctx->send_slow_max_ms) {
+                    ctx->send_slow_max_ms = bounded_send_ms;
+                }
+                if (ready_depth > ctx->send_slow_max_depth) {
+                    ctx->send_slow_max_depth = ready_depth;
+                }
+            } else {
+                const uint32_t max_send_ms =
+                    bounded_send_ms > ctx->send_slow_max_ms
+                        ? bounded_send_ms
+                        : ctx->send_slow_max_ms;
+                const uint32_t max_ready_depth =
+                    ready_depth > ctx->send_slow_max_depth
+                        ? ready_depth
+                        : ctx->send_slow_max_depth;
+                ESP_LOGW(TAG,
+                         "mic send queue batch slow start_seq=%lu frames=%lu send_ms=%lld bytes=%u ready_depth=%lu suppressed_batches=%lu interval_max_send_ms=%lu interval_max_depth=%lu",
+                         (unsigned long)packet.start_seq,
+                         (unsigned long)packet.frames,
+                         (long long)send_ms,
+                         (unsigned)packet.len,
+                         (unsigned long)ready_depth,
+                         (unsigned long)ctx->send_slow_suppressed_batches,
+                         (unsigned long)max_send_ms,
+                         (unsigned long)max_ready_depth);
+                char result_detail[NUWAX_DEVICE_ERROR_RESULT_BYTES];
+                snprintf(result_detail,
+                         sizeof(result_detail),
+                         "ESP_ERR_TIMEOUT;seq=%lu;frames=%lu;send_ms=%lld;bytes=%u;depth=%lu;sup=%lu;max_ms=%lu;max_depth=%lu",
+                         (unsigned long)packet.start_seq,
+                         (unsigned long)packet.frames,
+                         (long long)send_ms,
+                         (unsigned)packet.len,
+                         (unsigned long)ready_depth,
+                         (unsigned long)ctx->send_slow_suppressed_batches,
+                         (unsigned long)max_send_ms,
+                         (unsigned long)max_ready_depth);
+                (void)nuwax_device_warning_report_enqueue_detail(
+                    "audio_uplink",
+                    "send_queue_slow",
+                    ESP_ERR_TIMEOUT,
+                    result_detail,
+                    NULL,
+                    0U,
+                    NULL);
+                ctx->send_slow_log_ms = slow_now_ms;
+                ctx->send_slow_suppressed_batches = 0U;
+                ctx->send_slow_max_ms = 0U;
+                ctx->send_slow_max_depth = 0U;
+            }
         }
         if (send_err != ESP_OK) {
             const bool ws_connected = nuwax_ws_is_connected(ctx->ws);
@@ -733,6 +994,7 @@ static void audio_uplink_send_task(void *arg) {
                     ESP_LOGE(TAG,
                              "mic safely-unsent packet could not arm terminal recovery err=%s",
                              esp_err_to_name(recovery_err));
+                    report_audio_uplink_fault("unsent_recovery", recovery_err);
                 }
             }
             if (transport_ended) {
@@ -812,6 +1074,7 @@ static void audio_uplink_send_task(void *arg) {
                 ESP_LOGE(TAG,
                          "mic terminal follow-up failed after binary END: %s",
                          esp_err_to_name(after_end_err));
+                report_audio_uplink_fault("terminal_followup", after_end_err);
                 audio_uplink_result_store_first_error(ctx, after_end_err);
                 audio_uplink_flag_store(&ctx->send_failed, true);
                 if (nuwax_ws_is_connected(ctx->ws) &&
@@ -850,11 +1113,12 @@ static void audio_uplink_send_task(void *arg) {
     vTaskSuspend(NULL);
 }
 
-static bool audio_uplink_claim_task_tcb(void) {
+static bool audio_uplink_claim_task_tcb(nuwax_audio_uplink_t *ctx) {
     bool claimed = false;
     portENTER_CRITICAL(&s_audio_uplink_task_lock);
     if (!s_audio_uplink_task_in_use) {
         s_audio_uplink_task_in_use = true;
+        s_audio_uplink_owner = ctx;
         claimed = true;
     }
     portEXIT_CRITICAL(&s_audio_uplink_task_lock);
@@ -869,15 +1133,58 @@ bool nuwax_audio_uplink_sender_busy(void) {
     return busy;
 }
 
+bool nuwax_audio_uplink_background_ready(void) {
+    /* The owner is cleared before its queues can be freed. This is a bounded
+     * snapshot, not permission to retain the context after the lock exits. */
+    portENTER_CRITICAL(&s_audio_uplink_task_lock);
+    const nuwax_audio_uplink_t *ctx = s_audio_uplink_owner;
+    const bool ready = !s_audio_uplink_task_in_use ||
+        (ctx && ctx->ready_packets &&
+         atomic_load_explicit(&ctx->sender_stage, memory_order_acquire) ==
+             NUWAX_AUDIO_UPLINK_SENDER_WAIT_PACKET &&
+         uxQueueMessagesWaiting(ctx->ready_packets) == 0U);
+    portEXIT_CRITICAL(&s_audio_uplink_task_lock);
+    return ready;
+}
+
 static void audio_uplink_release_task_tcb(void) {
     portENTER_CRITICAL(&s_audio_uplink_task_lock);
     s_audio_uplink_task_in_use = false;
+    s_audio_uplink_owner = NULL;
     portEXIT_CRITICAL(&s_audio_uplink_task_lock);
 }
 
-static void audio_uplink_delete_task(nuwax_audio_uplink_t *ctx) {
+static void audio_uplink_queue_detached_cleanup(nuwax_audio_uplink_t *ctx) {
+    ctx->cleanup_next = NULL;
+    portENTER_CRITICAL(&s_audio_uplink_cleanup_lock);
+    if (s_audio_uplink_cleanup_tail) {
+        s_audio_uplink_cleanup_tail->cleanup_next = ctx;
+    } else {
+        s_audio_uplink_cleanup_head = ctx;
+    }
+    s_audio_uplink_cleanup_tail = ctx;
+    portEXIT_CRITICAL(&s_audio_uplink_cleanup_lock);
+    /* Publication transfers ownership: ctx may already have been freed. */
+    xTaskNotifyGive(s_audio_uplink_reaper_task);
+}
+
+static nuwax_audio_uplink_t *audio_uplink_take_detached_cleanup(void) {
+    portENTER_CRITICAL(&s_audio_uplink_cleanup_lock);
+    nuwax_audio_uplink_t *ctx = s_audio_uplink_cleanup_head;
+    if (ctx) {
+        s_audio_uplink_cleanup_head = ctx->cleanup_next;
+        if (!s_audio_uplink_cleanup_head) {
+            s_audio_uplink_cleanup_tail = NULL;
+        }
+        ctx->cleanup_next = NULL;
+    }
+    portEXIT_CRITICAL(&s_audio_uplink_cleanup_lock);
+    return ctx;
+}
+
+static bool audio_uplink_delete_task(nuwax_audio_uplink_t *ctx) {
     if (!ctx || !ctx->task) {
-        return;
+        return true;
     }
 
     const int64_t suspend_deadline_us =
@@ -889,13 +1196,13 @@ static void audio_uplink_delete_task(nuwax_audio_uplink_t *ctx) {
         vTaskDelay(1);
     }
     if (eTaskGetState(ctx->task) == eRunning) {
-        ESP_LOGE(TAG,
-                 "audio uplink exited task did not suspend within %u ms; controlled restart preserves task, TCB and queue ownership",
+        /* The task/queue ownership is still live.  Keep the context intact
+         * and let the detached reaper retry; never restart merely because a
+         * short scheduler window was missed. */
+        ESP_LOGW(TAG,
+                 "audio uplink task did not suspend within %u ms; retaining task and queue ownership for deferred cleanup",
                  (unsigned)NUWAX_AUDIO_UPLINK_TASK_SUSPEND_SETTLE_MS);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        esp_restart();
-        vTaskDelay(portMAX_DELAY);
-        return;
+        return false;
     }
     ESP_LOGI(TAG,
              "audio uplink task resources stack_min_free=%u stack_bytes=%u queued=%lu sent=%lu dropped=%lu max_ready=%lu",
@@ -910,17 +1217,16 @@ static void audio_uplink_delete_task(nuwax_audio_uplink_t *ctx) {
     heap_caps_free(ctx->task_stack);
     ctx->task_stack = NULL;
     audio_uplink_release_task_tcb();
+    return true;
 }
 
 static void audio_uplink_detached_cleanup_task(void *arg) {
     (void)arg;
     for (;;) {
-        nuwax_audio_uplink_t *ctx = NULL;
-        if (!s_audio_uplink_reaper_queue ||
-            xQueueReceive(s_audio_uplink_reaper_queue,
-                          &ctx,
-                          portMAX_DELAY) != pdTRUE ||
-            !ctx) {
+        nuwax_audio_uplink_t *ctx = audio_uplink_take_detached_cleanup();
+        if (!ctx) {
+            /* A publish between take and wait leaves a pending notification. */
+            (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             continue;
         }
         const uint32_t cleanup_started_ms = audio_uplink_now_ms();
@@ -928,6 +1234,9 @@ static void audio_uplink_detached_cleanup_task(void *arg) {
             cleanup_started_ms +
             NUWAX_AUDIO_UPLINK_REAPER_DIAGNOSTIC_INTERVAL_MS;
         bool integrity_close_requested = false;
+        uint32_t last_sender_marker = (uint32_t)atomic_load_explicit(
+            &ctx->sender_stage_since_ms, memory_order_acquire);
+        uint32_t last_sender_progress_ms = cleanup_started_ms;
         ESP_LOGW(TAG,
                  "uplink detached cleanup stage=cancel_requested epoch=%lu",
                  (unsigned long)ctx->ws_connection_epoch);
@@ -938,14 +1247,28 @@ static void audio_uplink_detached_cleanup_task(void *arg) {
             const uint32_t now_ms = audio_uplink_now_ms();
             const uint32_t cleanup_elapsed_ms =
                 (uint32_t)(now_ms - cleanup_started_ms);
+            const uint32_t sender_marker = (uint32_t)atomic_load_explicit(
+                &ctx->sender_stage_since_ms, memory_order_acquire);
+            if (sender_marker != last_sender_marker) {
+                last_sender_marker = sender_marker;
+                last_sender_progress_ms = now_ms;
+            }
+            /* Only a detached, explicitly cancelled sender reaches here.
+             * Heartbeat traffic is not evidence of sender exit progress.
+             * Stage changes grant a short grace, never an unbounded lease. */
+            const bool cancel_stalled =
+                (uint32_t)(now_ms - last_sender_progress_ms) >=
+                    NUWAX_AUDIO_UPLINK_REAPER_NO_PROGRESS_MS ||
+                cleanup_elapsed_ms >= NUWAX_AUDIO_UPLINK_REAPER_CANCEL_LIMIT_MS;
             const bool heartbeat_healthy =
                 ctx->ws &&
                 nuwax_ws_heartbeat_healthy_if_epoch(
                     ctx->ws, ctx->ws_connection_epoch);
             if (!integrity_close_requested &&
-                !heartbeat_healthy &&
+                (!heartbeat_healthy || cancel_stalled) &&
                 cleanup_elapsed_ms >=
-                    NUWAX_AUDIO_UPLINK_REAPER_CANCEL_GRACE_MS) {
+                    NUWAX_AUDIO_UPLINK_REAPER_CANCEL_GRACE_MS &&
+                !audio_uplink_flag_load(&ctx->finished)) {
                 integrity_close_requested =
                     audio_uplink_request_integrity_close(
                         ctx, "detached_sender_not_exited");
@@ -965,15 +1288,44 @@ static void audio_uplink_detached_cleanup_task(void *arg) {
                     now_ms +
                     NUWAX_AUDIO_UPLINK_REAPER_DIAGNOSTIC_INTERVAL_MS;
             }
-            if (!heartbeat_healthy && integrity_close_requested &&
-                cleanup_elapsed_ms >=
-                NUWAX_AUDIO_UPLINK_REAPER_FATAL_RESTART_MS) {
+            /* Stale epochs, absent transports or failed close admission must
+             * not retain the singleton forever. Never free a live sender. */
+            if (cleanup_elapsed_ms >=
+                    NUWAX_AUDIO_UPLINK_REAPER_FATAL_RESTART_MS &&
+                !audio_uplink_flag_load(&ctx->finished)) {
                 audio_uplink_log_stalled_sender(
                     ctx, "fatal_fallback", cleanup_elapsed_ms);
                 ESP_LOGE(TAG,
-                         "uplink sender did not release singleton after cancellation and transport-integrity close elapsed_ms=%lu epoch=%lu; controlled restart is the final ownership-safety fallback",
+                         "uplink sender did not release singleton after cancellation and transport-integrity close attempts elapsed_ms=%lu epoch=%lu; controlled restart is the final ownership-safety fallback",
                          (unsigned long)cleanup_elapsed_ms,
                          (unsigned long)ctx->ws_connection_epoch);
+                nuwax_diagnostics_log_heap_label(
+                    TAG, "uplink_reaper_forced_restart");
+                vTaskDelay(pdMS_TO_TICKS(100));
+                /* Diagnostics/yield may have allowed the sender to finish. */
+                if (audio_uplink_flag_load(&ctx->finished)) {
+                    break;
+                }
+                esp_restart();
+                vTaskDelay(portMAX_DELAY);
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        /* A finished sender can still require a scheduler turn before its
+         * TCB is safely deleted.  Retry deletion while retaining ownership;
+         * the existing long-horizon restart remains the final fallback. */
+        while (ctx->task) {
+            if (audio_uplink_delete_task(ctx)) {
+                break;
+            }
+            const uint32_t now_ms = audio_uplink_now_ms();
+            const uint32_t cleanup_elapsed_ms =
+                (uint32_t)(now_ms - cleanup_started_ms);
+            if (cleanup_elapsed_ms >=
+                NUWAX_AUDIO_UPLINK_REAPER_FATAL_RESTART_MS) {
+                ESP_LOGE(TAG,
+                         "uplink task deletion remained unsafe after deferred cleanup elapsed_ms=%lu; controlled restart is the final ownership-safety fallback",
+                         (unsigned long)cleanup_elapsed_ms);
                 nuwax_diagnostics_log_heap_label(
                     TAG, "uplink_reaper_forced_restart");
                 vTaskDelay(pdMS_TO_TICKS(100));
@@ -981,6 +1333,12 @@ static void audio_uplink_detached_cleanup_task(void *arg) {
                 vTaskDelay(portMAX_DELAY);
             }
             vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        if (ctx->task) {
+            /* A restart above should normally be non-returning.  Keep the
+             * context owned if the platform ever returns from esp_restart. */
+            ESP_LOGE(TAG, "uplink task deletion incomplete; context retained");
+            continue;
         }
         nuwax_audio_uplink_destroy(ctx);
         heap_caps_free(ctx);
@@ -1023,19 +1381,6 @@ static esp_err_t audio_uplink_ensure_reaper_ready(void) {
                               memory_order_release);
         return ESP_ERR_NO_MEM;
     }
-    s_audio_uplink_reaper_queue = xQueueCreateStatic(
-        1,
-        sizeof(nuwax_audio_uplink_t *),
-        s_audio_uplink_reaper_queue_buffer,
-        &s_audio_uplink_reaper_queue_storage);
-    if (!s_audio_uplink_reaper_queue) {
-        heap_caps_free(s_audio_uplink_reaper_stack);
-        s_audio_uplink_reaper_stack = NULL;
-        atomic_store_explicit(&s_audio_uplink_reaper_init_state,
-                              0,
-                              memory_order_release);
-        return ESP_ERR_NO_MEM;
-    }
     s_audio_uplink_reaper_task = xTaskCreateStatic(
         audio_uplink_detached_cleanup_task,
         "uplink_reaper",
@@ -1045,7 +1390,6 @@ static esp_err_t audio_uplink_ensure_reaper_ready(void) {
         s_audio_uplink_reaper_stack,
         &s_audio_uplink_reaper_task_tcb);
     if (!s_audio_uplink_reaper_task) {
-        s_audio_uplink_reaper_queue = NULL;
         heap_caps_free(s_audio_uplink_reaper_stack);
         s_audio_uplink_reaper_stack = NULL;
         atomic_store_explicit(&s_audio_uplink_reaper_init_state,
@@ -1057,7 +1401,7 @@ static esp_err_t audio_uplink_ensure_reaper_ready(void) {
                           2,
                           memory_order_release);
     ESP_LOGI(TAG,
-             "audio uplink detached cleanup ready stack=psram bytes=%u",
+             "audio uplink detached cleanup ready ownership=intrusive-v1 recovery=bounded-cancel-v1 stack=psram bytes=%u",
              (unsigned)NUWAX_AUDIO_UPLINK_REAPER_STACK_BYTES);
     return ESP_OK;
 }
@@ -1078,7 +1422,24 @@ esp_err_t nuwax_audio_uplink_destroy_owned(nuwax_audio_uplink_t **owner) {
         return ESP_OK;
     }
     nuwax_audio_uplink_t *ctx = *owner;
-    if (!ctx->task || audio_uplink_flag_load(&ctx->finished)) {
+    if (!ctx->task) {
+        *owner = NULL;
+        nuwax_audio_uplink_destroy(ctx);
+        heap_caps_free(ctx);
+        return ESP_OK;
+    }
+    if (audio_uplink_flag_load(&ctx->finished)) {
+        /* A finished task still owns its static TCB/stack until deletion
+         * succeeds.  Do not free the context on a transient scheduler miss. */
+        if (!audio_uplink_delete_task(ctx)) {
+            const uint32_t epoch = ctx->ws_connection_epoch;
+            *owner = NULL;
+            audio_uplink_queue_detached_cleanup(ctx);
+            ESP_LOGW(TAG,
+                     "finished uplink detached for deferred task deletion epoch=%lu",
+                     (unsigned long)epoch);
+            return ESP_ERR_NOT_FINISHED;
+        }
         *owner = NULL;
         nuwax_audio_uplink_destroy(ctx);
         heap_caps_free(ctx);
@@ -1087,18 +1448,12 @@ esp_err_t nuwax_audio_uplink_destroy_owned(nuwax_audio_uplink_t **owner) {
     audio_uplink_flag_store(&ctx->capture_done, true);
     audio_uplink_flag_store(&ctx->send_failed, true);
     audio_uplink_notify_sender(ctx);
-    if (!s_audio_uplink_reaper_queue ||
-        xQueueSend(s_audio_uplink_reaper_queue, &ctx, 0) != pdTRUE) {
-        /* The caller retains ownership and may retry; never orphan a sender
-         * context just because the cleanup handoff could not be queued. */
-        ESP_LOGE(TAG,
-                 "uplink detached cleanup handoff failed; caller retains session");
-        return ESP_ERR_TIMEOUT;
-    }
+    const uint32_t epoch = ctx->ws_connection_epoch;
     *owner = NULL;
+    audio_uplink_queue_detached_cleanup(ctx);
     ESP_LOGW(TAG,
              "uplink session detached for asynchronous cleanup with bounded cancellation grace epoch=%lu grace_ms=%u",
-             (unsigned long)ctx->ws_connection_epoch,
+             (unsigned long)epoch,
              (unsigned)NUWAX_AUDIO_UPLINK_REAPER_CANCEL_GRACE_MS);
     return ESP_ERR_NOT_FINISHED;
 }
@@ -1187,6 +1542,8 @@ esp_err_t nuwax_audio_uplink_start_with_profile_if_epoch(
     atomic_init(&ctx->send_failed, false);
     atomic_init(&ctx->finish_timed_out, false);
     atomic_init(&ctx->end_committed, false);
+    atomic_init(&ctx->listen_start_state,
+                NUWAX_AUDIO_UPLINK_LISTEN_START_EXTERNAL);
     atomic_init(&ctx->send_result, ESP_OK);
     atomic_init(&ctx->sender_stage, NUWAX_AUDIO_UPLINK_SENDER_IDLE);
     atomic_init(&ctx->sender_stage_since_ms, audio_uplink_now_ms());
@@ -1211,14 +1568,16 @@ esp_err_t nuwax_audio_uplink_start_with_profile_if_epoch(
                                            sizeof(uint8_t),
                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     ctx->free_slots_with_caps = ctx->free_slots != NULL;
-    if (!ctx->free_slots) {
+    if (!ctx->free_slots &&
+        audio_uplink_internal_queue_fallback_allowed("free_slots")) {
         ctx->free_slots = xQueueCreate(queue_depth, sizeof(uint8_t));
     }
     ctx->ready_packets = xQueueCreateWithCaps(ready_queue_depth,
                                               sizeof(nuwax_audio_uplink_packet_t),
                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     ctx->ready_packets_with_caps = ctx->ready_packets != NULL;
-    if (!ctx->ready_packets) {
+    if (!ctx->ready_packets &&
+        audio_uplink_internal_queue_fallback_allowed("ready_packets")) {
         ctx->ready_packets = xQueueCreate(ready_queue_depth, sizeof(nuwax_audio_uplink_packet_t));
     }
     ctx->pool = heap_caps_malloc(pool_slot_count * NUWAX_AUDIO_UPLINK_PACKET_BYTES,
@@ -1240,7 +1599,7 @@ esp_err_t nuwax_audio_uplink_start_with_profile_if_epoch(
         const uint8_t slot = (uint8_t)slot_index;
         (void)xQueueSend(ctx->free_slots, &slot, 0);
     }
-    if (!audio_uplink_claim_task_tcb()) {
+    if (!audio_uplink_claim_task_tcb(ctx)) {
         ESP_LOGW(TAG,
                  "audio send task singleton is still owned by prior cleanup");
         audio_uplink_delete_queue(&ctx->free_slots, &ctx->free_slots_with_caps);
@@ -1258,6 +1617,7 @@ esp_err_t nuwax_audio_uplink_start_with_profile_if_epoch(
                  (unsigned)NUWAX_AUDIO_UPLINK_SEND_TASK_STACK_BYTES,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        report_audio_uplink_fault("task_stack_alloc", ESP_ERR_NO_MEM);
         audio_uplink_release_task_tcb();
         audio_uplink_delete_queue(&ctx->free_slots, &ctx->free_slots_with_caps);
         audio_uplink_delete_queue(&ctx->ready_packets, &ctx->ready_packets_with_caps);
@@ -1277,6 +1637,7 @@ esp_err_t nuwax_audio_uplink_start_with_profile_if_epoch(
         NUWAX_AUDIO_UPLINK_SEND_TASK_CORE);
     if (!ctx->task) {
         ESP_LOGE(TAG, "audio send task static creation failed");
+        report_audio_uplink_fault("task_create", ESP_ERR_NO_MEM);
         heap_caps_free(ctx->task_stack);
         ctx->task_stack = NULL;
         audio_uplink_release_task_tcb();
@@ -1289,21 +1650,28 @@ esp_err_t nuwax_audio_uplink_start_with_profile_if_epoch(
     const int64_t task_start_deadline_us =
         esp_timer_get_time() +
         (int64_t)NUWAX_AUDIO_UPLINK_TASK_START_TIMEOUT_MS * 1000LL;
-    while (!atomic_load_explicit(&ctx->task_started,
+    /* Realtime preparation can run in the active DSP consumer. The complete
+     * context and queues precede task publication, so PCM can safely stage
+     * before its first scheduler turn; waiting here would age capture frames. */
+    while (profile != NUWAX_AUDIO_UPLINK_PROFILE_REALTIME &&
+           !atomic_load_explicit(&ctx->task_started,
                                  memory_order_acquire) &&
            esp_timer_get_time() < task_start_deadline_us) {
         vTaskDelay(1);
     }
-    if (!atomic_load_explicit(&ctx->task_started, memory_order_acquire)) {
+    if (profile != NUWAX_AUDIO_UPLINK_PROFILE_REALTIME &&
+        !atomic_load_explicit(&ctx->task_started, memory_order_acquire)) {
         ESP_LOGE(TAG,
                  "audio send task did not start within %u ms; discarding uncommitted sender before listen start",
                  (unsigned)NUWAX_AUDIO_UPLINK_TASK_START_TIMEOUT_MS);
+        report_audio_uplink_fault("task_start_timeout", ESP_ERR_TIMEOUT);
         const esp_err_t discard_err =
             nuwax_audio_uplink_discard_uncommitted(ctx);
         if (discard_err != ESP_OK) {
             ESP_LOGE(TAG,
                      "unstarted audio sender cleanup failed: %s",
                      esp_err_to_name(discard_err));
+            report_audio_uplink_fault("task_cleanup", discard_err);
             return discard_err;
         }
         return ESP_ERR_TIMEOUT;
@@ -1332,6 +1700,11 @@ esp_err_t nuwax_audio_uplink_bind_terminal_recovery(
     uint32_t attempt_timeout_ms) {
     if (!ctx || !ctx->task || !mode || mode[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (ctx->frame_seen || ctx->queued_batches != 0U ||
+        atomic_load_explicit(&ctx->listen_start_state, memory_order_acquire) !=
+            NUWAX_AUDIO_UPLINK_LISTEN_START_EXTERNAL) {
+        return ESP_ERR_INVALID_STATE;
     }
     const char *session_id = audio_session_id ? audio_session_id : "";
     if (strlen(mode) >= sizeof(ctx->terminal_recovery_mode) ||
@@ -1415,6 +1788,27 @@ static esp_err_t audio_uplink_enqueue_batch(nuwax_audio_uplink_t *ctx,
                  ctx->ready_packets ? (unsigned)uxQueueMessagesWaiting(ctx->ready_packets) : 0,
                  defer_realtime_batch ? "defer_tail" : "drop",
                  (unsigned long)ctx->queue_full_events);
+        const esp_err_t report_result = pressure_result == ESP_OK
+                                             ? ESP_ERR_TIMEOUT
+                                             : pressure_result;
+        char result_detail[NUWAX_DEVICE_ERROR_RESULT_BYTES];
+        snprintf(result_detail,
+                 sizeof(result_detail),
+                 "%s;seq=%lu;frames=%lu;depth=%u;action=%s;events=%lu",
+                 esp_err_to_name(report_result),
+                 (unsigned long)start_seq,
+                 (unsigned long)frames,
+                 ctx->ready_packets ? (unsigned)uxQueueMessagesWaiting(ctx->ready_packets) : 0U,
+                 defer_realtime_batch ? "defer_tail" : "drop",
+                 (unsigned long)ctx->queue_full_events);
+        (void)nuwax_device_warning_report_enqueue_detail(
+            "audio_uplink",
+            "send_queue_full",
+            report_result,
+            result_detail,
+            NULL,
+            0U,
+            NULL);
         return pressure_result;
     }
 
@@ -1460,6 +1854,27 @@ static esp_err_t audio_uplink_enqueue_batch(nuwax_audio_uplink_t *ctx,
                  final ? 1 : 0,
                  defer_realtime_batch ? "defer_tail" : "drop",
                  (unsigned long)ctx->queue_full_events);
+        const esp_err_t report_result = pressure_result == ESP_OK
+                                             ? ESP_ERR_TIMEOUT
+                                             : pressure_result;
+        char result_detail[NUWAX_DEVICE_ERROR_RESULT_BYTES];
+        snprintf(result_detail,
+                 sizeof(result_detail),
+                 "%s;seq=%lu;frames=%lu;depth=%u;action=%s;events=%lu",
+                 esp_err_to_name(report_result),
+                 (unsigned long)start_seq,
+                 (unsigned long)frames,
+                 ctx->ready_packets ? (unsigned)uxQueueMessagesWaiting(ctx->ready_packets) : 0U,
+                 defer_realtime_batch ? "defer_tail" : "drop",
+                 (unsigned long)ctx->queue_full_events);
+        (void)nuwax_device_warning_report_enqueue_detail(
+            "audio_uplink",
+            "ready_queue_full",
+            report_result,
+            result_detail,
+            NULL,
+            0U,
+            NULL);
         return pressure_result;
     }
     audio_uplink_notify_sender(ctx);
@@ -1708,6 +2123,7 @@ esp_err_t nuwax_audio_uplink_enqueue_frame(nuwax_audio_uplink_t *ctx,
                      (unsigned long)ctx->batch_start_seq,
                      (unsigned long)ctx->batch_count,
                      esp_err_to_name(send_err));
+            report_audio_uplink_fault("batch_enqueue", send_err);
             if (final_frame && ctx->terminal_recovery_bound &&
                 nuwax_ws_is_connected(ctx->ws) &&
                 nuwax_ws_connection_epoch(ctx->ws) ==
@@ -1753,6 +2169,7 @@ esp_err_t nuwax_audio_uplink_request_finish(nuwax_audio_uplink_t *ctx) {
                      (unsigned)ctx->batch_len,
                      (unsigned long)ctx->batch_count,
                      esp_err_to_name(mark_err));
+            report_audio_uplink_fault("terminal_end_mark", mark_err);
             audio_uplink_result_store_first_error(ctx, mark_err);
         }
         const esp_err_t current_result = audio_uplink_result_load(ctx);
@@ -1797,6 +2214,7 @@ esp_err_t nuwax_audio_uplink_request_finish(nuwax_audio_uplink_t *ctx) {
                 ESP_LOGE(TAG,
                          "mic tail could not enter terminal recovery err=%s",
                          esp_err_to_name(recovery_err));
+                report_audio_uplink_fault("terminal_recovery", recovery_err);
             }
         } else {
             nuwax_audio_uplink_record_batch_result(ctx, true);
@@ -1931,6 +2349,20 @@ esp_err_t nuwax_audio_uplink_discard_uncommitted(
         return ESP_ERR_INVALID_STATE;
     }
 
+    int start_state = NUWAX_AUDIO_UPLINK_LISTEN_START_PENDING;
+    (void)atomic_compare_exchange_strong_explicit(
+        &ctx->listen_start_state, &start_state,
+        NUWAX_AUDIO_UPLINK_LISTEN_START_CANCELED,
+        memory_order_acq_rel, memory_order_acquire);
+    start_state = atomic_load_explicit(&ctx->listen_start_state,
+                                       memory_order_acquire);
+    if (start_state == NUWAX_AUDIO_UPLINK_LISTEN_START_SENDING ||
+        start_state == NUWAX_AUDIO_UPLINK_LISTEN_START_COMMITTED) {
+        /* The sender can still commit a text frame. Keep its owner alive for
+         * normal finish/preemption to discharge the END/stop obligation. */
+        return ESP_ERR_INVALID_STATE;
+    }
+
     audio_uplink_flag_store(&ctx->capture_done, true);
     audio_uplink_notify_sender(ctx);
     const int64_t deadline_ms =
@@ -1942,11 +2374,13 @@ esp_err_t nuwax_audio_uplink_discard_uncommitted(
     if (!audio_uplink_flag_load(&ctx->finished)) {
         ESP_LOGE(TAG,
                  "uncommitted audio sender did not stop before cleanup timeout");
-        /* No listen-start has committed and the uncommitted path has no
-         * packet ownership. Stop the waiting sender task explicitly instead
-         * of unwinding a caller stack that it may still reference. */
-        audio_uplink_delete_task(ctx);
-        audio_uplink_flag_store(&ctx->finished, true);
+        /* Do not suspend a live sender here: it must get a scheduler turn to
+         * observe capture_done and publish finished.  The owner retains the
+         * context and the normal cleanup path will retry deletion after that
+         * acknowledgement. */
+        ESP_LOGW(TAG,
+                 "uncommitted audio sender remains owned after cleanup timeout; waiting for cooperative sender exit");
+        return ESP_ERR_NOT_FINISHED;
     }
 
     nuwax_audio_uplink_destroy(ctx);
@@ -2024,6 +2458,7 @@ esp_err_t nuwax_audio_uplink_finish(nuwax_audio_uplink_t *ctx) {
                      (unsigned long)ctx->queued_batches,
                      (unsigned long)ctx->sent_batches,
                      ctx->ready_packets ? (unsigned)uxQueueMessagesWaiting(ctx->ready_packets) : 0);
+            report_audio_uplink_warning("sender_stalled", ESP_ERR_TIMEOUT);
             last_warn_ms = now_ms;
         }
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -2031,6 +2466,85 @@ esp_err_t nuwax_audio_uplink_finish(nuwax_audio_uplink_t *ctx) {
     esp_err_t finish_result = request_result;
     (void)nuwax_audio_uplink_finish_is_complete(ctx, &finish_result);
     return finish_result;
+}
+
+esp_err_t nuwax_audio_uplink_preempt_for_local_power(
+    nuwax_audio_uplink_t *ctx) {
+    if (!ctx) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!ctx->task || audio_uplink_flag_load(&ctx->finished)) {
+        return ESP_OK;
+    }
+
+    /* Queued realtime audio is obsolete once the user explicitly ends the
+     * local conversation.  Let an in-flight bounded write finish first: only
+     * then is sent_frames stable enough to choose END versus START|END without
+     * racing the first packet's commit. */
+    audio_uplink_flag_store(&ctx->capture_done, true);
+    audio_uplink_flag_store(&ctx->send_failed, true);
+    audio_uplink_notify_sender(ctx);
+
+    const int64_t wait_deadline_ms =
+        esp_timer_get_time() / 1000 +
+        NUWAX_AUDIO_UPLINK_LOCAL_POWER_PREEMPT_WAIT_MS;
+    while (!audio_uplink_flag_load(&ctx->finished) &&
+           esp_timer_get_time() / 1000 < wait_deadline_ms) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    const bool sender_finished = audio_uplink_flag_load(&ctx->finished);
+    const bool bound_transport_alive =
+        ctx->terminal_recovery_bound && ctx->ws &&
+        ctx->ws_connection_epoch != 0U &&
+        nuwax_ws_is_connected(ctx->ws) &&
+        nuwax_ws_connection_epoch(ctx->ws) == ctx->ws_connection_epoch;
+    const bool start_committed = nuwax_audio_uplink_listen_start_committed(ctx);
+    esp_err_t recovery_err = ESP_ERR_INVALID_STATE;
+    if (sender_finished && bound_transport_alive && start_committed) {
+        if (nuwax_audio_uplink_end_committed(ctx)) {
+            recovery_err = audio_uplink_arm_terminal_recovery(
+                ctx, NULL, 0U, true);
+        } else {
+            /* Do not reuse a previously queued terminal snapshot here.  It was
+             * built from producer-side frame_seen, whereas a local preempt
+             * needs the now-stable sender-side sent_frames to choose whether
+             * the replacement marker must also carry START. */
+            recovery_err = audio_uplink_arm_synthesized_terminal_recovery(
+                ctx, ctx->next_sequence);
+        }
+    }
+
+    bool close_requested = false;
+    if (bound_transport_alive && (!sender_finished || start_committed) &&
+        (!sender_finished || recovery_err != ESP_OK)) {
+        /* A sender that outlives the realtime packet budget has uncertain
+         * first-frame commit state.  Quarantine its epoch instead of emitting
+         * a potentially duplicated START or an orphan END. */
+        close_requested = audio_uplink_request_integrity_close(
+            ctx,
+            sender_finished
+                ? "local_power_preempt_without_terminal_recovery"
+                : "local_power_preempt_sender_not_quiescent");
+        ESP_LOGW(TAG,
+                 "local power preempt could not transfer terminal recovery epoch=%lu sender_finished=%d err=%s close_requested=%d",
+                 (unsigned long)ctx->ws_connection_epoch,
+                 sender_finished ? 1 : 0,
+                 esp_err_to_name(recovery_err),
+                 close_requested ? 1 : 0);
+    }
+    ESP_LOGI(TAG,
+             "local power preempt accepted epoch=%lu terminal=%s sender_finished=%d wait_ms=%u",
+             (unsigned long)ctx->ws_connection_epoch,
+             recovery_err == ESP_OK
+                 ? "recovery"
+                 : (bound_transport_alive
+                        ? (close_requested ? "connection_close"
+                                           : "close_deferred")
+                        : "transport_gone"),
+             sender_finished ? 1 : 0,
+             (unsigned)NUWAX_AUDIO_UPLINK_LOCAL_POWER_PREEMPT_WAIT_MS);
+    return ESP_OK;
 }
 
 void nuwax_audio_uplink_destroy(nuwax_audio_uplink_t *ctx) {
@@ -2063,7 +2577,11 @@ void nuwax_audio_uplink_destroy(nuwax_audio_uplink_t *ctx) {
         return;
     }
     if (ctx->task) {
-        audio_uplink_delete_task(ctx);
+        if (!audio_uplink_delete_task(ctx)) {
+            ESP_LOGW(TAG,
+                     "audio uplink task deletion deferred; retaining context and queue ownership");
+            return;
+        }
     }
     audio_uplink_delete_queue(&ctx->free_slots, &ctx->free_slots_with_caps);
     audio_uplink_delete_queue(&ctx->ready_packets, &ctx->ready_packets_with_caps);

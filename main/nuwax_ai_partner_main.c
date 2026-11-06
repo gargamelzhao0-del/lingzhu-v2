@@ -1,3 +1,5 @@
+#include "test_controls.h"
+#include "json_resource_budget.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <limits.h>
@@ -6,11 +8,15 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "app_state.h"
 #include "board/battery_service.h"
+#include "board/low_battery_shutdown_policy.h"
+#include "nuwax_ui_v28/low_battery_warning.h"
+#include "board/led_status.h"
 #include "board/i2c_bus_manager.h"
-#include "board/hardware_selftest.h"
+#include "board/sd_card_driver.h"
 #include "board/nuwax_board.h"
 #include "board/nuwax_power_ctrl.h"
 #include "board/shake_detector.h"
@@ -25,10 +31,12 @@
 #endif
 #include "nuwax_lvgl_port.h"
 #include "nuwax_app.h"
+#include "nuwax_face.h"
 #include "nuwax_device_state.h"
 #include "nuwax_state_bridge.h"
 #include "app_shell.h"
 #include "audio_frame.h"
+#include "audio_runtime_memory_policy.h"
 #include "cloud_connection_epoch_policy.h"
 #include "conversation/aec_delay_shadow.h"
 #include "conversation/aec_fir_delay_control.h"
@@ -46,6 +54,7 @@
 #include "conversation/conversation_metrics.h"
 #include "conversation/conversation_state.h"
 #include "conversation/conversation_visual_round.h"
+#include "conversation/wake_greeting_recovery_policy.h"
 #include "conversation/deferred_state_pending.h"
 #include "conversation/conversation_latency_contract.h"
 #include "conversation/rt_capture_wait_policy.h"
@@ -65,6 +74,7 @@
 #include "conversation/shell_action_dispatch.h"
 #include "p6_gray_confirm.h"
 #include "conversation/session_dispatch.h"
+#include "conversation/control_ack_tx.h"
 #include "conversation/sleep_transaction.h"
 #include "conversation/short_speech_tracker.h"
 #include "conversation/speech_confirmation.h"
@@ -74,11 +84,20 @@
 #include "conversation/touch_gesture.h"
 #include "conversation/turn_guard.h"
 #include "conversation/ui_sync_pending.h"
+#include "conversation/normal_conversation_policy.h"
 #include "conversation/emotion_ui_pending.h"
 #include "audio_modes/meeting/meeting_mode.h"
 #include "audio_modes/monitoring/monitoring_mode.h"
+/* OFFLINE_AUDIO_ROUND_20260825_BEGIN */
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+#include "offline_audio_spool.h"
+#include "sd_audio_session.h"
+#endif
+/* OFFLINE_AUDIO_ROUND_20260825_END */
 #include "diagnostics.h"
+#include "device_error_report.h"
 #include "display.h"
+#include "display_brightness.h"
 #include "esp_check.h"
 #include "esp_err.h"
 #include "esp_attr.h"
@@ -110,14 +129,34 @@
 #include "session_protocol.h"
 #include "synthetic_audio.h"
 #include "time_sync.h"
+#include "cloud_time.h"
 #include "touch_input.h"
 #include "wake_word_detector.h"
+
+#ifndef CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+#define CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE 0
+#endif
+
+#define NUWAX_OFFLINE_MODE_RESTORE_RETRY_MS 2000U
+#define NUWAX_OFFLINE_MODE_RESTORE_TIMEOUT_MS 15000U
+#define NUWAX_OFFLINE_CAPTURE_RETRY_INITIAL_MS 250U
+#define NUWAX_OFFLINE_CAPTURE_RETRY_MAX_MS 5000U
 #include "conversation/wake_word_probe_policy.h"
 #include "wifi_manager.h"
 #include "nuwax_provision_new/nuwax_provision_main.h"
 #include "nuwax_provision_new/nuwax_provision_policy.h"
 #include "nuwax_provision_new/nuwax_cloud_config.h"
 #include "nuwax_provision_new/nuwax_provision_usb_control.h"
+#if CONFIG_NUWAX_MUSIC_URL_TEST_ENABLE
+#include "music_url_test.h"
+#endif
+#if defined(CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE) && \
+    CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE
+#include "music_playback/music_playback.h"
+#if CONFIG_NUWAX_MUSIC_CONTROL_TEST_ENABLE
+#include "music_playback/music_test_control.h"
+#endif
+#endif
 #if CONFIG_NUWAX_OTA_ENABLE
 #include "nuwax_ota_new/nuwax_firmware_report.h"
 #include "nuwax_ota_new/nuwax_ota_device.h"
@@ -178,8 +217,15 @@ static void metrics_cancel(const char *reason);
 static bool conversation_capture_busy_for_sleep(void);
 static bool sleep_transaction_blocks_new_audio(void);
 static bool sleep_lifecycle_blocks_new_capture(void);
+static bool local_power_transition_active(void);
+static bool normal_audio_source_sleep_preempted(esp_err_t err);
+static bool normal_audio_source_notification_preempted(esp_err_t err);
 static void service_sleep_transaction(void);
+static void service_pending_sleep_request(void);
+static void service_exclusive_audio_sleep_reconcile(void);
+static void service_power_key_events(nuwax_ws_client_t *ws);
 static void service_notification_transaction(void);
+static bool exclusive_audio_owner_active(void);
 static void clear_sleep_request(void);
 static esp_err_t service_audio_terminal_recovery(nuwax_ws_client_t *ws);
 static void cancel_active_notification(nuwax_ws_client_t *ws,
@@ -192,21 +238,32 @@ static void request_notification_playback_wake_word_detector(
     const char *reason);
 static bool service_deferred_remote_sleep_intent(const char *reason,
                                                  bool force);
+static bool exclusive_audio_controllers_released(void);
 static nuwax_sleep_request_result_t begin_remote_sleep_transaction_bound(
     uint32_t ws_epoch,
     const char *request_id,
     const char *command,
     const char *turn_id);
+static nuwax_sleep_request_result_t begin_local_power_sleep_transaction(
+    nuwax_ws_client_t *ws,
+    const char *reason);
 static void request_sleep_wake_word_detector(const char *reason);
+static bool reconcile_cloud_ready_sleep_state(const char *reason);
 static void inhibit_sleep_wake_word_detector(const char *reason);
+static void stop_sleep_wake_word_detector(const char *reason);
+static void request_sleeping_conversation_state(const char *reason);
+static void service_ota_wake_detector_recovery(void);
 static void return_to_listening_after_cancel(const char *reason);
 static void handle_prepare_notification_command(
     nuwax_ws_client_t *ws,
     const nuwax_session_command_t *command);
 static void handle_notification_event(
     const nuwax_session_command_t *command);
+static bool session_command_is_notification_control(
+    const nuwax_session_command_t *command);
 static void service_reprovision_watchdog(uint32_t now_ms);
 static esp_err_t ws_check_activity_timeout(int64_t now_ms);
+static esp_err_t rollback_wifi_credentials_guarded(void);
 
 static void secure_zero_memory(void *memory, size_t length)
 {
@@ -216,56 +273,14 @@ static void secure_zero_memory(void *memory, size_t length)
     }
 }
 
-#define NUWAX_CLOUD_SECRET_FINGERPRINT_BYTES 8U
-
-static void format_cloud_secret_diagnostic(
-    const char *secret,
-    size_t capacity,
-    char hint[16],
-    char fingerprint[NUWAX_CLOUD_SECRET_FINGERPRINT_BYTES * 2U + 1U],
-    size_t *secret_length)
-{
-    static const char hex[] = "0123456789abcdef";
-    uint8_t digest[20] = {0};
-    const size_t length = secret ? strnlen(secret, capacity) : 0U;
-    const bool valid = secret && length > 0U && length < capacity;
-
-    if (secret_length) {
-        *secret_length = valid ? length : 0U;
-    }
-    snprintf(hint, 16, "%s", "<redacted>");
-    snprintf(fingerprint,
-             NUWAX_CLOUD_SECRET_FINGERPRINT_BYTES * 2U + 1U,
-             "%s",
-             "unavailable");
-    if (!valid) {
-        return;
-    }
-    if (length >= 8U) {
-        snprintf(hint,
-                 16,
-                 "%.3s...%.3s",
-                 secret,
-                 secret + length - 3U);
-    }
-    if (esp_crypto_sha1((const unsigned char *)secret, length, digest) == 0) {
-        for (size_t i = 0; i < NUWAX_CLOUD_SECRET_FINGERPRINT_BYTES; ++i) {
-            fingerprint[i * 2U] = hex[digest[i] >> 4];
-            fingerprint[i * 2U + 1U] = hex[digest[i] & 0x0fU];
-        }
-        fingerprint[NUWAX_CLOUD_SECRET_FINGERPRINT_BYTES * 2U] = '\0';
-    }
-    secure_zero_memory(digest, sizeof(digest));
-}
-
 static void log_cloud_connect_failure(const char *phase,
                                       const nuwax_cloud_config_t *config,
                                       const nuwax_ws_client_t *ws,
                                       esp_err_t result)
 {
-    char secret_hint[16];
-    char secret_fingerprint[NUWAX_CLOUD_SECRET_FINGERPRINT_BYTES * 2U + 1U];
-    size_t secret_length = 0U;
+    (void)nuwax_device_error_report_enqueue(
+        "error", "cloud", phase && phase[0] ? phase : "connect_failure",
+        result, NULL, 0U, NULL);
 
     if (!config) {
         ESP_LOGE(TAG,
@@ -275,24 +290,16 @@ static void log_cloud_connect_failure(const char *phase,
                  ws ? nuwax_ws_last_http_status(ws) : 0);
         return;
     }
-    format_cloud_secret_diagnostic(config->device_secret,
-                                   sizeof(config->device_secret),
-                                   secret_hint,
-                                   secret_fingerprint,
-                                   &secret_length);
+    const size_t secret_length = strnlen(config->device_secret,
+                                         sizeof(config->device_secret));
+    const bool secret_present = secret_length > 0U &&
+                               secret_length < sizeof(config->device_secret);
     ESP_LOGE(TAG,
-             "cloud connect diagnostic phase=%s result=%s http_status=%d url=%s device_id=%s secret_present=%d secret_len=%u secret_hint=%s secret_fingerprint=%s",
-             phase ? phase : "unknown",
-             esp_err_to_name(result),
+             "cloud connect diagnostic phase=%s result=%s http_status=%d endpoint_configured=%d secret_present=%d secret_len=%u",
+             phase ? phase : "unknown", esp_err_to_name(result),
              ws ? nuwax_ws_last_http_status(ws) : 0,
-             config->cloud_url[0] ? config->cloud_url : "<missing>",
-             config->device_id[0] ? config->device_id : "<missing>",
-             secret_length > 0U ? 1 : 0,
-             (unsigned)secret_length,
-             secret_hint,
-             secret_fingerprint);
-    secure_zero_memory(secret_hint, sizeof(secret_hint));
-    secure_zero_memory(secret_fingerprint, sizeof(secret_fingerprint));
+             config->cloud_url[0] != '\0', secret_present ? 1 : 0,
+             secret_present ? (unsigned)secret_length : 0U);
 }
 
 #if CONFIG_NUWAX_OTA_ENABLE && \
@@ -317,7 +324,7 @@ static bool ota_reject_continuous_audio_control(const char *payload, int len);
 #define NUWAX_STATUS_BAR_UI_INTERVAL_MS 500
 #define NUWAX_WS_APPLICATION_KEEPALIVE_INTERVAL_MS 15000
 #define NUWAX_WS_APPLICATION_KEEPALIVE_RETRY_MS 1000
-#define NUWAX_WS_APPLICATION_KEEPALIVE_SEND_BUDGET_MS 20
+#define NUWAX_WS_APPLICATION_KEEPALIVE_SEND_BUDGET_MS 100
 #define NUWAX_VOLUME_REPORT_SEND_BUDGET_MS 20U
 #define NUWAX_VOLUME_REPORT_RETRY_MS 1000U
 #define NUWAX_WS_READY_PING_INTERVAL_MS 5000
@@ -339,6 +346,7 @@ static bool ota_reject_continuous_audio_control(const char *payload, int len);
 #define NUWAX_TTS_METADATA_RETRY_GRACE_MS 3000U
 #define NUWAX_TTS_METADATA_MAX_RETRIES 2U
 #define NUWAX_CONVERSATION_PLAYBACK_INGRESS_IDLE_TIMEOUT_MS 60000U
+#define NUWAX_CONVERSATION_FIRST_PCM_TIMEOUT_MS 15000U
 #define NUWAX_PLAYBACK_TIMEOUT_CANCEL_SEND_MS 250U
 #define NUWAX_CONVERSATION_PLAYBACK_DRAIN_TIMEOUT_MS 10000U
 #define NUWAX_PLAYBACK_TERMINAL_WAIT_TIMEOUT_MS 15000U
@@ -355,6 +363,7 @@ static bool ota_reject_continuous_audio_control(const char *payload, int len);
 #define NUWAX_WAKE_SUPERVISOR_POLL_MS 100U
 #define NUWAX_WAKE_SUPERVISOR_RETRY_MS 250U
 #define NUWAX_WAKE_SUPERVISOR_READY_TIMEOUT_MS 5000U
+#define NUWAX_WAKE_SUPERVISOR_DATA_STALE_MS 3000U
 #define NUWAX_WAKE_READY_WAIT_MS 500U
 #define NUWAX_SLEEP_TRANSACTION_TIMEOUT_MS 2000U
 #define NUWAX_SLEEP_TRANSACTION_RECOVERY_TIMEOUT_MS 3000U
@@ -710,6 +719,9 @@ _Static_assert(
 #ifndef CONFIG_NUWAX_P3_INTERRUPT_TIMING_ENABLE
 #define CONFIG_NUWAX_P3_INTERRUPT_TIMING_ENABLE 0
 #endif
+#ifndef CONFIG_NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE
+#define CONFIG_NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE 0
+#endif
 #ifndef CONFIG_NUWAX_P5_DURING_PLAYBACK_CANDIDATE_ENABLE
 #define CONFIG_NUWAX_P5_DURING_PLAYBACK_CANDIDATE_ENABLE 0
 #endif
@@ -762,6 +774,10 @@ _Static_assert(
 #define NUWAX_RT_CAPTURE_BACKPRESSURE_WAIT_MS 10U
 #define NUWAX_RT_CAPTURE_TASK_STACK_BYTES 6144U
 #define NUWAX_RT_CAPTURE_TASK_PRIORITY 12U
+/* Keep the capture producer away from the LVGL/control owner on CPU0. The
+ * task performs only bounded I2S reads and queue publication; all DSP and
+ * cloud work remains on the conversation owner. */
+#define NUWAX_RT_CAPTURE_TASK_CORE 1
 #define NUWAX_AUDIO_DSP_TASK_PRIORITY 11U
 #define NUWAX_RT_CAPTURE_STOP_WAIT_MS 2000U
 #define NUWAX_RT_CAPTURE_FORCE_SUSPEND_WAIT_MS 100U
@@ -783,6 +799,10 @@ _Static_assert(NUWAX_RT_CAPTURE_STOP_WAIT_MS >
 #define NUWAX_AUDIO_HEALTH_FAILED_LOG_MIN_INTERVAL_US 200000LL
 #define NUWAX_SESSION_COMMAND_QUEUE_DEPTH 32U
 #define NUWAX_SESSION_CRITICAL_QUEUE_DEPTH 16U
+/* Notification handoff commands own the audio lifecycle.  Keep them in a
+ * small FIFO ahead of UI/status traffic so a burst of semantic updates cannot
+ * make the cloud miss the prepare -> begin handshake. */
+#define NUWAX_SESSION_NOTIFICATION_QUEUE_DEPTH 8U
 #define NUWAX_PLAYBACK_RAW_HUMAN_MIN_MIC1_AVG_ABS 320U
 #define NUWAX_PLAYBACK_RAW_HUMAN_MIN_MIC1_PEAK 1100U
 #define NUWAX_PLAYBACK_RAW_HUMAN_STRONG_MIC1_AVG_ABS 650U
@@ -899,7 +919,6 @@ typedef enum {
     NUWAX_SPEAKER_OWNER_EVENT_STREAM_END,
     NUWAX_SPEAKER_OWNER_EVENT_STATE,
     NUWAX_SPEAKER_OWNER_EVENT_CANCEL_RECOVERY,
-    NUWAX_SPEAKER_OWNER_EVENT_VOLUME,
     NUWAX_SPEAKER_OWNER_EVENT_START_GATE_TIMEOUT,
     NUWAX_SPEAKER_OWNER_EVENT_PLAYBACK_FAULT,
 } nuwax_speaker_owner_event_type_t;
@@ -912,7 +931,6 @@ typedef struct {
     uint32_t played_frames;
     uint32_t write_failures;
     int64_t event_timestamp_us;
-    uint8_t volume_percent;
     esp_err_t fault_result;
 } nuwax_speaker_owner_event_t;
 static bool s_deferred_speaker_start_valid;
@@ -938,6 +956,7 @@ static nuwax_app_shell_action_t
 static uint8_t s_deferred_shell_listen_action_count;
 static QueueHandle_t s_session_commands;
 static QueueHandle_t s_session_critical_commands;
+static QueueHandle_t s_session_notification_commands;
 /* Includes text frames that have reached the WebSocket callback but have not
  * yet completed parsing/queueing. The post-END watchdog uses this with queue
  * depth checks so a boundary decision cannot overtake an arrived cloud turn. */
@@ -999,6 +1018,13 @@ static uint32_t s_reprovision_orphan_release_failures;
 /* The menu, USB and cloud callbacks can run outside the conversation owner.
  * They only publish this interlock; the flash worker performs the teardown. */
 static atomic_bool s_reprovision_quiesce_requested = ATOMIC_VAR_INIT(false);
+static bool cloud_connect_cancelled_for_reprovision(void *ctx)
+{
+    (void)ctx;
+    return nuwax_provision_main_binding_required() ||
+           atomic_load_explicit(&s_reprovision_quiesce_requested,
+                                memory_order_acquire);
+}
 static atomic_bool s_cloud_owner_ready = ATOMIC_VAR_INIT(false);
 static atomic_bool s_cloud_owner_parked = ATOMIC_VAR_INIT(false);
 /* capture_active is cleared as soon as cancellation is requested, before the
@@ -1031,6 +1057,9 @@ static int64_t s_ws_application_keepalive_next_attempt_ms;
 static uint32_t s_ws_application_keepalive_epoch;
 static _Atomic(nuwax_ws_client_t *) s_active_ws = ATOMIC_VAR_INIT(NULL);
 static atomic_uint_fast32_t s_active_ws_epoch = ATOMIC_VAR_INIT(0U);
+/* Power-key callbacks run before the main owner reaches its service loop, so
+ * keep the event mailbox declared before the callback that publishes into it. */
+static atomic_uint_fast32_t s_power_key_events = ATOMIC_VAR_INIT(0U);
 static portMUX_TYPE s_cloud_auth_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_cloud_transport_connected;
 static bool s_cloud_service_ready;
@@ -1038,6 +1067,9 @@ static bool s_cloud_authenticated;
 static bool s_cloud_auth_failed_latched;
 static uint32_t s_cloud_connection_epoch;
 static uint32_t s_cloud_provision_required_epoch;
+/* HTTP authentication rejection occurs before an application epoch is
+ * published. Only the connection owner reads/writes this pending request. */
+static bool s_cloud_http_rebind_pending;
 typedef struct {
     bool pending;
     bool from_device_ui;
@@ -1056,6 +1088,64 @@ static uint32_t s_cloud_reconnect_failures;
 static nuwax_ws_owner_close_recovery_t s_ws_owner_close_recovery;
 static nuwax_meeting_mode_t s_meeting_mode;
 static nuwax_monitoring_mode_t s_monitoring_mode;
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+static atomic_bool s_offline_mode_resume_pending = ATOMIC_VAR_INIT(false);
+static atomic_bool s_offline_mode_cancel_to_sleep = ATOMIC_VAR_INIT(false);
+static atomic_bool s_offline_mode_capture_failed = ATOMIC_VAR_INIT(false);
+static atomic_int s_offline_mode_resume_kind =
+    ATOMIC_VAR_INIT(NUWAX_OFFLINE_AUDIO_MODE_MEETING);
+static char s_offline_mode_resume_session[48];
+static bool s_offline_mode_capture_started;
+static uint32_t s_offline_replay_attempt_epoch;
+static uint32_t s_offline_replay_next_attempt_ms;
+static uint32_t s_offline_replay_backoff_ms;
+static uint32_t s_offline_mode_restore_request_epoch;
+static uint32_t s_offline_mode_restore_next_attempt_ms;
+static uint32_t s_offline_mode_restore_started_ms;
+static uint32_t s_offline_capture_retry_next_ms;
+static uint32_t s_offline_capture_retry_backoff_ms;
+static uint32_t s_offline_capture_retry_attempts;
+static atomic_uint s_offline_wait_started_ms;
+static nuwax_audio_runtime_memory_t exclusive_audio_memory_snapshot(void)
+{
+    return (nuwax_audio_runtime_memory_t) {
+        .internal_free = heap_caps_get_free_size(
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        .internal_largest = heap_caps_get_largest_free_block(
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        .dma_largest = heap_caps_get_largest_free_block(
+            MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+    };
+}
+
+static bool offline_mode_lease_pending(void)
+{
+    return atomic_load_explicit(&s_offline_mode_resume_pending,
+                                memory_order_acquire);
+}
+
+static void offline_mode_lease_store(bool pending)
+{
+    if (pending && !offline_mode_lease_pending()) {
+        atomic_store_explicit(&s_offline_wait_started_ms,
+            (uint32_t)(esp_timer_get_time() / 1000ULL), memory_order_release);
+    }
+    atomic_store_explicit(&s_offline_mode_resume_pending, pending,
+                          memory_order_release);
+}
+
+static nuwax_offline_audio_mode_t offline_mode_kind(void)
+{
+    return (nuwax_offline_audio_mode_t)atomic_load_explicit(
+        &s_offline_mode_resume_kind, memory_order_acquire);
+}
+
+static void offline_mode_kind_store(nuwax_offline_audio_mode_t mode)
+{
+    atomic_store_explicit(&s_offline_mode_resume_kind, (int)mode,
+                          memory_order_release);
+}
+#endif
 static nuwax_session_command_envelope_t s_session_command_work;
 static volatile bool s_audio_cleaner_runtime_enabled = CONFIG_NUWAX_AUDIO_CLEANER_ENABLE;
 static uint32_t s_speaker_fault_recovery_epoch;
@@ -1113,6 +1203,19 @@ static void notify_conversation_owner(void) {
     if (owner) {
         xTaskNotifyGive(owner);
     }
+}
+
+static void power_key_event_listener(void *ctx,
+                                     nuwax_power_key_event_t event) {
+    (void)ctx;
+    if ((unsigned)event > (unsigned)NUWAX_POWER_KEY_EVENT_LONG_RELEASE) {
+        return;
+    }
+    atomic_fetch_or_explicit(
+        &s_power_key_events,
+        1U << (unsigned)event,
+        memory_order_release);
+    notify_conversation_owner();
 }
 
 static void conversation_owner_wait_ms(uint32_t timeout_ms) {
@@ -1187,8 +1290,39 @@ static bool ota_boot_health_has(uint_fast32_t flag)
 }
 #endif
 
+#if CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE
+static atomic_bool s_product_music_owned;
+static atomic_bool s_product_music_cancel;
+#endif
+static void service_product_music(nuwax_ws_client_t *ws);
+static bool product_music_blocks_audio(void) {
+#if CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE
+    return atomic_load_explicit(&s_product_music_owned, memory_order_acquire);
+#else
+    return false;
+#endif
+}
+static bool product_music_audio_active(void) {
+#if CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE
+    return nuwax_music_playback_audio_active();
+#else
+    return false;
+#endif
+}
+static void product_music_cancel(const char *reason) {
+#if CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE
+    if (product_music_blocks_audio()) {
+        atomic_store_explicit(&s_product_music_cancel, true, memory_order_release);
+        nuwax_music_playback_cancel(reason);
+    }
+#else
+    (void)reason;
+#endif
+}
+
 static bool ota_blocks_wake_detector(void)
 {
+    if (product_music_blocks_audio()) return true;
 #if CONFIG_NUWAX_OTA_ENABLE
     return nuwax_ota_device_blocks_audio();
 #else
@@ -1221,13 +1355,30 @@ static void battery_service_listener(
     void *user_data)
 {
     (void)user_data;
-    if (!snapshot || !ui_ready_snapshot()) {
+    if (!snapshot) {
+        return;
+    }
+    /* Idempotent init also retries a transient LED allocation failure. The
+     * indicator is independent of UI readiness and cannot block battery/OTA
+     * admission if unavailable. Repeated samples do not restart the breath. */
+    esp_err_t led_err = nuwax_led_status_init(NULL);
+    if (led_err == ESP_OK) {
+        led_err = nuwax_led_status_set_charging(
+            snapshot->valid && !snapshot->stale && snapshot->power_valid &&
+            !snapshot->power_stale && snapshot->charging && !snapshot->full);
+    }
+    if (led_err != ESP_OK) {
+        ESP_LOGW(TAG, "charging LED update failed: %s", esp_err_to_name(led_err));
+    }
+    if (!ui_ready_snapshot()) {
         return;
     }
     const bool retain_stale_low = snapshot->valid && snapshot->stale &&
                                   snapshot->battery_present && snapshot->low;
-    const bool ui_valid = snapshot->valid &&
-                          (!snapshot->stale || retain_stale_low);
+    const bool fresh_voltage_alarm = snapshot->power_valid &&
+                                    !snapshot->power_stale && snapshot->low;
+    const bool ui_valid = fresh_voltage_alarm || (snapshot->valid &&
+                          (!snapshot->stale || retain_stale_low));
     nuwax_app_shell_set_battery_state(
         ui_valid,
         ui_valid && !snapshot->stale && snapshot->soc_trusted,
@@ -1315,6 +1466,7 @@ static const char *acceptance_capture_signal_name(
 static nuwax_conversation_state_t s_conversation_state =
     NUWAX_CONVERSATION_STATE_INITIALIZER(NUWAX_APP_STATE_BOOTING);
 static nuwax_awake_session_state_t s_awake_session;
+static nuwax_normal_conversation_policy_t s_normal_conversation;
 #define NUWAX_AWAKE_WS_RESUME_GRACE_MS 30000U
 static bool s_awake_resume_after_ws_reconnect;
 static uint32_t s_awake_disconnect_ms;
@@ -1344,10 +1496,41 @@ static volatile bool s_sleep_request_pending;
 static char s_sleep_request_reason[64];
 static uint32_t s_sleep_request_awake_generation;
 static bool s_sleep_request_requires_idle_expiry;
+/* A meeting/monitoring controller can reach DISABLED while the SD offline
+ * owner is still draining its archive.  The original end-of-mode sleep
+ * request is intentionally rejected while that owner is active; retain a
+ * generation-independent reconcile bit so the main owner can retry once all
+ * exclusive resources have actually been released. */
+static bool s_exclusive_audio_sleep_reconcile_pending;
+/* A physical power-key sleep request must not use the short transaction
+ * deadline while an in-flight capture/notification owner is still cleaning
+ * up.  Keep this state separate from the generic idle-sleep request so the
+ * normal conversation policy remains unchanged. */
+static bool s_sleep_request_local_power;
+static uint32_t s_sleep_request_speaker_generation;
+static uint32_t s_sleep_request_speaker_epoch;
+static bool s_sleep_request_speaker_cancel_armed;
 static nuwax_sleep_transaction_t s_sleep_transaction;
 static nuwax_deferred_sleep_intent_t s_deferred_sleep_intent;
 static nuwax_notification_transaction_t s_notification_transaction;
 static nuwax_notification_rx_barrier_t s_notification_rx_barrier;
+enum {
+    NUWAX_POWER_EVENT_SHORT_MASK = 1U << NUWAX_POWER_KEY_EVENT_SHORT_PRESS,
+    NUWAX_POWER_EVENT_LONG_MASK = 1U << NUWAX_POWER_KEY_EVENT_LONG_PRESS,
+    NUWAX_POWER_EVENT_RELEASE_MASK = 1U << NUWAX_POWER_KEY_EVENT_LONG_RELEASE,
+};
+static bool s_power_shutdown_requested;
+static bool s_power_shutdown_mode_stop_requested;
+#if CONFIG_NUWAX_BATTERY_SERVICE_ENABLE
+static nuwax_low_battery_shutdown_policy_t s_low_battery_policy;
+static bool s_low_battery_warning_visible;
+static bool s_low_battery_shutdown_owned;
+static bool s_low_battery_sampler_stopping;
+static bool s_low_battery_sampler_restart_pending;
+#endif
+#if CONFIG_NUWAX_MUSIC_URL_TEST_ENABLE
+static bool s_music_url_test_wake_inhibited;
+#endif
 static uint32_t s_notification_cancel_sequence;
 static char s_notification_cancel_reason[24];
 static uint32_t s_notification_expected_frames;
@@ -1362,6 +1545,11 @@ static StaticSemaphore_t s_wake_model_operation_mutex_storage;
 static SemaphoreHandle_t s_wake_model_operation_mutex;
 static atomic_bool s_wake_detector_desired = ATOMIC_VAR_INIT(false);
 static atomic_uint_fast32_t s_wake_detector_request_ms = ATOMIC_VAR_INIT(0U);
+/* ota_prepare_audio() stops the local wake owner before every accepted OTA.
+ * A non-reboot terminal result must explicitly restore that owner; otherwise
+ * a rejected same-version update can leave the device visually asleep but
+ * permanently deaf until the next reboot. */
+static atomic_bool s_ota_wake_restore_pending = ATOMIC_VAR_INIT(false);
 static atomic_uint_fast32_t s_wake_model_restore_requested =
     ATOMIC_VAR_INIT(0U);
 static atomic_uint_fast32_t s_wake_model_restore_completed =
@@ -1406,6 +1594,17 @@ static nuwax_listen_resume_state_t s_listen_resume;
 #define NUWAX_TTS_SKIP_EMOTION_WINDOW_MS 8000U
 #define NUWAX_TTS_SKIP_EMOTION_DISPLAY_HOLD_MS 2000U
 #define NUWAX_SLEEP_CLOUD_EMOTION_HOLD_MS 4000U
+/* A control-plane burst must never keep the conversation owner inside one
+ * queue-drain call long enough to starve its watchdog or audio lifecycle.
+ * Notification-control items remain first in drain_session_commands_limited(). */
+#define NUWAX_SESSION_COMMAND_DRAIN_DEFAULT_MAX 4U
+#define NUWAX_SESSION_COMMAND_DRAIN_BUDGET_US 5000LL
+/* Local shell actions are normally a very small queue, but gesture/menu
+ * producers can burst while the cloud owner is recovering. Keep this path
+ * bounded for the same reason as session command draining: a backlog must
+ * not starve audio, wake supervision, or the application watchdog. */
+#define NUWAX_SHELL_ACTION_DRAIN_MAX 8U
+#define NUWAX_SHELL_ACTION_DRAIN_BUDGET_US 5000LL
 #define NUWAX_TTS_SKIP_EMOTION_ID_CAPACITY 48U
 /* A no-TTS reply has no speaker playback to carry the visual response. Keep
  * its default semantic emotion for the current awake/listening round so the
@@ -1524,13 +1723,24 @@ static void service_head_touch_agent_intent(nuwax_ws_client_t *ws);
 static void clear_head_touch_agent_intent(const char *reason);
 static bool natural_playback_touch_protection_active(void);
 static void request_status_app(nuwax_ws_client_t *ws, const char *app);
+#if CONFIG_NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE
 static void p3_softref_ab_fast_task(void *arg);
+#endif
+#if CONFIG_NUWAX_P5_DURING_PLAYBACK_CANDIDATE_ENABLE
 static void p5_during_playback_candidate_fast_task(void *arg);
+#endif
 static void handle_session_event(const nuwax_session_command_t *command,
                                  uint32_t event_ws_epoch);
 static void handle_shell_action(nuwax_ws_client_t *ws, const nuwax_app_shell_result_t *action);
+static bool power_key_short_press_dialogue_state(nuwax_app_state_t state);
 static bool meeting_or_monitoring_mode_blocks_sleep(void);
 static bool exclusive_audio_mode_blocks_normal_audio(void);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+static esp_err_t service_offline_audio_handoff(nuwax_ws_client_t *ws);
+static void service_offline_audio_replay(nuwax_ws_client_t *ws);
+static bool reprovision_request_pending(void);
+static void service_offline_capture_retry_disconnected(void);
+#endif
 static void exclusive_audio_poll_controls(void *ctx, nuwax_ws_client_t *ws);
 static bool exclusive_audio_playback_active(void *ctx);
 static void exclusive_audio_fade_and_cancel_playback(void *ctx,
@@ -1659,7 +1869,7 @@ typedef struct {
 static nuwax_wifi_scan_result_t s_wifi_scan_work_results[NUWAX_WIFI_MAX_SCAN_RESULTS];
 static wifi_scan_report_t s_wifi_scan_work_report;
 static conversation_metrics_t s_conversation_metrics;
-static nuwax_conversation_metrics_t s_conversation_runtime_metrics;
+static nuwax_conversation_metrics_t *s_conversation_runtime_metrics;
 static bool s_conversation_runtime_metrics_ready;
 static wake_greeting_metrics_t s_wake_greeting_metrics;
 static nuwax_live_aec_t s_conversation_live_aec_pool;
@@ -1688,6 +1898,58 @@ static void refresh_saved_wifi_list_ui(void) {
         strlcpy(ssids[i], saved[i].ssid, sizeof(ssids[i]));
     }
     nuwax_app_shell_set_saved_wifi_networks((const char (*)[33])ssids, count);
+}
+
+static void shell_dispatch_set_simulated_offline(void *ctx,
+                                                   nuwax_ws_client_t *ws,
+                                                   bool enabled) {
+    (void)ctx;
+#if NUWAX_TEST_NETWORK_ENABLED
+    /* The test switch must never tear down an in-progress provisioning or
+     * OTA transaction.  Both workflows own the transport and require their
+     * control connection to remain available; reject the optimistic UI
+     * update and let the drawer roll it back. */
+    if (enabled && (nuwax_provision_main_is_active()
+#if CONFIG_NUWAX_OTA_ENABLE
+                    || nuwax_ota_device_is_active()
+#endif
+                    || atomic_load_explicit(&s_reprovision_quiesce_requested,
+                                             memory_order_acquire))) {
+        ESP_LOGW(TAG,
+                 "simulated offline request rejected while provisioning/OTA owns cloud transport");
+        nuwax_app_shell_notify_action_rejected(
+            NUWAX_APP_SHELL_ACTION_SET_SIMULATED_OFFLINE);
+        return;
+    }
+    const esp_err_t err = nuwax_wifi_set_simulated_offline(enabled);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "simulated offline change enabled=%d failed: %s",
+                 enabled ? 1 : 0, esp_err_to_name(err));
+        nuwax_app_shell_notify_action_rejected(
+            NUWAX_APP_SHELL_ACTION_SET_SIMULATED_OFFLINE);
+        return;
+    }
+    nuwax_app_shell_set_simulated_offline(enabled);
+    if (enabled) nuwax_sd_session_network(false);
+    if (enabled && ws && nuwax_ws_is_connected(ws)) {
+        const uint32_t epoch = nuwax_ws_connection_epoch(ws);
+        if (!nuwax_ws_force_close_if_epoch(ws, epoch)) {
+            ESP_LOGW(TAG,
+                     "simulated offline could not request WebSocket close epoch=%lu",
+                     (unsigned long)epoch);
+        } else {
+            ESP_LOGI(TAG,
+                     "simulated offline enabled; WebSocket close requested epoch=%lu",
+                     (unsigned long)epoch);
+        }
+    }
+#else
+    (void)ws;
+    (void)enabled;
+    ESP_LOGW(TAG, "simulated offline control is disabled in this build");
+    nuwax_app_shell_notify_action_rejected(
+        NUWAX_APP_SHELL_ACTION_SET_SIMULATED_OFFLINE);
+#endif
 }
 
 static uint32_t monotonic_ms(void) {
@@ -1735,6 +1997,9 @@ static void delay_before_cloud_reconnect(const char *reason,
                                          int http_status,
                                          esp_err_t result)
 {
+    if (cloud_connect_cancelled_for_reprovision(NULL)) {
+        return;
+    }
     if (s_cloud_reconnect_failures < UINT32_MAX) {
         s_cloud_reconnect_failures++;
     }
@@ -1770,10 +2035,23 @@ static void delay_before_cloud_reconnect(const char *reason,
     uint32_t remaining_ms = delay_ms;
     while (remaining_ms > 0U) {
         app_task_watchdog_checkpoint();
-        if (atomic_load_explicit(&s_reprovision_quiesce_requested,
-                                 memory_order_acquire)) {
+        if (cloud_connect_cancelled_for_reprovision(NULL)) {
             break;
         }
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+        /* A disconnected meeting/monitoring owner already has a durable
+         * offline lease. Do not spend the reconnect backoff before servicing
+         * its capture retry; the real cloud disconnect path needs the same
+         * bounded handoff latency as the simulator. */
+        if (offline_mode_lease_pending()) {
+            break;
+        }
+#endif
+#if CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+        if (nuwax_wifi_simulated_offline()) {
+            break;
+        }
+#endif
         const uint32_t slice_ms = remaining_ms > 100U ? 100U : remaining_ms;
         vTaskDelay(pdMS_TO_TICKS(slice_ms));
         remaining_ms -= slice_ms;
@@ -2340,6 +2618,17 @@ static void clear_awake_session(const char *reason) {
     nuwax_awake_session_state_clear(&s_awake_session);
 }
 
+static void note_valid_conversation_activity(void) {
+    if (nuwax_awake_session_state_is_active(&s_awake_session)) {
+        nuwax_normal_conversation_note_activity(&s_normal_conversation,
+            nuwax_awake_session_state_generation(&s_awake_session), monotonic_ms());
+        if (s_sleep_request_pending && !s_sleep_request_local_power &&
+            strcmp(s_sleep_request_reason, "conversation_inactive_60s") == 0) {
+            clear_sleep_request();
+        }
+    }
+}
+
 static void begin_awake_session(const char *reason) {
     /* A deferred local idle request belongs to the awake generation that
      * created it. Never let it cross a new wake/touch conversation boundary. */
@@ -2362,6 +2651,9 @@ static void begin_awake_session(const char *reason) {
     s_consecutive_post_end_response_timeouts = 0U;
     nuwax_awake_session_state_begin(
         &s_awake_session,
+        (uint32_t)CONFIG_NUWAX_CONVERSATION_AWAKE_IDLE_TIMEOUT_MS);
+    nuwax_normal_conversation_begin(&s_normal_conversation,
+        nuwax_awake_session_state_generation(&s_awake_session), monotonic_ms(),
         (uint32_t)CONFIG_NUWAX_CONVERSATION_AWAKE_IDLE_TIMEOUT_MS);
     ESP_LOGI(TAG,
              "conversation awake session begun paused reason=%s timeout_ms=%u generation=%lu",
@@ -2429,7 +2721,8 @@ static void reset_awake_wait_budget_paused(const char *reason) {
     }
     /* Confirmed activity starts a fresh quiet interval. It also supersedes a
      * same-generation idle request that was waiting for the MIC owner. */
-    if (s_sleep_request_pending && s_sleep_request_requires_idle_expiry) {
+    if (s_sleep_request_pending && s_sleep_request_requires_idle_expiry &&
+        strcmp(s_sleep_request_reason, "conversation_inactive_60s") != 0) {
         clear_sleep_request();
     }
     const uint32_t now_ms = monotonic_ms();
@@ -2657,6 +2950,8 @@ static const char *wake_backend_name(void) {
 #endif
 }
 
+#include "conversation/runtime_metrics_storage.inc"
+
 static void metrics_begin_prelisten(const char *mode, const char *reason) {
     const uint32_t now_ms = monotonic_ms();
     const uint64_t now_us = (uint64_t)esp_timer_get_time();
@@ -2673,17 +2968,8 @@ static void metrics_begin_prelisten(const char *mode, const char *reason) {
     s_conversation_metrics.seq = next_seq == 0 ? 1 : next_seq;
     s_conversation_metrics.prelisten_start_ms = now_ms;
     strlcpy(s_conversation_metrics.mode, mode ? mode : "prelisten", sizeof(s_conversation_metrics.mode));
-    if (!s_conversation_runtime_metrics_ready) {
-        s_conversation_runtime_metrics_ready =
-            nuwax_conversation_metrics_init(&s_conversation_runtime_metrics,
-                                             s_conversation_metrics.seq,
-                                             now_us);
-    } else {
-        s_conversation_runtime_metrics_ready =
-            nuwax_conversation_metrics_reset(&s_conversation_runtime_metrics,
-                                              s_conversation_metrics.seq,
-                                              now_us);
-    }
+    s_conversation_runtime_metrics_ready = metrics_runtime_prepare(
+        s_conversation_metrics.seq, now_us);
     ESP_LOGI(TAG,
              "conversation metrics start seq=%lu mode=%s reason=%s",
              (unsigned long)s_conversation_metrics.seq,
@@ -2711,7 +2997,7 @@ static void metrics_record_duration(nuwax_conversation_latency_id_t id,
         return;
     }
     (void)nuwax_conversation_metrics_record_duration(
-        &s_conversation_runtime_metrics, id, completed_us - started_us);
+        s_conversation_runtime_metrics, id, completed_us - started_us);
 }
 
 static void metrics_record_elapsed(nuwax_conversation_latency_id_t id,
@@ -2720,7 +3006,7 @@ static void metrics_record_elapsed(nuwax_conversation_latency_id_t id,
         return;
     }
     (void)nuwax_conversation_metrics_record_duration(
-        &s_conversation_runtime_metrics, id, elapsed_us);
+        s_conversation_runtime_metrics, id, elapsed_us);
 }
 
 static void metrics_log_runtime_snapshot(const char *reason) {
@@ -2728,7 +3014,7 @@ static void metrics_log_runtime_snapshot(const char *reason) {
         return;
     }
     nuwax_conversation_metrics_snapshot_t snapshot = {0};
-    if (!nuwax_conversation_metrics_snapshot(&s_conversation_runtime_metrics,
+    if (!nuwax_conversation_metrics_snapshot(s_conversation_runtime_metrics,
                                              (uint64_t)esp_timer_get_time(),
                                              &snapshot)) {
         ESP_LOGW(TAG, "conversation runtime metrics snapshot failed reason=%s",
@@ -3334,7 +3620,7 @@ static nuwax_app_state_t conversation_state_current(void) {
     return state;
 }
 
-static esp_err_t initialize_v28_ui_with_retry(void) {
+static esp_err_t initialize_v28_ui_with_retry(bool provisioning_face) {
     esp_err_t last_err = ESP_FAIL;
     ui_ready_store(false);
 
@@ -3348,26 +3634,40 @@ static esp_err_t initialize_v28_ui_with_retry(void) {
                      (unsigned long)attempt,
                      (unsigned long)NUWAX_UI_STARTUP_MAX_ATTEMPTS);
         } else {
-            esp_err_t ui_err = nuwax_app_create(lv_screen_active());
+            esp_err_t ui_err = nuwax_app_create_with_provisioning_face(
+                lv_screen_active(), provisioning_face);
             if (ui_err == ESP_OK) {
                 esp_err_t shell_err = nuwax_app_shell_init();
                 if (shell_err == ESP_OK) {
                     nuwax_app_state_t initial_ui_state =
                         NUWAX_APP_STATE_BOOTING;
                     uint32_t initial_ui_generation = 0U;
-                    conversation_state_snapshot(&initial_ui_state,
-                                                &initial_ui_generation,
-                                                NULL);
-                    nuwax_state_bridge_update(initial_ui_state);
+                    uint32_t initial_ui_publication = 0U;
                     portENTER_CRITICAL(&s_conversation_state_lock);
-                    (void)nuwax_ui_sync_complete(&s_ui_state_sync,
-                                                 initial_ui_state,
-                                                 initial_ui_generation);
+                    initial_ui_state = nuwax_conversation_state_current(&s_conversation_state);
+                    initial_ui_generation = nuwax_conversation_state_generation(&s_conversation_state);
+                    if (!s_ui_state_sync.pending) {
+                        nuwax_ui_sync_submit(&s_ui_state_sync, initial_ui_state,
+                                             initial_ui_generation);
+                    }
+                    initial_ui_publication = s_ui_state_sync.publication_seq;
+                    portEXIT_CRITICAL(&s_conversation_state_lock);
+                    (void)nuwax_state_bridge_update_owned(initial_ui_state,
+                                                          initial_ui_publication);
+                    portENTER_CRITICAL(&s_conversation_state_lock);
+                    (void)nuwax_ui_sync_complete_publication(&s_ui_state_sync,
+                        initial_ui_state, initial_ui_generation, initial_ui_publication);
                     portEXIT_CRITICAL(&s_conversation_state_lock);
 #if CONFIG_NUWAX_SPEAKER_ENABLE
-                    nuwax_app_shell_set_volume_percent(
-                        nuwax_speaker_playback_get_volume_percent());
+                    uint32_t volume_sequence;
+                    const uint8_t volume =
+                        nuwax_speaker_playback_get_confirmed_volume_percent(&volume_sequence);
+                    nuwax_app_shell_confirm_volume(volume, volume_sequence);
 #endif
+                    /* The panel retains the boot logo until the complete UI
+                     * and listeners are ready. Opening the output gate forces
+                     * a full-screen repaint so no logo pixels remain. */
+                    nuwax_lvgl_port_set_panel_output_enabled(true);
                     nuwax_lvgl_port_unlock();
                     ui_ready_store(true);
                     ESP_LOGI(TAG,
@@ -3425,7 +3725,8 @@ static nuwax_app_state_t head_touch_get_conversation_state(void *user_ctx) {
 
 static bool head_touch_interaction_allowed(void *user_ctx) {
     (void)user_ctx;
-    if (atomic_load_explicit(&s_reprovision_quiesce_requested,
+    if (local_power_transition_active() ||
+        atomic_load_explicit(&s_reprovision_quiesce_requested,
                              memory_order_acquire)) {
         return false;
     }
@@ -3435,6 +3736,13 @@ static bool head_touch_interaction_allowed(void *user_ctx) {
     }
 #endif
     return !exclusive_audio_mode_blocks_normal_audio();
+}
+
+static bool head_touch_interrupt_music(void *user_ctx) {
+    (void)user_ctx;
+    if (!product_music_blocks_audio()) return false;
+    product_music_cancel("head_touch");
+    return true;
 }
 
 static uint32_t conversation_state_generation(void) {
@@ -3839,15 +4147,18 @@ static void set_state(nuwax_app_state_t state) {
     cancel_pending_semantic_emotion_for_state(state);
     if (ui_ready_snapshot()) {
         bool current = false;
+        uint32_t publication_seq = 0U;
         portENTER_CRITICAL(&s_conversation_state_lock);
+        publication_seq = s_ui_state_sync.publication_seq;
         current = generation == nuwax_conversation_state_generation(&s_conversation_state) &&
                   state == nuwax_conversation_state_current(&s_conversation_state) &&
                   nuwax_ui_sync_matches(&s_ui_state_sync, state, generation);
         portEXIT_CRITICAL(&s_conversation_state_lock);
         if (current) {
-            nuwax_state_bridge_update(state);
+            (void)nuwax_state_bridge_update_owned(state, publication_seq);
             portENTER_CRITICAL(&s_conversation_state_lock);
-            (void)nuwax_ui_sync_complete(&s_ui_state_sync, state, generation);
+            (void)nuwax_ui_sync_complete_publication(
+                &s_ui_state_sync, state, generation, publication_seq);
             portEXIT_CRITICAL(&s_conversation_state_lock);
         } else {
             ESP_LOGI(TAG,
@@ -4091,11 +4402,13 @@ static void sync_pending_ui_state(void) {
     }
     nuwax_app_state_t state = NUWAX_APP_STATE_BOOTING;
     uint32_t generation = 0;
+    uint32_t publication_seq = 0U;
     portENTER_CRITICAL(&s_conversation_state_lock);
     const bool pending = s_ui_state_sync.pending;
     if (pending) {
         state = s_ui_state_sync.state;
         generation = s_ui_state_sync.generation;
+        publication_seq = s_ui_state_sync.publication_seq;
     }
     portEXIT_CRITICAL(&s_conversation_state_lock);
     if (!pending) {
@@ -4103,14 +4416,16 @@ static void sync_pending_ui_state(void) {
     }
     bool current = false;
     portENTER_CRITICAL(&s_conversation_state_lock);
-    current = nuwax_ui_sync_matches(&s_ui_state_sync, state, generation) &&
+    current = nuwax_ui_sync_matches_publication(
+                  &s_ui_state_sync, state, generation, publication_seq) &&
               generation == nuwax_conversation_state_generation(&s_conversation_state) &&
               state == nuwax_conversation_state_current(&s_conversation_state);
     portEXIT_CRITICAL(&s_conversation_state_lock);
     if (current) {
-        nuwax_state_bridge_update(state);
+        (void)nuwax_state_bridge_update_owned(state, publication_seq);
         portENTER_CRITICAL(&s_conversation_state_lock);
-        (void)nuwax_ui_sync_complete(&s_ui_state_sync, state, generation);
+        (void)nuwax_ui_sync_complete_publication(
+            &s_ui_state_sync, state, generation, publication_seq);
         portEXIT_CRITICAL(&s_conversation_state_lock);
         ESP_LOGI(TAG, "state=%s deferred_ui=1", nuwax_app_state_name(state));
     }
@@ -4139,10 +4454,47 @@ static void sync_exclusive_audio_mode_ui_state(void) {
         published_monitoring = (nuwax_monitoring_state_t)-1;
     }
 
-    const nuwax_meeting_state_t meeting =
+    nuwax_meeting_state_t meeting =
         nuwax_meeting_mode_state(&s_meeting_mode);
-    const nuwax_monitoring_state_t monitoring =
+    nuwax_monitoring_state_t monitoring =
         nuwax_monitoring_mode_state(&s_monitoring_mode);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    /* Controllers reset on disconnect; the lease is intent, not evidence of
+     * recording. A scheduled reader can still fail MIC or storage admission.
+     * Preserve the normal online controller states above, including no-card
+     * operation, and project only the disconnected owner here. */
+    if (meeting == NUWAX_MEETING_STATE_DISABLED &&
+        monitoring == NUWAX_MONITORING_STATE_DISABLED &&
+        (offline_mode_lease_pending() ||
+        nuwax_meeting_mode_offline_resume_pending(&s_meeting_mode) ||
+        nuwax_monitoring_mode_offline_resume_pending(&s_monitoring_mode) ||
+        nuwax_offline_audio_capture_running())) {
+        const bool monitoring_resume =
+            nuwax_monitoring_mode_offline_resume_pending(&s_monitoring_mode);
+        const bool meeting_resume =
+            nuwax_meeting_mode_offline_resume_pending(&s_meeting_mode);
+        const nuwax_offline_capture_health_t health =
+            nuwax_offline_audio_capture_health();
+        const bool recording = nuwax_offline_audio_capture_running() &&
+            nuwax_offline_capture_health_is_recording(health);
+        const bool starting = nuwax_offline_audio_capture_running() &&
+            health == NUWAX_OFFLINE_CAPTURE_STARTING;
+        const bool stopping = !offline_mode_lease_pending() &&
+            !monitoring_resume && !meeting_resume;
+        if (monitoring_resume || (!meeting_resume && offline_mode_kind() ==
+            NUWAX_OFFLINE_AUDIO_MODE_MONITORING)) {
+            monitoring = stopping ? NUWAX_MONITORING_STATE_STOPPING :
+                recording ? NUWAX_MONITORING_STATE_ACTIVE :
+                starting ? NUWAX_MONITORING_STATE_STARTING : NUWAX_MONITORING_STATE_ERROR;
+            meeting = NUWAX_MEETING_STATE_DISABLED;
+        } else {
+            meeting = stopping ? NUWAX_MEETING_STATE_STOPPING :
+                recording ? NUWAX_MEETING_STATE_ACTIVE :
+                starting ? NUWAX_MEETING_STATE_STARTING : NUWAX_MEETING_STATE_ERROR;
+            monitoring = NUWAX_MONITORING_STATE_DISABLED;
+        }
+    }
+#endif
     if (published_meeting != meeting) {
         nuwax_app_shell_set_meeting_state((nuwax_meeting_ui_state_t)meeting);
         published_meeting = meeting;
@@ -4167,11 +4519,20 @@ static void sync_pending_semantic_emotion(void) {
         return;
     }
 
+    /* First-PCM and the shell can both publish. Do not block the audio owner,
+     * and keep the claim until stale-owner rollback has finished. A later UI
+     * tick will consume any replacement submitted while this claim is held. */
+    static atomic_flag publishing = ATOMIC_FLAG_INIT;
+    if (atomic_flag_test_and_set_explicit(&publishing, memory_order_acquire)) {
+        return;
+    }
+
     nuwax_emotion_ui_pending_t snapshot = {0};
     portENTER_CRITICAL(&s_emotion_ui_lock);
     snapshot = s_emotion_ui_sync;
     portEXIT_CRITICAL(&s_emotion_ui_lock);
     if (!snapshot.pending) {
+        atomic_flag_clear_explicit(&publishing, memory_order_release);
         return;
     }
 
@@ -4184,14 +4545,22 @@ static void sync_pending_semantic_emotion(void) {
     bool ok = false;
     bool still_current = false;
     if (current) {
-        ok = nuwax_state_bridge_set_semantic_emotion_name_owned_leased(
-            snapshot.emotion,
-            snapshot.source,
-            snapshot.revision,
-            snapshot.duration_ms,
-            snapshot.finite_lease);
+        const bool refreshed = snapshot.finite_lease &&
+            conversation_state_current() == NUWAX_APP_STATE_SLEEPING &&
+            nuwax_state_bridge_refresh_semantic_emotion_name_owned_lease(
+                snapshot.emotion,
+                snapshot.source,
+                snapshot.revision,
+                snapshot.duration_ms);
+        ok = refreshed ||
+            nuwax_state_bridge_set_semantic_emotion_name_owned_leased(
+                snapshot.emotion,
+                snapshot.source,
+                snapshot.revision,
+                snapshot.duration_ms,
+                snapshot.finite_lease);
         portENTER_CRITICAL(&s_emotion_ui_lock);
-        still_current = nuwax_emotion_ui_matches(&s_emotion_ui_sync,
+        still_current = nuwax_emotion_ui_revision_current(&s_emotion_ui_sync,
                                                  snapshot.revision);
         if (ok && still_current) {
             (void)nuwax_emotion_ui_complete(&s_emotion_ui_sync,
@@ -4219,6 +4588,7 @@ static void sync_pending_semantic_emotion(void) {
                  (unsigned long)snapshot.revision,
                  ok ? 1 : 0);
     }
+    atomic_flag_clear_explicit(&publishing, memory_order_release);
 }
 
 static bool apply_semantic_emotion_name(const char *emotion, const char *source) {
@@ -4499,7 +4869,7 @@ static esp_err_t start_wake_model_serialized(
         return ESP_ERR_TIMEOUT;
     }
 
-    esp_err_t result = ESP_ERR_INVALID_STATE;
+    esp_err_t result = ESP_ERR_NOT_FINISHED;
     if (!atomic_load_explicit(&s_reprovision_quiesce_requested,
                               memory_order_acquire)) {
         /* Model construction belongs to app_main's internal-DRAM stack. This
@@ -4925,7 +5295,6 @@ static void request_sleep_wake_word_detector(const char *reason) {
         return;
     }
     bool changed = false;
-    const uint32_t ws_epoch = active_ws_epoch_snapshot();
     portENTER_CRITICAL(&s_wake_detector_request_lock);
     const bool same =
         atomic_load_explicit(&s_wake_detector_desired,
@@ -4937,7 +5306,12 @@ static void request_sleep_wake_word_detector(const char *reason) {
         s_wake_detector_request.mode = NUWAX_WAKE_MODE_SLEEP;
         s_wake_detector_request.mode_token =
             next_wake_detector_token_locked();
-        s_wake_detector_request.ws_epoch = ws_epoch;
+        /* Sleep detection is local. The hit callback binds its event to the
+         * currently authenticated connection; a queued old hit is still
+         * rejected at consumption after a reconnect. Do not restart I2S just
+         * because the transport changed from offline to online. Playback
+         * interrupt requests remain bound to epoch + speaker generation. */
+        s_wake_detector_request.ws_epoch = 0U;
         s_wake_interrupt_first_pcm_us = 0;
         changed = true;
     }
@@ -4958,6 +5332,63 @@ static void request_sleep_wake_word_detector(const char *reason) {
     notify_wake_supervisor();
 #else
     (void)reason;
+#endif
+}
+
+static void service_ota_wake_detector_recovery(void)
+{
+#if CONFIG_NUWAX_OTA_ENABLE && CONFIG_NUWAX_WAKE_WORD_ENABLE
+    if (!atomic_load_explicit(&s_ota_wake_restore_pending,
+                              memory_order_acquire)) {
+        return;
+    }
+    /* Keep the marker until the OTA controller has released its audio
+     * interlock. Successful OTA reboots, while every non-reboot terminal
+     * result converges here without depending on an incidental wait-loop. */
+    if (nuwax_ota_device_is_active()) {
+        return;
+    }
+    if (s_power_shutdown_requested ||
+        atomic_load_explicit(&s_reprovision_quiesce_requested,
+                             memory_order_acquire) ||
+        exclusive_audio_mode_blocks_normal_audio() ||
+        nuwax_notification_blocks_conversation(
+            &s_notification_transaction)) {
+        /* A stronger owner has taken the microphone lifecycle. It will
+         * perform its own wake handoff; do not resurrect the OTA snapshot
+         * after that owner releases. */
+        if (s_power_shutdown_requested ||
+            atomic_load_explicit(&s_reprovision_quiesce_requested,
+                                 memory_order_acquire)) {
+            atomic_store_explicit(&s_ota_wake_restore_pending, false,
+                                  memory_order_release);
+        }
+        return;
+    }
+
+    const nuwax_app_state_t state = conversation_state_current();
+    if (state == NUWAX_APP_STATE_LISTENING ||
+        state == NUWAX_APP_STATE_THINKING ||
+        state == NUWAX_APP_STATE_SPEAKING) {
+        /* A new conversation owner superseded the OTA snapshot. */
+        atomic_store_explicit(&s_ota_wake_restore_pending, false,
+                              memory_order_release);
+        return;
+    }
+
+    if (state == NUWAX_APP_STATE_WS_CONNECTING &&
+        cloud_service_is_ready()) {
+        /* Cloud-ready recovery must converge the connecting lifecycle before
+         * the ordinary sleep recovery path can own wake admission. */
+        request_sleeping_conversation_state("ota_failed_wake_restore");
+    } else {
+        request_sleep_wake_word_detector("ota_failed_wake_restore");
+    }
+    atomic_store_explicit(&s_ota_wake_restore_pending, false,
+                          memory_order_release);
+    ESP_LOGI(TAG,
+             "wake detector restored after non-reboot OTA result state=%s",
+             nuwax_app_state_name(state));
 #endif
 }
 
@@ -5085,6 +5516,9 @@ static bool start_sleep_wake_word_detector(const char *reason) {
         request.mode == NUWAX_WAKE_MODE_OFF ||
         request.mode_token == 0U ||
         conversation_capture_busy_for_sleep() ||
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+        nuwax_offline_audio_capture_running() ||
+#endif
         ota_blocks_wake_detector()) {
         return false;
     }
@@ -5115,6 +5549,11 @@ static bool start_sleep_wake_word_detector(const char *reason) {
     if (!nuwax_wake_word_detector_is_running()) {
         const esp_err_t err = start_wake_model_serialized(&request);
         if (err != ESP_OK) {
+            if (err == ESP_ERR_NOT_FINISHED) {
+                /* Flash persistence and teardown intentionally stop inference.
+                 * The supervisor retries after the owner releases its guard. */
+                return false;
+            }
             ESP_LOGW(TAG,
                      "wake word detector start failed reason=%s err=%s",
                      reason ? reason : "-",
@@ -5158,14 +5597,16 @@ static void ensure_sleep_wake_word_detector(void) {
     if (atomic_load_explicit(&s_reprovision_quiesce_requested,
                              memory_order_acquire) ||
         conversation_state_current() != NUWAX_APP_STATE_SLEEPING ||
-        /* The fixed wake greeting keeps the visual state sleeping until its
-         * first PCM write, but the conversation owner is already awake. Do
-         * not let the sleep-health path re-arm MultiNet during that window. */
+        /* The owner is awake before deferred feedback reaches the UI. Do not
+         * let sleep-health re-arm MultiNet during greeting admission. */
         nuwax_awake_session_state_is_active(&s_awake_session) ||
         s_turn_guard.active ||
         nuwax_notification_blocks_conversation(
             &s_notification_transaction) ||
-        exclusive_audio_mode_blocks_normal_audio() ||
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+        nuwax_offline_audio_capture_running() ||
+#endif
+        meeting_or_monitoring_mode_blocks_sleep() ||
         ota_blocks_wake_detector()) {
         return;
     }
@@ -5188,11 +5629,53 @@ static bool sleep_transaction_blocks_new_audio(void) {
            nuwax_sleep_transaction_blocks_audio(&s_sleep_transaction);
 }
 
+static bool sleep_lifecycle_blocks_normal_cloud_audio(void) {
+    if (product_music_blocks_audio()) return true;
+    if (sleep_transaction_blocks_new_audio()) {
+        return true;
+    }
+    /* Greeting admission can precede the deferred visual state update. Only
+     * a sleeping device with no awake owner quarantines normal output;
+     * notification events use their separate owner. */
+    return conversation_state_current() == NUWAX_APP_STATE_SLEEPING &&
+           !nuwax_awake_session_state_is_active(&s_awake_session);
+}
+
+static bool local_power_transition_active(void) {
+    /* The cancellable low-battery reminder only reserves the power gate.
+     * Preserve ordinary playback/capture completion until shutdown is accepted;
+     * suppressing those callbacks early can strand a charger-cancelled dialog. */
+    return s_power_shutdown_requested || s_sleep_request_local_power ||
+           (s_sleep_transaction.active &&
+            s_sleep_transaction.local_request);
+}
+
 static bool sleep_lifecycle_blocks_new_capture(void) {
-    return s_deferred_sleep_intent.active ||
+    return product_music_blocks_audio() || s_deferred_sleep_intent.active ||
            nuwax_notification_blocks_conversation(
                &s_notification_transaction) ||
            sleep_transaction_blocks_new_audio();
+}
+
+/* ESP_ERR_INVALID_STATE is also used for real initialization failures. Only
+ * classify it as an intentional source handoff when the matching lifecycle
+ * fence is still present; unrelated audio errors must retain the normal
+ * recovery path. */
+static bool normal_audio_source_sleep_preempted(esp_err_t err) {
+    if (err != ESP_ERR_INVALID_STATE) {
+        return false;
+    }
+    return !exclusive_audio_mode_blocks_normal_audio() &&
+           (s_power_shutdown_requested ||
+           s_deferred_sleep_intent.active ||
+           sleep_transaction_blocks_new_audio() ||
+           conversation_state_current() == NUWAX_APP_STATE_SLEEPING);
+}
+
+static bool normal_audio_source_notification_preempted(esp_err_t err) {
+    return err == ESP_ERR_INVALID_STATE &&
+           nuwax_notification_blocks_conversation(
+               &s_notification_transaction);
 }
 
 static bool remote_sleep_reply_is_in_progress(const char *turn_id) {
@@ -5282,7 +5765,10 @@ static void service_offline_wake_word_detector(const char *reason) {
     if (atomic_load_explicit(&s_reprovision_quiesce_requested,
                              memory_order_acquire) ||
         conversation_capture_busy_for_sleep() ||
-        exclusive_audio_mode_blocks_normal_audio() ||
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+        nuwax_offline_audio_capture_running() ||
+#endif
+        meeting_or_monitoring_mode_blocks_sleep() ||
         ota_blocks_wake_detector() ||
         nuwax_awake_session_state_is_active(&s_awake_session)) {
         return;
@@ -5301,30 +5787,104 @@ static void wake_word_supervisor_task(void *arg) {
     (void)arg;
 #if CONFIG_NUWAX_WAKE_WORD_ENABLE
     uint32_t next_attempt_ms = 0U;
+    uint32_t ready_since_ms = 0U;
     bool ready_announced = false;
+    uint32_t not_ready_since_ms = 0U;
     for (;;) {
         (void)ulTaskNotifyTake(pdTRUE,
                                pdMS_TO_TICKS(NUWAX_WAKE_SUPERVISOR_POLL_MS));
         if (!atomic_load_explicit(&s_wake_detector_desired,
                                   memory_order_acquire)) {
             ready_announced = false;
+            ready_since_ms = 0U;
+            not_ready_since_ms = 0U;
             continue;
         }
-        if (atomic_load_explicit(&s_reprovision_quiesce_requested,
+        if (nuwax_wake_word_detector_flash_paused() ||
+            atomic_load_explicit(&s_reprovision_quiesce_requested,
                                  memory_order_acquire) ||
             conversation_capture_busy_for_sleep() ||
-            exclusive_audio_mode_blocks_normal_audio() ||
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+            nuwax_offline_audio_capture_running() ||
+#endif
+            meeting_or_monitoring_mode_blocks_sleep() ||
             ota_blocks_wake_detector() ||
             (s_wake_word_events &&
              uxQueueMessagesWaiting(s_wake_word_events) > 0U)) {
             ready_announced = false;
+            not_ready_since_ms = 0U;
+            ready_since_ms = 0U;
             continue;
         }
 
-        if (nuwax_wake_word_detector_is_ready()) {
+        const uint32_t now_ms = monotonic_ms();
+        const uint32_t requested_ms = (uint32_t)atomic_load_explicit(
+            &s_wake_detector_request_ms, memory_order_acquire);
+        const bool detector_ready = nuwax_wake_word_detector_is_ready();
+        if (detector_ready) {
+            not_ready_since_ms = 0U;
+            const uint32_t last_feed_ms =
+                nuwax_wake_word_detector_last_feed_ms();
+            /* The detector and supervisor publish timestamps from different
+             * tasks. A feed may be one tick newer than this snapshot; do not
+             * let unsigned subtraction turn that benign race into 4.29e9 ms
+             * of apparent staleness. The signed comparison remains valid over
+             * the uint32 millisecond wrap because the stale threshold is
+             * orders of magnitude below INT32_MAX. */
+            const uint32_t feed_age_ms =
+                last_feed_ms != 0U &&
+                        elapsed_ms(now_ms, last_feed_ms)
+                    ? (uint32_t)(now_ms - last_feed_ms)
+                    : 0U;
+            const uint32_t ready_age_ms =
+                ready_since_ms != 0U &&
+                        elapsed_ms(now_ms, ready_since_ms)
+                    ? (uint32_t)(now_ms - ready_since_ms)
+                    : 0U;
             if (!ready_announced) {
-                const uint32_t requested_ms = (uint32_t)atomic_load_explicit(
-                    &s_wake_detector_request_ms, memory_order_acquire);
+                ready_since_ms = now_ms;
+            }
+            const bool first_frame_stale =
+                last_feed_ms == 0U && ready_since_ms != 0U &&
+                ready_age_ms >=
+                    NUWAX_WAKE_SUPERVISOR_DATA_STALE_MS;
+            const bool feed_stale =
+                last_feed_ms != 0U &&
+                feed_age_ms >=
+                    NUWAX_WAKE_SUPERVISOR_DATA_STALE_MS;
+            if (first_frame_stale || feed_stale) {
+                ESP_LOGW(TAG,
+                         "wake detector data stale ready=1 first_frame_stale=%d last_feed_ms=%lu age_ms=%lu threshold_ms=%u; requesting bounded stop",
+                         first_frame_stale ? 1 : 0,
+                         (unsigned long)last_feed_ms,
+                         last_feed_ms != 0U
+                             ? (unsigned long)feed_age_ms
+                             : (unsigned long)ready_age_ms,
+                         (unsigned)NUWAX_WAKE_SUPERVISOR_DATA_STALE_MS);
+                const esp_err_t stop_err =
+                    nuwax_wake_word_detector_stop_with_timeout(
+                        NUWAX_WAKE_WORD_STOP_TIMEOUT_MS);
+                if (stop_err != ESP_OK) {
+                    ESP_LOGE(TAG,
+                             "wake detector stale-data stop did not converge err=%s; controlled restart preserves MIC ownership",
+                             esp_err_to_name(stop_err));
+                    set_state(NUWAX_APP_STATE_ERROR);
+                    nuwax_diagnostics_log_heap_label(
+                        TAG, "wake_detector_stale_data_restart");
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    esp_restart();
+                    vTaskDelay(portMAX_DELAY);
+                }
+                atomic_store_explicit(&s_wake_detector_request_ms,
+                                      monotonic_ms(),
+                                      memory_order_release);
+                next_attempt_ms = monotonic_ms() +
+                                  NUWAX_WAKE_SUPERVISOR_RETRY_MS;
+                ready_announced = false;
+                ready_since_ms = 0U;
+                continue;
+            }
+            if (!ready_announced) {
                 ESP_LOGI(TAG,
                          "wake detector supervised ready latency_ms=%lu",
                          (unsigned long)(monotonic_ms() - requested_ms));
@@ -5333,16 +5893,14 @@ static void wake_word_supervisor_task(void *arg) {
             continue;
         }
 
-        const uint32_t now_ms = monotonic_ms();
         const bool detector_running = nuwax_wake_word_detector_is_running();
-        const uint32_t requested_ms = (uint32_t)atomic_load_explicit(
-            &s_wake_detector_request_ms, memory_order_acquire);
-        if (detector_running && requested_ms != 0U &&
-            (uint32_t)(now_ms - requested_ms) >=
+        if (not_ready_since_ms == 0U) not_ready_since_ms = now_ms;
+        if (detector_running &&
+            (uint32_t)(now_ms - not_ready_since_ms) >=
                 NUWAX_WAKE_SUPERVISOR_READY_TIMEOUT_MS) {
             ESP_LOGE(TAG,
                      "wake detector remained running without readiness elapsed_ms=%lu timeout_ms=%u; requesting bounded stop",
-                     (unsigned long)(now_ms - requested_ms),
+                     (unsigned long)(now_ms - not_ready_since_ms),
                      (unsigned)NUWAX_WAKE_SUPERVISOR_READY_TIMEOUT_MS);
             const esp_err_t stop_err =
                 nuwax_wake_word_detector_stop_with_timeout(
@@ -5364,6 +5922,7 @@ static void wake_word_supervisor_task(void *arg) {
             next_attempt_ms = monotonic_ms() +
                               NUWAX_WAKE_SUPERVISOR_RETRY_MS;
             ready_announced = false;
+            not_ready_since_ms = 0U;
             continue;
         }
         if (ready_announced) {
@@ -5374,10 +5933,12 @@ static void wake_word_supervisor_task(void *arg) {
                      "wake detector lost readiness while still requested; recovering");
         }
         ready_announced = false;
+        ready_since_ms = 0U;
         if (!elapsed_ms(now_ms, next_attempt_ms)) {
             continue;
         }
         if (!detector_running) {
+            not_ready_since_ms = now_ms;
             atomic_store_explicit(&s_wake_detector_request_ms,
                                   now_ms,
                                   memory_order_release);
@@ -5396,8 +5957,9 @@ static void remember_sleep_request(const char *reason) {
     s_sleep_request_pending = true;
     s_sleep_request_awake_generation =
         nuwax_awake_session_state_generation(&s_awake_session);
-    s_sleep_request_requires_idle_expiry =
-        reason && strcmp(reason, "awake_idle_timeout") == 0;
+    s_sleep_request_requires_idle_expiry = reason &&
+        (strcmp(reason, "awake_idle_timeout") == 0 ||
+         strcmp(reason, "conversation_inactive_60s") == 0);
     strlcpy(s_sleep_request_reason,
             reason && reason[0] ? reason : "sleep",
             sizeof(s_sleep_request_reason));
@@ -5408,6 +5970,10 @@ static void clear_sleep_request(void) {
     s_sleep_request_awake_generation = 0U;
     s_sleep_request_requires_idle_expiry = false;
     s_sleep_request_reason[0] = '\0';
+    s_sleep_request_local_power = false;
+    s_sleep_request_speaker_generation = 0U;
+    s_sleep_request_speaker_epoch = 0U;
+    s_sleep_request_speaker_cancel_armed = false;
 }
 
 static bool commit_sleeping_conversation_state(const char *reason);
@@ -5432,10 +5998,12 @@ static uint32_t sleep_transaction_current_speaker_generation(
         stats.start_gate_connection_epoch == ws_epoch) {
         return stats.start_gate_generation;
     }
-    /* Keep the generation even when its recorded epoch is stale. The
-     * transaction will intentionally refuse to accept its completion, but
-     * issuing the generation-bound cancel still prevents old audio from
-     * continuing while the 2 s fault path closes the stale connection. */
+    /* Keep the generation even when its recorded epoch is stale. A remote
+     * transaction will intentionally refuse that completion, but issuing the
+     * generation-bound cancel still prevents old audio from continuing while
+     * the 2 s fault path closes the stale connection. A local power-key
+     * transaction may have no WebSocket epoch at all and accepts the same
+     * generation's physical completion without fabricating a cloud close. */
     if (stats.submitted_generation != 0U) {
         ESP_LOGW(TAG,
                  "pending speaker generation belongs to stale epoch transaction_epoch=%lu speaker_epoch=%lu generation=%lu",
@@ -5456,6 +6024,143 @@ static uint32_t sleep_transaction_current_speaker_generation(
     return 0U;
 }
 #endif
+
+/* Arm a local power-key sleep without starting the short sleep transaction
+ * while another owner still has the audio path.  The capture owner may need
+ * to finish a bounded WebSocket terminal exchange; that work must not be
+ * measured against the two-second sleep convergence deadline. */
+static void remember_local_power_sleep_request(nuwax_ws_client_t *ws,
+                                               const char *reason) {
+    if (!s_sleep_request_pending || !s_sleep_request_local_power) {
+        remember_sleep_request(reason ? reason : "power_key_sleep");
+        s_sleep_request_local_power = true;
+        s_sleep_request_speaker_generation = 0U;
+        s_sleep_request_speaker_epoch = 0U;
+        s_sleep_request_speaker_cancel_armed = false;
+    }
+
+    s_during_playback_handoff_pending = false;
+    s_during_playback_handoff_playback_started = false;
+    s_during_playback_handoff_seamless = false;
+    s_post_playback_resume_pending = false;
+#if CONFIG_NUWAX_WAKE_WORD_ENABLE
+    inhibit_sleep_wake_word_detector(reason ? reason : "power_key_sleep");
+    if (nuwax_wake_word_detector_is_running()) {
+        nuwax_wake_word_detector_request_stop();
+    }
+#endif
+
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    /* Local sleep has priority. Fence late binary first, then retire only the
+     * exact metadata owner. A concurrent START retains physical cancellation;
+     * historical submitted_generation is never used to cancel metadata alone. */
+    (void)update_normal_downlink_admission(false);
+    if (nuwax_speaker_playback_abort_metadata_only_session(
+            s_turn_guard.turn_id, s_turn_guard.playback_id,
+            "power_key_sleep_metadata_only")) {
+        clear_active_turn_guard("power_key_sleep_metadata_only");
+    }
+    const bool speaker_pending = nuwax_speaker_playback_has_pending();
+    if (!speaker_pending) {
+        /* The generation-bound cancellation has already reached the physical
+         * terminal.  Drop the tracking fields so a later, unrelated playback
+         * cannot be mistaken for the old request. */
+        s_sleep_request_speaker_generation = 0U;
+        s_sleep_request_speaker_epoch = 0U;
+        s_sleep_request_speaker_cancel_armed = false;
+    } else if (!s_sleep_request_speaker_cancel_armed) {
+        const uint32_t ws_epoch =
+            ws && nuwax_ws_is_connected(ws)
+                ? nuwax_ws_connection_epoch(ws)
+                : active_ws_epoch_snapshot();
+        const uint32_t generation =
+            sleep_transaction_current_speaker_generation(ws_epoch);
+        if (generation != 0U &&
+            generation != s_sleep_request_speaker_generation) {
+            if (s_sleep_request_speaker_generation != 0U) {
+                ESP_LOGW(TAG,
+                         "local power sleep speaker generation advanced old=%lu new=%lu; rebinding cancellation",
+                         (unsigned long)s_sleep_request_speaker_generation,
+                         (unsigned long)generation);
+            }
+            s_sleep_request_speaker_epoch = ws_epoch;
+            s_sleep_request_speaker_generation = generation;
+            s_sleep_request_speaker_cancel_armed = false;
+        }
+    }
+    if (s_sleep_request_speaker_generation != 0U &&
+        !s_sleep_request_speaker_cancel_armed) {
+        nuwax_speaker_cancel_request_result_t cancel = {0};
+        const bool accepted =
+            nuwax_speaker_playback_request_cancel_generation_ex(
+                s_sleep_request_speaker_generation,
+                reason ? reason : "power_key_sleep",
+                NUWAX_SLEEP_TRANSACTION_SPEAKER_FADE_MS,
+                &cancel);
+        /* COMPLETED/FAILED are terminal observations for this generation;
+         * keep the arm bit set so a busy main loop cannot issue duplicate
+         * cancellation requests.  REJECTED deliberately remains unarmed so
+         * the next owner pass can retry or rebind if the speaker generation
+         * advanced between the snapshot and this request. */
+        s_sleep_request_speaker_cancel_armed =
+            accepted || cancel.status == NUWAX_SPEAKER_CANCEL_REQUEST_COMPLETED ||
+            cancel.status == NUWAX_SPEAKER_CANCEL_REQUEST_FAILED;
+        if (cancel.status == NUWAX_SPEAKER_CANCEL_REQUEST_FAILED ||
+            (accepted &&
+             cancel.status != NUWAX_SPEAKER_CANCEL_REQUEST_COMPLETED)) {
+            /* Reuse the existing bounded speaker recovery watchdog for every
+             * accepted non-terminal local cancellation and terminal failure.
+             * A transient REJECTED result remains unarmed and is retried from
+             * a fresh owner snapshot on the next pass. A normal stop clears
+             * this observation quickly; a lost terminal or physical-stop
+             * failure is reset locally after three seconds without reconnecting
+             * or resuming the cancelled conversation. */
+            s_speaker_fault_recovery_epoch =
+                cancel.connection_epoch != 0U
+                    ? cancel.connection_epoch
+                    : s_sleep_request_speaker_epoch;
+            s_speaker_fault_recovery_generation =
+                cancel.playback_generation != 0U
+                    ? cancel.playback_generation
+                    : s_sleep_request_speaker_generation;
+        }
+        ESP_LOGI(TAG,
+                 "local power sleep speaker cancel deferred generation=%lu epoch=%lu status=%d accepted=%d",
+                 (unsigned long)s_sleep_request_speaker_generation,
+                 (unsigned long)s_sleep_request_speaker_epoch,
+                 (int)cancel.status,
+                 accepted ? 1 : 0);
+    }
+#else
+    (void)ws;
+#endif
+    cancel_auto_followup_capture(reason ? reason : "power_key_sleep");
+}
+
+static bool requeue_local_power_sleep_after_timeout(const char *reason) {
+    if (!s_sleep_transaction.active) {
+        return false;
+    }
+    const uint32_t token = s_sleep_transaction.token;
+    nuwax_ws_client_t *ws = active_ws_snapshot(NULL);
+    if (!nuwax_sleep_transaction_abort(&s_sleep_transaction, token)) {
+        /* Keep the transaction alive for one more service pass if an owner
+         * changed it concurrently.  Crucially, do not escalate a local key
+         * request to the generic WebSocket-close/restart recovery path. */
+        s_sleep_transaction.deadline_ms = monotonic_ms() + 1000U;
+        ESP_LOGW(TAG,
+                 "local power sleep timeout could not requeue token=%lu; extending bounded wait",
+                 (unsigned long)token);
+        return true;
+    }
+    remember_local_power_sleep_request(
+        ws, reason ? reason : "power_key_sleep_retry");
+    ESP_LOGW(TAG,
+             "local power sleep transaction requeued after convergence timeout token=%lu reason=%s",
+             (unsigned long)token,
+             reason ? reason : "power_key_sleep_retry");
+    return true;
+}
 
 static bool service_deferred_remote_sleep_intent(const char *reason,
                                                  bool force) {
@@ -5558,6 +6263,12 @@ static bool service_deferred_remote_sleep_intent(const char *reason,
 
 static void service_sleep_transaction(void) {
     if (!s_sleep_transaction.active) {
+        if (s_sleep_request_pending && s_sleep_request_local_power) {
+            service_pending_sleep_request();
+            if (s_sleep_request_pending) {
+                return;
+            }
+        }
         (void)service_deferred_remote_sleep_intent(
             "deferred_sleep_health", false);
         if (!s_sleep_transaction.active) {
@@ -5566,6 +6277,29 @@ static void service_sleep_transaction(void) {
     }
 
     const uint32_t token = s_sleep_transaction.token;
+    const bool local_request = s_sleep_transaction.local_request;
+
+    /* A notification can be admitted after a local key request was snapshotted
+     * but before its speaker barrier becomes ready. Never publish SLEEPING
+     * underneath that owner: return the local intent to the pending gate and
+     * let the notification cancellation/terminal path release the hardware. */
+    if (local_request &&
+        nuwax_notification_blocks_conversation(
+            &s_notification_transaction)) {
+        nuwax_ws_client_t *ws = active_ws_snapshot(NULL);
+        if (nuwax_sleep_transaction_abort(&s_sleep_transaction, token)) {
+            remember_local_power_sleep_request(
+                ws, "power_key_sleep_notification_barrier");
+            if (ws) {
+                cancel_active_notification(
+                    ws, "power_key_sleep_notification_barrier");
+            }
+            ESP_LOGI(TAG,
+                     "local power sleep transaction deferred behind active notification token=%lu",
+                     (unsigned long)token);
+        }
+        return;
+    }
     if (s_sleep_transaction.state == NUWAX_SLEEP_TRANSACTION_REQUESTED) {
         (void)nuwax_sleep_transaction_begin_quiescing(
             &s_sleep_transaction, token);
@@ -5576,29 +6310,41 @@ static void service_sleep_transaction(void) {
         (void)nuwax_sleep_transaction_mark_capture_released(
             &s_sleep_transaction, token);
     }
+    if (local_request && s_sleep_transaction.ws_epoch == 0U &&
+        !s_sleep_transaction.protocol_closed) {
+        /* A local power-key transaction has no cloud protocol to close. Keep
+         * the barrier explicit so an offline short press cannot enter the
+         * recovery/restart path waiting for a nonexistent WebSocket. */
+        (void)nuwax_sleep_transaction_mark_protocol_closed(
+            &s_sleep_transaction, token, 0U);
+    }
 
 #if CONFIG_NUWAX_SPEAKER_ENABLE
     if (!s_sleep_transaction.speaker_stopped &&
         s_sleep_transaction.speaker_generation != 0U) {
         nuwax_speaker_playback_stats_t stats = {0};
         nuwax_speaker_playback_get_stats(&stats);
-        if (stats.completed_stop_result == ESP_OK &&
+        const bool completion_epoch_matches =
+            (local_request && s_sleep_transaction.ws_epoch == 0U) ||
             stats.completed_stop_connection_epoch ==
-                s_sleep_transaction.ws_epoch &&
+                s_sleep_transaction.ws_epoch;
+        if (stats.completed_stop_result == ESP_OK &&
+            completion_epoch_matches &&
             stats.completed_stop_generation ==
                 s_sleep_transaction.speaker_generation) {
             (void)nuwax_sleep_transaction_mark_speaker_stopped(
                 &s_sleep_transaction,
                 token,
-                stats.completed_stop_connection_epoch,
+                s_sleep_transaction.ws_epoch,
                 stats.completed_stop_generation);
             ESP_LOGI(TAG,
                      "sleep transaction observed speaker quiescence token=%lu epoch=%lu generation=%lu",
                      (unsigned long)token,
                      (unsigned long)stats.completed_stop_connection_epoch,
                      (unsigned long)stats.completed_stop_generation);
-        } else if (stats.failed_stop_connection_epoch ==
-                       s_sleep_transaction.ws_epoch &&
+        } else if (((local_request && s_sleep_transaction.ws_epoch == 0U) ||
+                    stats.failed_stop_connection_epoch ==
+                        s_sleep_transaction.ws_epoch) &&
                    stats.failed_stop_generation ==
                        s_sleep_transaction.speaker_generation) {
             s_speaker_fault_recovery_epoch =
@@ -5616,6 +6362,21 @@ static void service_sleep_transaction(void) {
 #endif
 
     const uint32_t now_ms = monotonic_ms();
+    if (local_request &&
+        (s_sleep_transaction.state == NUWAX_SLEEP_TRANSACTION_QUIESCING ||
+         s_sleep_transaction.state == NUWAX_SLEEP_TRANSACTION_RECOVERING) &&
+        !nuwax_sleep_transaction_ready_to_commit(&s_sleep_transaction) &&
+        nuwax_sleep_transaction_deadline_expired(&s_sleep_transaction,
+                                                 now_ms)) {
+        /* A physical key request is local UI intent. A delayed MIC/uplink or
+         * speaker teardown must never turn that intent into a process reset;
+         * return it to the non-blocking pending gate and let the real owner
+         * completion drive the next attempt. */
+        if (requeue_local_power_sleep_after_timeout(
+                "power_key_sleep_convergence_retry")) {
+            return;
+        }
+    }
     if (!nuwax_sleep_transaction_ready_to_commit(&s_sleep_transaction) &&
         nuwax_audio_terminal_recovery_pending() &&
         (s_sleep_transaction.state == NUWAX_SLEEP_TRANSACTION_QUIESCING ||
@@ -5646,8 +6407,9 @@ static void service_sleep_transaction(void) {
                  s_sleep_transaction.speaker_stopped ? 1 : 0,
                  s_sleep_transaction.protocol_closed ? 1 : 0);
         nuwax_ws_client_t *ws = active_ws_snapshot(NULL);
-        if (ws && nuwax_ws_request_close_if_epoch(
-                      ws, s_sleep_transaction.ws_epoch)) {
+        if (ws && s_sleep_transaction.ws_epoch != 0U &&
+            nuwax_ws_request_close_if_epoch(
+                ws, s_sleep_transaction.ws_epoch)) {
             (void)nuwax_sleep_transaction_mark_protocol_closed(
                 &s_sleep_transaction,
                 token,
@@ -5691,11 +6453,25 @@ static void service_sleep_transaction(void) {
             sizeof(request_id));
     strlcpy(command, s_sleep_transaction.command, sizeof(command));
 
-    if (!commit_sleeping_conversation_state("remote_sleep_transaction")) {
+    if (!commit_sleeping_conversation_state(
+            local_request ? "power_key_sleep" : "remote_sleep_transaction")) {
         /* The STARTING callback normally cancels the transaction first. This
          * token-bound fallback closes the race where an exclusive mode obtains
-         * audio ownership between the ready check and the local commit. */
-        if (!nuwax_sleep_transaction_abort(&s_sleep_transaction, token)) {
+         * audio ownership between the ready check and the local commit. A
+         * physical key request is local intent, so preserve it for a later
+         * retry instead of silently dropping it with the aborted transaction. */
+        nuwax_ws_client_t *ws = active_ws_snapshot(NULL);
+        const bool aborted =
+            nuwax_sleep_transaction_abort(&s_sleep_transaction, token);
+        if (local_request && aborted) {
+            remember_local_power_sleep_request(
+                ws, "power_key_sleep_commit_retry");
+            ESP_LOGI(TAG,
+                     "local power sleep commit superseded; request requeued token=%lu",
+                     (unsigned long)token);
+            return;
+        }
+        if (!aborted) {
             ESP_LOGI(TAG,
                      "sleep commit was superseded by another owner token=%lu state=%s",
                      (unsigned long)token,
@@ -5703,7 +6479,6 @@ static void service_sleep_transaction(void) {
                          s_sleep_transaction.state));
             return;
         }
-        nuwax_ws_client_t *ws = active_ws_snapshot(NULL);
         if (ws && nuwax_ws_is_connected(ws) &&
             nuwax_ws_connection_epoch(ws) == ws_epoch) {
             ESP_ERROR_CHECK_WITHOUT_ABORT(
@@ -5728,7 +6503,7 @@ static void service_sleep_transaction(void) {
     }
 
     nuwax_ws_client_t *ws = active_ws_snapshot(NULL);
-    if (ws && nuwax_ws_is_connected(ws) &&
+    if (!local_request && ws && nuwax_ws_is_connected(ws) &&
         nuwax_ws_connection_epoch(ws) == ws_epoch) {
         const esp_err_t ack_err =
             nuwax_session_send_command_ack_until_if_epoch(
@@ -5751,7 +6526,7 @@ static void service_sleep_transaction(void) {
                      request_id,
                      esp_err_to_name(ack_err));
         }
-    } else {
+    } else if (!local_request) {
         ESP_LOGW(TAG,
                  "sleep transaction committed locally without stale ACK token=%lu request_epoch=%lu active_epoch=%lu request=%s",
                  (unsigned long)token,
@@ -5856,6 +6631,124 @@ static nuwax_sleep_request_result_t begin_remote_sleep_transaction_bound(
              (unsigned long)speaker_generation,
              request_id,
              turn_id && turn_id[0] ? turn_id : "-",
+             conversation_capture_busy_for_sleep() ? 1 : 0);
+    service_sleep_transaction();
+    return result;
+}
+
+static nuwax_sleep_request_result_t begin_local_power_sleep_transaction(
+    nuwax_ws_client_t *ws,
+    const char *reason) {
+    if (s_sleep_request_pending && s_sleep_request_local_power) {
+        service_pending_sleep_request();
+        if (s_sleep_request_pending) {
+            return NUWAX_SLEEP_REQUEST_STARTED;
+        }
+    }
+    const uint32_t ws_epoch =
+        ws && nuwax_ws_is_connected(ws) ? nuwax_ws_connection_epoch(ws) : 0U;
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    const uint32_t speaker_generation =
+        sleep_transaction_current_speaker_generation(ws_epoch);
+    /* Keep the generation snapshot and pending decision from diverging at the
+     * natural-terminal edge. The speaker can publish its completion snapshot
+     * between two independent calls; a non-zero generation still represents
+     * an owner that the sleep barrier must wait for. */
+    const bool speaker_pending =
+        speaker_generation != 0U || nuwax_speaker_playback_has_pending();
+#else
+    const uint32_t speaker_generation = 0U;
+    const bool speaker_pending = false;
+#endif
+    const bool capture_busy = conversation_capture_busy_for_sleep();
+    const bool notification_active =
+        nuwax_notification_blocks_conversation(
+            &s_notification_transaction);
+
+    /* Do not start the two-second transactional deadline while a capture,
+     * notification, or speaker owner still needs to release hardware.  The
+     * local key request is retained in the non-resetting pending slot and is
+     * committed once those owners report quiescence. */
+    if (capture_busy || notification_active || speaker_pending) {
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+        (void)update_normal_downlink_admission(false);
+#endif
+        remember_local_power_sleep_request(ws, reason);
+        if (notification_active && ws) {
+            cancel_active_notification(ws, "power_key_sleep_pending");
+        }
+        ESP_LOGI(TAG,
+                 "local power sleep deferred capture_busy=%d notification=%d speaker_pending=%d speaker_generation=%lu",
+                 capture_busy ? 1 : 0,
+                 notification_active ? 1 : 0,
+                 speaker_pending ? 1 : 0,
+                 (unsigned long)speaker_generation);
+        return NUWAX_SLEEP_REQUEST_STARTED;
+    }
+    const nuwax_sleep_request_result_t result =
+        nuwax_sleep_transaction_request_local(
+            &s_sleep_transaction,
+            monotonic_ms(),
+            NUWAX_SLEEP_TRANSACTION_TIMEOUT_MS,
+            speaker_generation,
+            conversation_state_current() == NUWAX_APP_STATE_SLEEPING);
+    if (result != NUWAX_SLEEP_REQUEST_STARTED) {
+        ESP_LOGI(TAG,
+                 "local power sleep request result=%d state=%s reason=%s",
+                 (int)result,
+                 nuwax_sleep_transaction_state_name(
+                     s_sleep_transaction.state),
+                 reason ? reason : "-");
+        return result;
+    }
+
+    const uint32_t token = s_sleep_transaction.token;
+    (void)nuwax_sleep_transaction_begin_quiescing(
+        &s_sleep_transaction, token);
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    (void)update_normal_downlink_admission(false);
+#endif
+    cancel_auto_followup_capture(reason ? reason : "power_key_sleep");
+    s_during_playback_handoff_pending = false;
+    s_during_playback_handoff_playback_started = false;
+    s_during_playback_handoff_seamless = false;
+    s_post_playback_resume_pending = false;
+
+    if (!conversation_capture_busy_for_sleep()) {
+        (void)nuwax_sleep_transaction_mark_capture_released(
+            &s_sleep_transaction, token);
+        (void)nuwax_sleep_transaction_mark_protocol_closed(
+            &s_sleep_transaction, token, ws_epoch);
+    }
+
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    if (speaker_generation != 0U) {
+        nuwax_speaker_cancel_request_result_t cancel = {0};
+        (void)nuwax_speaker_playback_request_cancel_generation_ex(
+            speaker_generation,
+            reason ? reason : "power_key_sleep",
+            NUWAX_SLEEP_TRANSACTION_SPEAKER_FADE_MS,
+            &cancel);
+        if (cancel.status == NUWAX_SPEAKER_CANCEL_REQUEST_COMPLETED &&
+            cancel.completed_stop_result == ESP_OK) {
+            (void)nuwax_sleep_transaction_mark_speaker_stopped(
+                &s_sleep_transaction,
+                token,
+                ws_epoch,
+                speaker_generation);
+        } else if (cancel.status == NUWAX_SPEAKER_CANCEL_REQUEST_FAILED) {
+            s_speaker_fault_recovery_epoch = cancel.connection_epoch;
+            s_speaker_fault_recovery_generation =
+                cancel.playback_generation;
+        }
+    }
+#endif
+    ESP_LOGI(TAG,
+             "local power sleep transaction requested token=%lu epoch=%lu speaker_generation=%lu reason=%s capture_busy=%d",
+             (unsigned long)token,
+             (unsigned long)ws_epoch,
+             (unsigned long)speaker_generation,
+             reason ? reason : "-",
              conversation_capture_busy_for_sleep() ? 1 : 0);
     service_sleep_transaction();
     return result;
@@ -5988,7 +6881,40 @@ static void service_pending_sleep_request(void) {
     if (conversation_capture_busy_for_sleep()) {
         return;
     }
-    if (s_sleep_request_requires_idle_expiry &&
+
+    if (s_sleep_request_local_power) {
+        /* A local key request may arrive while a notification still owns the
+         * downlink.  Cancel that owner first; letting both transactions
+         * commit independently can re-arm wake capture underneath the other
+         * transaction and produce a false timeout. */
+        nuwax_ws_client_t *ws = active_ws_snapshot(NULL);
+        if (nuwax_notification_blocks_conversation(
+                &s_notification_transaction)) {
+            if (ws) {
+                cancel_active_notification(ws, "power_key_sleep_pending");
+            }
+            return;
+        }
+
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+        if (nuwax_speaker_playback_has_pending()) {
+            /* Keep cancellation asynchronous.  The speaker task owns the
+             * physical I2S stop, while this owner only observes its
+             * generation-bound completion. */
+            remember_local_power_sleep_request(
+                ws, s_sleep_request_reason[0]
+                         ? s_sleep_request_reason
+                         : "power_key_sleep");
+            return;
+        }
+#endif
+        /* Capture is already released and the speaker has no pending owner;
+         * this is the first point at which it is safe to enter the normal
+         * sleep commit path. */
+    }
+    const bool activity_expiry =
+        strcmp(s_sleep_request_reason, "conversation_inactive_60s") == 0;
+    if (s_sleep_request_requires_idle_expiry && !activity_expiry &&
         nuwax_listen_resume_state_holds_idle_expiry_boundary(
             &s_listen_resume)) {
         ESP_LOGI(TAG,
@@ -6002,8 +6928,14 @@ static void service_pending_sleep_request(void) {
     }
     const uint32_t current_awake_generation =
         nuwax_awake_session_state_generation(&s_awake_session);
+    const bool activity_authorized = activity_expiry &&
+        nuwax_awake_session_state_generation_matches(&s_awake_session,
+            s_sleep_request_awake_generation) &&
+        nuwax_normal_conversation_expired(&s_normal_conversation,
+            s_sleep_request_awake_generation, monotonic_ms());
     if (s_sleep_request_requires_idle_expiry &&
-        !nuwax_awake_session_state_can_commit_deferred_idle_sleep(
+        !(activity_expiry ? activity_authorized :
+          nuwax_awake_session_state_can_commit_deferred_idle_sleep(
             &s_awake_session,
             s_sleep_request_awake_generation,
             monotonic_ms(),
@@ -6015,7 +6947,7 @@ static void service_pending_sleep_request(void) {
             false,
 #endif
             false
-            )) {
+            ))) {
         ESP_LOGW(TAG,
                  "deferred local sleep request discarded without idle authority request_generation=%lu current_generation=%lu reason=%s",
                  (unsigned long)s_sleep_request_awake_generation,
@@ -6028,18 +6960,49 @@ static void service_pending_sleep_request(void) {
     strlcpy(reason,
             s_sleep_request_reason[0] ? s_sleep_request_reason : "sleep",
             sizeof(reason));
-    clear_sleep_request();
-    commit_sleeping_conversation_state(reason);
+    /* commit_sleeping_conversation_state() owns the successful transition and
+     * clears the request only after its admission checks pass.  Do not clear
+     * here first: an exclusive mode can become active between the checks above
+     * and the commit, in which case the local power intent must remain queued. */
+    if (!commit_sleeping_conversation_state(reason)) {
+        ESP_LOGI(TAG,
+                 "deferred sleep commit remained pending after admission race reason=%s",
+                 reason);
+    }
 }
 
 static void request_sleeping_conversation_state(const char *reason) {
+    /* A network ownership transfer is not a conversation sleep transition. */
+    if (atomic_load_explicit(&s_reprovision_quiesce_requested,
+                             memory_order_acquire)) {
+        return;
+    }
     if (meeting_or_monitoring_mode_blocks_sleep()) {
+        /* If the cloud-bound controllers are already DISABLED, the only
+         * remaining blocker is a transient offline/replay owner.  Preserve
+         * the intent so it can be committed when that owner releases. */
+        if (exclusive_audio_controllers_released()) {
+            s_exclusive_audio_sleep_reconcile_pending = true;
+        }
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
         clear_sleep_request();
         ESP_LOGI(TAG,
-                 "sleep request ignored while exclusive audio mode owns lifecycle reason=%s meeting=%d monitoring=%d",
+                 "sleep request deferred while exclusive audio mode owns lifecycle reason=%s meeting=%d monitoring=%d offline_lease=%d capture=%d archive=%d replay=%d",
+                 reason ? reason : "-",
+                 (int)nuwax_meeting_mode_state(&s_meeting_mode),
+                 (int)nuwax_monitoring_mode_state(&s_monitoring_mode),
+                 offline_mode_lease_pending() ? 1 : 0,
+                 nuwax_offline_audio_capture_running() ? 1 : 0,
+                 nuwax_offline_audio_is_active() ? 1 : 0,
+                 nuwax_offline_audio_replay_running() ? 1 : 0);
+#else
+        clear_sleep_request();
+        ESP_LOGI(TAG,
+                 "sleep request deferred while exclusive audio mode owns lifecycle reason=%s meeting=%d monitoring=%d",
                  reason ? reason : "-",
                  (int)nuwax_meeting_mode_state(&s_meeting_mode),
                  (int)nuwax_monitoring_mode_state(&s_monitoring_mode));
+#endif
         return;
     }
     if (reason && strcmp(reason, "awake_idle_timeout") == 0 &&
@@ -6109,6 +7072,372 @@ static void request_sleeping_conversation_state(const char *reason) {
     commit_sleeping_conversation_state(reason);
 }
 
+#if CONFIG_NUWAX_BATTERY_SERVICE_ENABLE
+static bool set_low_battery_warning(bool visible)
+{
+    if (s_low_battery_warning_visible == visible) return true;
+    if (!ui_ready_snapshot() || !nuwax_lvgl_port_lock(20U)) return false;
+    const esp_err_t err = nuwax_low_battery_warning_show(visible);
+    nuwax_lvgl_port_unlock();
+    if (err != ESP_OK) return false;
+    s_low_battery_warning_visible = visible;
+    return true;
+}
+
+/* Application-owner only. The battery task publishes measurements; it never
+ * powers off, stops audio, or takes ownership of LVGL's lifecycle. */
+static bool service_low_battery_sampler_restart(void)
+{
+    if (!s_low_battery_sampler_restart_pending) return true;
+    if (s_low_battery_sampler_stopping) {
+        if (nuwax_battery_service_stop(0U) != ESP_OK) return false;
+        s_low_battery_sampler_stopping = false;
+    }
+    if (start_battery_service_for_ui() != ESP_OK) return false;
+    s_low_battery_sampler_restart_pending = false;
+    return true;
+}
+
+static void service_low_battery_shutdown(void)
+{
+    if (!service_low_battery_sampler_restart()) return;
+    if (s_power_shutdown_requested) return;
+    nuwax_battery_service_snapshot_t sample = {0};
+    (void)nuwax_battery_service_get_snapshot(&sample);
+    const uint64_t now = (uint64_t)esp_timer_get_time() / 1000U;
+    const bool was_warning = s_low_battery_policy.warning;
+    const nuwax_low_battery_shutdown_action_t action =
+        nuwax_low_battery_shutdown_update(&s_low_battery_policy, &sample, now,
+                                         nuwax_power_ctrl_shutdown_is_inhibited());
+    if (action == NUWAX_LOW_BATTERY_IDLE) {
+        if (was_warning) {
+            nuwax_power_ctrl_abort_shutdown();
+            ESP_LOGI(TAG, "low battery warning cancelled soc=%u current=%d charging=%d valid=%d",
+                     sample.percent, sample.current_ma, sample.charging, sample.valid);
+        }
+        (void)set_low_battery_warning(false);
+        return;
+    }
+    if (!was_warning) {
+        if (!nuwax_power_ctrl_prepare_shutdown()) {
+            s_low_battery_policy = (nuwax_low_battery_shutdown_policy_t){0};
+            return;
+        }
+        ESP_LOGW(TAG, "low battery warning revision=low-battery-v1 soc=%u display=%u current=%d voltage=%u notice_ms=%u",
+                 sample.percent, sample.display_percent, sample.current_ma,
+                 sample.voltage_mv, NUWAX_LOW_BATTERY_WARNING_MS);
+    }
+    const bool reminder_was_visible = s_low_battery_warning_visible;
+    const bool reminder_shown = set_low_battery_warning(true);
+    if (!reminder_shown && ui_ready_snapshot()) {
+        /* A contended UI must not consume the user's five-second reminder. */
+        s_low_battery_policy.warning_since_ms = now;
+        return;
+    }
+    if (reminder_shown && !reminder_was_visible) {
+        s_low_battery_policy.warning_since_ms = now;
+        return;
+    }
+    if (action == NUWAX_LOW_BATTERY_COMMIT) {
+        s_low_battery_shutdown_owned = true;
+        s_power_shutdown_requested = true;
+        s_power_shutdown_mode_stop_requested = false;
+        ESP_LOGW(TAG, "low battery shutdown confirmed by fresh sample; draining audio and SD before power-off");
+    }
+}
+
+static bool low_battery_confirm_before_power_off(bool rearm_wake)
+{
+    if (!s_low_battery_shutdown_owned) return true;
+    nuwax_battery_service_snapshot_t sample = {0};
+    (void)nuwax_battery_service_get_snapshot(&sample);
+    if (nuwax_low_battery_shutdown_required(
+            &sample, (uint64_t)esp_timer_get_time() / 1000U)) return true;
+    /* stop(0) is asynchronous. A late charger/stale-sample cancellation must
+     * reap that task before reopening normal operation, then restart sampling.
+     * Otherwise is_running() may report a task that is already stopping. */
+    if (s_low_battery_sampler_stopping) {
+        if (nuwax_battery_service_stop(0U) != ESP_OK) return false;
+        s_low_battery_sampler_stopping = false;
+        s_low_battery_sampler_restart_pending = true;
+    }
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    if (nuwax_offline_audio_cancel_shutdown() != ESP_OK) return false;
+#endif
+    nuwax_power_ctrl_abort_shutdown();
+    s_power_shutdown_requested = false;
+    s_power_shutdown_mode_stop_requested = false;
+    s_low_battery_shutdown_owned = false;
+    s_low_battery_policy = (nuwax_low_battery_shutdown_policy_t){0};
+    (void)service_low_battery_sampler_restart();
+    (void)set_low_battery_warning(false);
+    if (rearm_wake && conversation_state_current() == NUWAX_APP_STATE_SLEEPING) {
+        request_sleep_wake_word_detector("low_battery_shutdown_cancelled");
+    }
+    ESP_LOGI(TAG, "low battery shutdown cancelled after safe drain soc=%u current=%d valid=%d; normal operation restored",
+             sample.percent, sample.current_ma, sample.valid);
+    return false;
+}
+
+static void service_boot_low_battery_gate(void)
+{
+    /* The UI and gauge now exist, but Wi-Fi, microphone capture and normal
+     * business have not started. A genuine empty-cell boot ends here. */
+    const uint64_t started = (uint64_t)esp_timer_get_time() / 1000U;
+    ESP_LOGI(TAG, "low battery boot gate threshold=1%% notice_ms=%u charging_bypass=measured sample_wait_ms=5000",
+             NUWAX_LOW_BATTERY_WARNING_MS);
+    for (;;) {
+        nuwax_battery_service_snapshot_t sample = {0};
+        (void)nuwax_battery_service_get_snapshot(&sample);
+        const uint64_t now = (uint64_t)esp_timer_get_time() / 1000U;
+        /* Do not prevent a pending OTA image from completing its existing
+         * local/cloud health validation. Runtime resumes this guard after
+         * that owner's interlock is released; never force-cut a Flash write. */
+        const uint32_t inhibitors = nuwax_power_ctrl_shutdown_inhibit_owners();
+        if (inhibitors == NUWAX_POWER_INHIBIT_BATTERY_PROFILE && now-started < 5000U) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        if (inhibitors != 0U) {
+            ESP_LOGI(TAG, "low battery boot gate deferred to protected owner mask=0x%lx",
+                     (unsigned long)nuwax_power_ctrl_shutdown_inhibit_owners());
+            return;
+        }
+        service_low_battery_shutdown();
+        if (s_power_shutdown_requested && s_low_battery_shutdown_owned) {
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+            if (nuwax_offline_audio_prepare_shutdown() != ESP_OK) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+#endif
+            if (!low_battery_confirm_before_power_off(false)) {
+                if (!s_power_shutdown_requested) return;
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+            s_low_battery_sampler_stopping = true;
+            if (nuwax_battery_service_stop(0U) == ESP_OK) {
+                if (!nuwax_power_ctrl_commit_shutdown(false)) {
+                    s_low_battery_sampler_restart_pending = true;
+                    (void)service_low_battery_sampler_restart();
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        if (!s_low_battery_policy.warning &&
+            (nuwax_low_battery_sample_fresh(&sample, now) || now-started >= 5000U)) {
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+#endif
+
+static void service_power_key_events(nuwax_ws_client_t *ws) {
+    service_product_music(ws);
+    const uint32_t events = (uint32_t)atomic_exchange_explicit(
+        &s_power_key_events, 0U, memory_order_acq_rel);
+    const bool long_press_event =
+        (events & NUWAX_POWER_EVENT_LONG_MASK) != 0U;
+
+    /* A long-press notification and its release can be coalesced with a
+     * pending short event in the atomic mailbox. Long press owns that sample;
+     * never start a normal sleep transaction from the same physical gesture. */
+    if (long_press_event) {
+        const nuwax_app_state_t state = conversation_state_current();
+        #if CONFIG_NUWAX_OTA_ENABLE
+        const bool ota_busy = nuwax_ota_device_is_active();
+        #else
+        const bool ota_busy = false;
+        #endif
+        if (ota_busy || !nuwax_power_ctrl_prepare_shutdown()) {
+            ESP_LOGW(TAG,
+                     "power key long press rejected while protected operation is active ota=%d inhibit=0x%lx",
+                     ota_busy ? 1 : 0,
+                     (unsigned long)nuwax_power_ctrl_shutdown_inhibit_owners());
+            s_power_shutdown_requested = false;
+        } else {
+            ESP_LOGI(TAG,
+                     "power key long press accepted state=%s; waiting for quiescence (release not required)",
+                     nuwax_app_state_name(state));
+            s_power_shutdown_requested = true;
+            s_power_shutdown_mode_stop_requested = false;
+#if CONFIG_NUWAX_BATTERY_SERVICE_ENABLE
+            /* A deliberate power-key request supersedes automatic recovery. */
+            s_low_battery_shutdown_owned = false;
+#endif
+        }
+    }
+
+    if ((events & NUWAX_POWER_EVENT_SHORT_MASK) && !long_press_event) {
+        const nuwax_app_state_t state = conversation_state_current();
+        #if CONFIG_NUWAX_OTA_ENABLE
+        const bool ota_busy = nuwax_ota_device_is_active();
+        #else
+        const bool ota_busy = false;
+        #endif
+        const bool protected_operation =
+            ota_busy || nuwax_power_ctrl_shutdown_is_inhibited();
+        const bool dialogue_state =
+            power_key_short_press_dialogue_state(state);
+        /* A mode can be pending before its controller claims the audio owner.
+         * Treat both pending and active exclusive modes as non-dialogue so a
+         * short press cannot race a meeting/monitoring handoff into sleep. */
+        const bool exclusive_mode =
+            exclusive_audio_owner_active() ||
+            exclusive_audio_mode_blocks_normal_audio();
+        if (!protected_operation && !s_power_shutdown_requested &&
+            dialogue_state && !exclusive_mode) {
+            (void)begin_local_power_sleep_transaction(
+                ws, "power_key_short_press");
+        } else {
+            ESP_LOGI(TAG,
+                     "power key short press ignored state=%s dialogue=%d shutdown=%d exclusive=%d protected=%d",
+                     nuwax_app_state_name(state),
+                     dialogue_state ? 1 : 0,
+                     s_power_shutdown_requested ? 1 : 0,
+                     exclusive_mode ? 1 : 0,
+                     protected_operation ? 1 : 0);
+        }
+    }
+
+    if (events & NUWAX_POWER_EVENT_RELEASE_MASK) {
+        if (s_power_shutdown_requested) {
+            ESP_LOGI(TAG,
+                     "power key long release observed after shutdown request");
+        }
+    }
+
+#if CONFIG_NUWAX_BATTERY_SERVICE_ENABLE
+    service_low_battery_shutdown();
+#endif
+    if (!s_power_shutdown_requested) {
+        return;
+    }
+    product_music_cancel("power_shutdown");
+#if CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE
+    /* A muted music worker may still be closing HTTP or retrying its voice
+     * clock. Neither may hold a critical low-battery shutdown indefinitely. */
+    if (!nuwax_music_playback_output_quiesced()) return;
+#endif
+
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    /* Close archive/replay admission immediately. Recording owners still
+     * receive their ordinary stop below; the barrier is polled, never waited
+     * synchronously on the application/UI owner. */
+    (void)nuwax_offline_audio_prepare_shutdown();
+#endif
+
+    if (meeting_or_monitoring_mode_blocks_sleep() ||
+        exclusive_audio_owner_active()) {
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+        if (offline_mode_lease_pending() ||
+            nuwax_offline_audio_capture_running() ||
+            nuwax_offline_audio_is_active()) {
+            (void)nuwax_offline_audio_request_stop(false);
+            if (!nuwax_offline_audio_capture_running() &&
+                !nuwax_offline_audio_is_active()) {
+                offline_mode_lease_store(false);
+            }
+            /* Physical long-press shutdown is allowed to supersede an
+             * offline archive owner, but only after the owner has received a
+             * stop request and released its MIC/file resources. */
+            if (nuwax_offline_audio_capture_running() ||
+                nuwax_offline_audio_is_active()) {
+                return;
+            }
+        }
+#endif
+        if (!s_power_shutdown_mode_stop_requested && ws) {
+            const esp_err_t meeting_stop =
+                nuwax_meeting_mode_request_handoff_stop(
+                    &s_meeting_mode, ws, "power_key_shutdown");
+            const esp_err_t monitoring_stop =
+                nuwax_monitoring_mode_request_handoff_stop(
+                    &s_monitoring_mode, ws, "power_key_shutdown");
+            s_power_shutdown_mode_stop_requested =
+                meeting_stop == ESP_OK || monitoring_stop == ESP_OK;
+        }
+        return;
+    }
+
+    if (s_sleep_request_pending) {
+        /* A local power request may be waiting for the capture/speaker owner
+         * to release.  Do not create a second transaction while that pending
+         * request is converging, especially for a long press whose shutdown
+         * bit is already latched. */
+        service_pending_sleep_request();
+        if (s_sleep_request_pending) {
+            return;
+        }
+    }
+
+    if (s_sleep_transaction.active || s_deferred_sleep_intent.active) {
+        /* A remote or deferred sleep owner already holds the lifecycle. Let
+         * its token-bound barriers converge before the physical rail can be
+         * released by this independent long-press request. */
+        service_sleep_transaction();
+        return;
+    }
+
+    if (conversation_state_current() != NUWAX_APP_STATE_SLEEPING &&
+        s_sleep_transaction.state != NUWAX_SLEEP_TRANSACTION_SLEEPING) {
+        (void)begin_local_power_sleep_transaction(
+            ws, "power_key_shutdown_quiesce");
+        return;
+    }
+
+    /* Software sleep owns the wake-word microphone. Stop that owner before
+     * the hardware power latch is released; otherwise the detector can still
+     * touch I2S during the final rail-collapse quiet interval. */
+    if (conversation_state_current() == NUWAX_APP_STATE_SLEEPING) {
+        stop_sleep_wake_word_detector("power_key_shutdown");
+    }
+
+    if (conversation_capture_busy_for_sleep() ||
+        s_prelisten.capture_active) {
+        return;
+    }
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    if (nuwax_speaker_playback_has_pending()) {
+        return;
+    }
+#endif
+    if (nuwax_power_ctrl_shutdown_is_inhibited()) {
+        ESP_LOGW(TAG,
+                 "power key shutdown deferred because a protected owner appeared after acceptance owners=0x%lx",
+                 (unsigned long)nuwax_power_ctrl_shutdown_inhibit_owners());
+        s_power_shutdown_requested = false;
+        return;
+    }
+
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    if (nuwax_offline_audio_prepare_shutdown() != ESP_OK) return;
+#endif
+#if CONFIG_NUWAX_BATTERY_SERVICE_ENABLE
+    if (!low_battery_confirm_before_power_off(true)) return;
+    if (s_low_battery_shutdown_owned) s_low_battery_sampler_stopping = true;
+    if (nuwax_battery_service_stop(0U) != ESP_OK) return;
+#endif
+    nuwax_display_brightness_save(true);
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    if (!nuwax_speaker_playback_service_volume_persistence(true)) {
+        ESP_LOGW(TAG, "shutdown volume save pending after bounded attempt");
+    }
+#endif
+    if (nuwax_power_ctrl_commit_shutdown(false)) {
+        s_power_shutdown_requested = false;
+        s_power_shutdown_mode_stop_requested = false;
+#if CONFIG_NUWAX_BATTERY_SERVICE_ENABLE
+    } else if (s_low_battery_shutdown_owned) {
+        s_low_battery_sampler_restart_pending = true;
+        (void)service_low_battery_sampler_restart();
+#endif
+    }
+}
+
 static bool commit_sleeping_conversation_state(const char *reason) {
     if (meeting_or_monitoring_mode_blocks_sleep()) {
         ESP_LOGW(TAG,
@@ -6118,6 +7447,7 @@ static bool commit_sleeping_conversation_state(const char *reason) {
                  (int)nuwax_monitoring_mode_state(&s_monitoring_mode));
         return false;
     }
+    s_exclusive_audio_sleep_reconcile_pending = false;
     clear_deferred_shell_listen_actions(reason ? reason : "sleep");
     clear_sleep_request();
     clear_awake_session(reason ? reason : "sleep");
@@ -6147,10 +7477,23 @@ static bool commit_sleeping_conversation_state(const char *reason) {
                  esp_err_to_name(aec_suspend_err));
     }
     nuwax_app_shell_close_overlays();
-    request_sleep_wake_word_detector(reason ? reason : "sleep");
     const uint32_t wake_arm_started_ms = monotonic_ms();
-    const bool wake_ready = wait_for_sleep_wake_word_ready(
-        NUWAX_WAKE_READY_WAIT_MS);
+    bool wake_ready = false;
+    if (s_power_shutdown_requested) {
+        /* A long physical press is already committed to hardware shutdown.
+         * Do not start the wake detector only to stop it again in the next
+         * service pass; that creates an avoidable I2S ownership race at the
+         * exact moment the power rail is about to be released. */
+        inhibit_sleep_wake_word_detector("power_key_shutdown_pending");
+        wake_ready = true;
+        ESP_LOGI(TAG,
+                 "conversation sleep wake detector skipped for pending hardware shutdown reason=%s",
+                 reason ? reason : "sleep");
+    } else {
+        request_sleep_wake_word_detector(reason ? reason : "sleep");
+        wake_ready = wait_for_sleep_wake_word_ready(
+            NUWAX_WAKE_READY_WAIT_MS);
+    }
     set_conversation_status_guarded("SLEEP", "WAKE", "hold to wake", true);
     set_state(NUWAX_APP_STATE_SLEEPING);
     if (!wake_ready) {
@@ -6197,6 +7540,118 @@ static void stop_sleep_wake_word_detector(const char *reason) {
     (void)reason;
 #endif
 }
+
+#if CONFIG_NUWAX_MUSIC_URL_TEST_ENABLE
+static bool music_url_test_product_idle(bool require_speaker_idle) {
+    if (product_music_blocks_audio()) return false;
+    if (!cloud_service_is_ready() ||
+        conversation_state_current() != NUWAX_APP_STATE_SLEEPING ||
+        s_power_shutdown_requested || s_sleep_request_pending ||
+        s_sleep_transaction.active || s_deferred_sleep_intent.active ||
+        s_turn_guard.active ||
+        nuwax_awake_session_state_is_active(&s_awake_session) ||
+        s_prelisten.pending || s_prelisten.capture_active ||
+        atomic_load_explicit(&s_conversation_capture_runtime_active,
+                             memory_order_acquire) ||
+        nuwax_audio_uplink_sender_busy() ||
+        nuwax_audio_terminal_recovery_pending() ||
+        atomic_load_explicit(&s_reprovision_quiesce_requested,
+                             memory_order_acquire) ||
+        nuwax_provision_main_is_active() ||
+        exclusive_audio_mode_blocks_normal_audio() ||
+        nuwax_notification_blocks_conversation(
+            &s_notification_transaction)) {
+        return false;
+    }
+#if CONFIG_NUWAX_OTA_ENABLE
+    if (nuwax_ota_device_is_active() || nuwax_ota_device_blocks_audio()) {
+        return false;
+    }
+#endif
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    if (require_speaker_idle && nuwax_speaker_playback_has_pending()) {
+        return false;
+    }
+#else
+    (void)require_speaker_idle;
+#endif
+    return true;
+}
+
+/* Called only by app_main. This preserves the existing ownership rule: the
+ * HTTP worker can stream bytes, but only the conversation owner may pause or
+ * restore wake capture and admit the one-shot test. */
+static bool service_music_url_test(bool allow_start) {
+    const bool cloud_ready = cloud_service_is_ready();
+    const uint32_t now_ms = monotonic_ms();
+    nuwax_music_url_test_observe_cloud_ready(cloud_ready, now_ms);
+
+    esp_err_t terminal_result = ESP_ERR_INVALID_STATE;
+    if (nuwax_music_url_test_take_terminal(&terminal_result)) {
+        ESP_LOGI(TAG,
+                 "music URL test completed result=%s restoring_wake=%d",
+                 esp_err_to_name(terminal_result),
+                 s_music_url_test_wake_inhibited ? 1 : 0);
+        if (s_music_url_test_wake_inhibited) {
+            s_music_url_test_wake_inhibited = false;
+            request_sleep_wake_word_detector("music_url_test_complete");
+        }
+    }
+
+    if (nuwax_music_url_test_active()) {
+        bool preempt = !music_url_test_product_idle(false);
+        nuwax_speaker_playback_stats_t stats = {0};
+        nuwax_speaker_playback_get_stats(&stats);
+        if (stats.pending &&
+            stats.active_owner != NUWAX_SPEAKER_PLAYBACK_OWNER_URL_TEST) {
+            preempt = true;
+        }
+        if (preempt) {
+            nuwax_music_url_test_request_stop("product_activity");
+            if (s_music_url_test_wake_inhibited) {
+                s_music_url_test_wake_inhibited = false;
+                request_sleep_wake_word_detector(
+                    "music_url_test_preempted");
+            }
+            return false;
+        }
+        return true;
+    }
+
+    if (!allow_start ||
+        !nuwax_music_url_test_delay_elapsed(now_ms) ||
+        !music_url_test_product_idle(true)) {
+        return false;
+    }
+
+    stop_sleep_wake_word_detector("music_url_test_start");
+    s_music_url_test_wake_inhibited = true;
+    /* Recheck after the bounded detector stop. A cloud command may have won
+     * while MIC ownership was converging. */
+    if (!music_url_test_product_idle(true)) {
+        s_music_url_test_wake_inhibited = false;
+        request_sleep_wake_word_detector("music_url_test_admission_lost");
+        return false;
+    }
+
+    const esp_err_t start_err = nuwax_music_url_test_start();
+    if (start_err != ESP_OK) {
+        ESP_LOGW(TAG, "music URL test start failed: %s",
+                 esp_err_to_name(start_err));
+        s_music_url_test_wake_inhibited = false;
+        request_sleep_wake_word_detector("music_url_test_start_failed");
+        return false;
+    }
+    ESP_LOGI(TAG,
+             "music URL test admitted after cloud-ready delay; product state remains sleeping");
+    return true;
+}
+#else
+static bool service_music_url_test(bool allow_start) {
+    (void)allow_start;
+    return false;
+}
+#endif
 
 static void start_prelisten_window(const char *mode, uint32_t window_ms, uint32_t ready_delay_ms) {
 #if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
@@ -6472,6 +7927,12 @@ static void complete_post_playback_resume(void) {
     if (!s_post_playback_resume_pending) {
         return;
     }
+    if (local_power_transition_active()) {
+        s_post_playback_resume_pending = false;
+        ESP_LOGI(TAG,
+                 "post-playback resume suppressed while local power sleep converges");
+        return;
+    }
     s_post_playback_resume_pending = false;
     nuwax_prelisten_state_clear_cancel(&s_prelisten);
 
@@ -6522,6 +7983,12 @@ static void complete_post_playback_resume(void) {
 }
 
 static bool schedule_auto_followup_after_playback(void) {
+    if (local_power_transition_active()) {
+        s_post_playback_resume_pending = false;
+        ESP_LOGI(TAG,
+                 "post-playback listening suppressed while local power sleep converges");
+        return true;
+    }
     if (s_deferred_sleep_intent.active) {
         const uint32_t token = s_deferred_sleep_intent.token;
         const bool transferred = service_deferred_remote_sleep_intent(
@@ -6627,6 +8094,13 @@ static bool schedule_auto_followup_after_playback(void) {
 static bool schedule_auto_followup_after_cloud_output(
     bool capture_will_stop,
     const char *reason) {
+    if (local_power_transition_active()) {
+        s_post_playback_resume_pending = false;
+        ESP_LOGI(TAG,
+                 "post-response listening suppressed while local power sleep converges reason=%s",
+                 reason ? reason : "cloud_output");
+        return true;
+    }
 #if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
     if (capture_will_stop &&
         CONFIG_NUWAX_CONVERSATION_AUTO_FOLLOWUP_MS > 0 &&
@@ -6685,6 +8159,14 @@ static void service_tts_skip_followup(void) {
 }
 
 static void return_to_listening_after_cancel(const char *reason) {
+    if (local_power_transition_active()) {
+        /* A local power-key sleep owns the post-cancel lifecycle.  A late
+         * speaker callback must not re-arm microphone capture underneath it. */
+        ESP_LOGI(TAG,
+                 "listening handoff suppressed while local power sleep converges reason=%s",
+                 reason ? reason : "-");
+        return;
+    }
 #if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
     if (wake_detector_request_is_playback() ||
         nuwax_wake_word_detector_is_running()) {
@@ -6880,7 +8362,22 @@ static esp_err_t send_notification_event_ack(
 }
 
 static void notification_restore_sleep_or_listen(bool origin_sleeping,
-                                                 const char *reason) {
+                                                  const char *reason) {
+    if (local_power_transition_active()) {
+        /* A physical power request wins over the notification's former awake
+         * origin.  Do not construct a fresh awake session after cancellation,
+         * failure, or a terminal race; advance only the retained sleep owner. */
+        ESP_LOGI(TAG,
+                 "notification terminal handoff retained local power transition reason=%s",
+                 reason ? reason : "notification_terminal");
+        if (s_sleep_request_pending) {
+            service_pending_sleep_request();
+        } else if (s_sleep_transaction.active &&
+                   s_sleep_transaction.local_request) {
+            service_sleep_transaction();
+        }
+        return;
+    }
     if (origin_sleeping) {
         commit_sleeping_conversation_state(
             reason ? reason : "notification_recovery_sleep");
@@ -6914,6 +8411,13 @@ static void finish_notification_to_listening(const char *reason) {
         notification_rx_barrier_reject_epoch(
             ws_epoch, reason ? reason : "notification_finished_without_end");
     }
+    if (local_power_transition_active()) {
+        reset_notification_transaction_runtime();
+        notification_restore_sleep_or_listen(
+            origin_sleeping,
+            reason ? reason : "notification_power_transition");
+        return;
+    }
     if (s_sleep_transaction.state == NUWAX_SLEEP_TRANSACTION_SLEEPING ||
         s_sleep_transaction.active) {
         nuwax_sleep_transaction_reset_for_wake(&s_sleep_transaction);
@@ -6928,6 +8432,60 @@ static void finish_notification_to_listening(const char *reason) {
         reason ? reason : "notification_complete");
     return_to_listening_after_cancel(
         reason ? reason : "notification_complete");
+}
+
+/* Natural notification completion must preserve the lifecycle that owned the
+ * notification before local quiescence.  A sleeping notification temporarily
+ * stops the wake detector, but it must not be treated as an awake conversation
+ * merely because its first PCM frame is rendered as SPEAKING. */
+static void finish_notification_to_origin(const char *reason) {
+    const bool origin_sleeping = s_notification_transaction.origin_sleeping;
+    const uint32_t ws_epoch = s_notification_transaction.ws_epoch;
+    const bool awake_takeover =
+        !origin_sleeping ||
+        nuwax_awake_session_state_is_active(&s_awake_session) ||
+        s_prelisten.capture_active ||
+        s_turn_guard.active;
+
+    if (!s_notification_transaction.binary_end_seen) {
+        notification_rx_barrier_reject_epoch(
+            ws_epoch, reason ? reason : "notification_finished_without_end");
+    } else {
+        notification_rx_barrier_reset_epoch(ws_epoch);
+    }
+    reset_notification_transaction_runtime();
+
+    if (local_power_transition_active()) {
+        notification_restore_sleep_or_listen(
+            origin_sleeping,
+            reason ? reason : "notification_complete_power_transition");
+        return;
+    }
+    if (awake_takeover) {
+        /* This covers ordinary awake notifications and any explicit user wake
+         * that won while the notification transaction was converging. */
+        clear_sleep_request();
+        if (!nuwax_awake_session_state_is_active(&s_awake_session)) {
+            begin_awake_session(reason ? reason : "notification_complete");
+        }
+        reset_awake_wait_budget_paused(
+            reason ? reason : "notification_complete");
+        return_to_listening_after_cancel(
+            reason ? reason : "notification_complete");
+        return;
+    }
+
+    /* Keep the ACK/terminal barrier ordering above, then restore the sleeping
+     * lifecycle.  This clears the transient notification state, releases any
+     * awake resources, and re-arms the sleep wake-word detector atomically. */
+    if (!commit_sleeping_conversation_state(
+            reason ? reason : "notification_complete_restore_sleep")) {
+        /* Meeting/monitoring owns the lifecycle if it appeared during the
+         * notification.  Do not force SLEEPING over that exclusive owner. */
+        ESP_LOGI(TAG,
+                 "notification origin sleep restore deferred to exclusive audio owner reason=%s",
+                 reason ? reason : "notification_complete_restore_sleep");
+    }
 }
 
 static bool notification_cancel_is_user_wake(const char *reason) {
@@ -7024,6 +8582,10 @@ static void notification_fail_and_recover(const char *reason,
 
 static void notification_begin_local_quiesce(const char *reason) {
     const uint32_t token = s_notification_transaction.token;
+    /* The control center deliberately freezes the face while it is open.
+     * Close it asynchronously before notification audio becomes audible so
+     * the notification expression can advance without blocking this owner. */
+    nuwax_app_shell_request_close_overlays();
 #if CONFIG_NUWAX_SPEAKER_ENABLE
     (void)update_normal_downlink_admission(false);
 #endif
@@ -7096,21 +8658,43 @@ static void handle_prepare_notification_command(
         ;
     const bool prepare_state_allowed =
         local_sleeping || safe_awake_no_turn;
-    if (exclusive_audio_mode_blocks_normal_audio()
+    if (product_music_blocks_audio() || local_power_transition_active() ||
+        exclusive_audio_mode_blocks_normal_audio()
 #if CONFIG_NUWAX_OTA_ENABLE
         || nuwax_ota_device_blocks_audio()
 #endif
         || s_deferred_sleep_intent.active || !prepare_state_allowed) {
-        (void)nuwax_session_send_command_ack_until_if_epoch(
+        const char *reject_reason =
+            local_power_transition_active()
+                ? "local power transition is active"
+                : !prepare_state_allowed
+                ? "prepare requires sleeping or idle/listening without active turn"
+                : "exclusive audio owner is active";
+        ESP_LOGW(TAG,
+                 "notification prepare rejected request=%s notify=%s state=%s local_sleeping=%d safe_awake=%d deferred_sleep=%d reason=%s",
+                 command->request_id,
+                 command->notify_id,
+                 nuwax_app_state_name(local_state),
+                 local_sleeping ? 1 : 0,
+                 safe_awake_no_turn ? 1 : 0,
+                 s_deferred_sleep_intent.active ? 1 : 0,
+                 reject_reason);
+        const esp_err_t ack_err =
+            nuwax_session_send_command_ack_until_if_epoch(
             ws,
             command->request_id,
             command->command,
             false,
-            !prepare_state_allowed
-                ? "prepare requires sleeping or idle/listening without active turn"
-                : "exclusive audio owner is active",
+            reject_reason,
             esp_timer_get_time() + NUWAX_NOTIFICATION_ACK_SEND_TIMEOUT_US,
             ws_epoch);
+        if (ack_err != ESP_OK) {
+            ESP_LOGW(TAG,
+                     "notification prepare rejection ACK deferred request=%s epoch=%lu err=%s",
+                     command->request_id,
+                     (unsigned long)ws_epoch,
+                     esp_err_to_name(ack_err));
+        }
         return;
     }
 
@@ -7190,7 +8774,8 @@ static void handle_notification_event(
     if (!ws || ws_epoch == 0U) {
         return;
     }
-    if (exclusive_audio_mode_blocks_normal_audio()
+    if (product_music_blocks_audio() || local_power_transition_active() ||
+        exclusive_audio_mode_blocks_normal_audio()
 #if CONFIG_NUWAX_OTA_ENABLE
         || nuwax_ota_device_blocks_audio()
 #endif
@@ -7208,7 +8793,9 @@ static void handle_notification_event(
                                           command->notify_id,
                                           command->playback_id,
                                           false,
-                                          "exclusive audio owner is active",
+                                          local_power_transition_active()
+                                              ? "local power transition is active"
+                                              : "exclusive audio owner is active",
                                           ws_epoch);
         if (command->event == NUWAX_SESSION_EVENT_NOTIFY_PLAYBACK_BEGIN) {
             notification_rx_barrier_reject_epoch(
@@ -7628,9 +9215,12 @@ static void service_notification_transaction(void) {
 #if CONFIG_NUWAX_SPEAKER_ENABLE
         nuwax_playback_terminal_guard_clear(&s_playback_terminal_guard);
 #endif
+        /* Publish the latest cloud expression before fencing stale mailbox
+         * copies. Keep the active finite lease through THINKING/SPEAKING so a
+         * sleep-origin notification can use the expression sent for it. */
+        sync_pending_semantic_emotion();
         (void)invalidate_all_pending_semantic_emotions(
-            "notification_takeover");
-        nuwax_state_bridge_clear_semantic_emotion();
+            "notification_takeover_pending_fence");
         nuwax_state_bridge_clear_waiting_question();
         nuwax_state_bridge_cancel_touch();
         /* Publish BUFFERING before installing the new speaker metadata.
@@ -7716,12 +9306,13 @@ static void service_notification_transaction(void) {
             return;
         }
         ESP_LOGI(TAG,
-                 "notification completed token=%lu epoch=%lu notify=%s playback=%s; entering listening",
+                 "notification completed token=%lu epoch=%lu notify=%s playback=%s origin_sleeping=%d; restoring origin",
                  (unsigned long)token,
                  (unsigned long)ws_epoch,
                  s_notification_transaction.notify_id,
-                 s_notification_transaction.playback_id);
-        finish_notification_to_listening("notification_complete");
+                 s_notification_transaction.playback_id,
+                 s_notification_transaction.origin_sleeping ? 1 : 0);
+        finish_notification_to_origin("notification_complete");
         return;
     }
 
@@ -7817,6 +9408,12 @@ static void service_notification_transaction(void) {
 
 static void recover_normal_conversation_after_playback_abort(
     const char *reason) {
+    if (local_power_transition_active()) {
+        ESP_LOGI(TAG,
+                 "playback recovery handoff suppressed while local power sleep converges reason=%s",
+                 reason ? reason : "-");
+        return;
+    }
     if (conversation_state_current() == NUWAX_APP_STATE_SLEEPING) {
         return;
     }
@@ -8234,7 +9831,68 @@ static bool awake_idle_sleep_admitted(uint32_t now_ms) {
         false);
 }
 
+static bool service_normal_conversation_inactivity(void) {
+    if (!nuwax_awake_session_state_is_active(&s_awake_session) ||
+        product_music_blocks_audio() || exclusive_audio_mode_blocks_normal_audio() ||
+        exclusive_audio_owner_active() || nuwax_ota_device_blocks_audio() ||
+        s_notification_transaction.active || local_power_transition_active() ||
+        atomic_load_explicit(&s_reprovision_quiesce_requested, memory_order_acquire)) {
+        return false;
+    }
+    const uint32_t now_ms = monotonic_ms();
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    static uint32_t last_poll_ms, last_generation, last_epoch, last_frames;
+    if ((uint32_t)(now_ms - last_poll_ms) >= 250U) {
+        last_poll_ms = now_ms;
+        nuwax_speaker_playback_stats_t stats = {0};
+        nuwax_speaker_playback_get_stats(&stats);
+        if (stats.active_owner == NUWAX_SPEAKER_PLAYBACK_OWNER_CONVERSATION &&
+            s_turn_guard.active &&
+            nuwax_turn_guard_speaker_generation_matches(&s_turn_guard,
+                                                        stats.playback_generation) &&
+            stats.playback_connection_epoch == active_ws_epoch_snapshot()) {
+            if (stats.playback_generation != last_generation ||
+                stats.playback_connection_epoch != last_epoch) {
+                last_generation = stats.playback_generation;
+                last_epoch = stats.playback_connection_epoch;
+                last_frames = 0U;
+            }
+            if (stats.played_frames > last_frames) {
+                last_frames = stats.played_frames;
+                note_valid_conversation_activity();
+            }
+        }
+    }
+#endif
+    if (!nuwax_normal_conversation_expired(&s_normal_conversation,
+            nuwax_awake_session_state_generation(&s_awake_session), now_ms)) {
+        return false;
+    }
+    /* Allow only a bounded 600 ms speech-confirmation margin at the boundary;
+     * a paused capture or repeated cloud partial must not hold the MIC forever. */
+    if (conversation_capture_busy_for_sleep() &&
+        (uint32_t)(now_ms - s_normal_conversation.last_activity_ms) <
+            s_normal_conversation.timeout_ms + 600U) return false;
+    if (s_sleep_request_pending || s_sleep_transaction.active) return true;
+    ESP_LOGI(TAG, "conversation inactive timeout_ms=%lu; requesting safe sleep",
+             (unsigned long)s_normal_conversation.timeout_ms);
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    if (nuwax_speaker_playback_has_pending()) {
+        /* Reuse the existing physical-stop barrier. Publishing sleep before
+         * speaker cancellation completes could re-arm MIC over live I2S. */
+        (void)begin_local_power_sleep_transaction(
+            active_ws_snapshot(NULL), "conversation_inactive_60s");
+        return true;
+    }
+#endif
+    request_sleeping_conversation_state("conversation_inactive_60s");
+    return true;
+}
+
 static void maybe_enter_idle_sleep(void) {
+    if (product_music_blocks_audio() || exclusive_audio_owner_active() ||
+        nuwax_ota_device_blocks_audio() || s_notification_transaction.active ||
+        local_power_transition_active() || service_normal_conversation_inactivity()) return;
     const uint32_t now_ms = monotonic_ms();
     if (nuwax_awake_session_state_is_active(&s_awake_session)) {
         if (awake_idle_sleep_admitted(now_ms)) {
@@ -8246,9 +9904,22 @@ static void maybe_enter_idle_sleep(void) {
         }
         if (!nuwax_awake_session_state_is_waiting(&s_awake_session)) {
 #if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
-            if (conversation_state_current() == NUWAX_APP_STATE_IDLE &&
+            const nuwax_app_state_t state = conversation_state_current();
+            if ((state == NUWAX_APP_STATE_IDLE || state == NUWAX_APP_STATE_LISTENING) &&
                 !s_prelisten.pending && !s_prelisten.capture_active &&
+                !conversation_capture_busy_for_sleep() &&
+                !nuwax_audio_uplink_sender_busy() && !s_turn_guard.active &&
+                !s_touch_cancel_recovery.active &&
+                !nuwax_audio_terminal_recovery_pending() &&
+                !nuwax_listen_resume_state_is_waiting_post_end_asr(&s_listen_resume) &&
+                !s_notification_transaction.active &&
+                s_head_touch_agent_intent.state == NUWAX_HEAD_TOUCH_AGENT_STATE_IDLE &&
+                !sleep_transaction_blocks_new_audio() &&
                 !exclusive_audio_mode_blocks_normal_audio() &&
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+                !nuwax_speaker_playback_has_pending() &&
+                !s_playback_terminal_guard.active &&
+#endif
                 !nuwax_app_shell_blocks_auto_followup()) {
                 ESP_LOGI(TAG,
                          "conversation awake paused session resuming after idle/menu handoff remaining_ms=%lu",
@@ -8263,6 +9934,16 @@ static void maybe_enter_idle_sleep(void) {
         }
 #if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
         if (!s_prelisten.pending && !s_prelisten.capture_active &&
+            !conversation_capture_busy_for_sleep() && !s_turn_guard.active &&
+            !s_touch_cancel_recovery.active &&
+            !nuwax_audio_terminal_recovery_pending() &&
+            !nuwax_listen_resume_state_is_waiting_post_end_asr(&s_listen_resume) &&
+            !s_notification_transaction.active && !nuwax_audio_uplink_sender_busy() &&
+            !sleep_transaction_blocks_new_audio() &&
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+            !nuwax_speaker_playback_has_pending() &&
+            !s_playback_terminal_guard.active &&
+#endif
             !exclusive_audio_mode_blocks_normal_audio() &&
             !nuwax_app_shell_blocks_auto_followup()) {
             const uint32_t remaining_ms =
@@ -8323,8 +10004,10 @@ static void mark_speaker_owner_event_overflow(uint32_t ws_connection_epoch,
 }
 
 static bool enqueue_speaker_owner_event(nuwax_speaker_owner_event_t event) {
-    if (event.type != NUWAX_SPEAKER_OWNER_EVENT_VOLUME &&
-        event.ws_connection_epoch == 0U) {
+    if (event.event_timestamp_us == 0) {
+        event.event_timestamp_us = esp_timer_get_time();
+    }
+    if (event.ws_connection_epoch == 0U) {
         ESP_LOGE(TAG,
                  "speaker owner event missing source WebSocket epoch type=%d generation=%lu; dropping invariant violation",
                  (int)event.type,
@@ -8446,6 +10129,10 @@ static void report_current_speaker_ingress_fault(uint32_t ws_connection_epoch,
              (unsigned long)generation,
              esp_err_to_name(result),
              reason ? reason : "-");
+    (void)nuwax_device_error_report_enqueue(
+        "error", "speaker", reason && reason[0] ? reason : "ingress_fault",
+        result, nuwax_app_state_name(conversation_state_current()), generation,
+        NULL);
     speaker_callback_on_playback_fault(ws_connection_epoch,
                                        generation,
                                        result);
@@ -8534,10 +10221,10 @@ static void speaker_callback_return_to_listening_after_cancel(
 }
 
 static void speaker_callback_on_volume_changed(uint8_t volume_percent) {
-    (void)enqueue_speaker_owner_event((nuwax_speaker_owner_event_t){
-        .type = NUWAX_SPEAKER_OWNER_EVENT_VOLUME,
-        .volume_percent = volume_percent,
-    });
+    (void)volume_percent;
+    uint32_t sequence;
+    const uint8_t confirmed = nuwax_speaker_playback_get_confirmed_volume_percent(&sequence);
+    nuwax_app_shell_confirm_volume(confirmed, sequence);
 }
 
 static bool finalize_playback_terminal_if_ready(const char *reason) {
@@ -8555,6 +10242,7 @@ static bool finalize_playback_terminal_if_ready(const char *reason) {
         nuwax_conversation_visual_round_is_interaction(&s_visual_round) &&
         nuwax_conversation_visual_round_speaker_matches(
             &s_visual_round, connection_epoch, generation);
+    const bool local_power_sleep_owner = local_power_transition_active();
     char turn_id[sizeof(s_playback_terminal_guard.turn_id)] = {0};
     char playback_id[sizeof(s_playback_terminal_guard.playback_id)] = {0};
     strlcpy(turn_id,
@@ -8579,6 +10267,7 @@ static bool finalize_playback_terminal_if_ready(const char *reason) {
         s_speaker_fault_recovery_generation = 0U;
     }
     const bool listening_owner_available =
+        !local_power_sleep_owner &&
         !s_deferred_sleep_intent.active &&
         !exclusive_audio_mode_blocks_normal_audio() &&
         nuwax_awake_session_state_is_active(&s_awake_session);
@@ -8618,7 +10307,8 @@ static bool finalize_playback_terminal_if_ready(const char *reason) {
              playback_id[0] ? playback_id : "-",
              faulted ? 1 : 0,
              reason ? reason : "-");
-    if (conversation_state_current() == NUWAX_APP_STATE_SLEEPING) {
+    if (local_power_sleep_owner ||
+        conversation_state_current() == NUWAX_APP_STATE_SLEEPING) {
         return true;
     }
     if (faulted) {
@@ -9149,6 +10839,8 @@ static void service_speaker_fault_recovery_watchdog(void) {
     if (stop_completed) {
         s_speaker_fault_recovery_epoch = 0U;
         s_speaker_fault_recovery_generation = 0U;
+        const bool local_power_sleep_owner =
+            local_power_transition_active();
         if (s_playback_terminal_guard.active &&
             s_playback_terminal_guard.connection_epoch == recovery_epoch &&
             s_playback_terminal_guard.speaker_generation ==
@@ -9168,8 +10860,9 @@ static void service_speaker_fault_recovery_watchdog(void) {
             }
             (void)finalize_playback_terminal_if_ready(
                 "speaker_fault_watchdog_physical_stop");
-        } else if (conversation_state_current() !=
-                   NUWAX_APP_STATE_SLEEPING) {
+        } else if (!local_power_sleep_owner &&
+                   conversation_state_current() !=
+                       NUWAX_APP_STATE_SLEEPING) {
             recover_normal_conversation_after_playback_abort(
                 "speaker_fault_watchdog_recovered");
         }
@@ -9209,6 +10902,7 @@ static void service_speaker_fault_recovery_watchdog(void) {
 
     s_speaker_fault_recovery_epoch = 0U;
     s_speaker_fault_recovery_generation = 0U;
+    const bool local_power_sleep_owner = local_power_transition_active();
     if (s_playback_terminal_guard.active &&
         s_playback_terminal_guard.connection_epoch == recovery_epoch &&
         s_playback_terminal_guard.speaker_generation == recovery_generation) {
@@ -9229,7 +10923,8 @@ static void service_speaker_fault_recovery_watchdog(void) {
                  (unsigned long)recovery_generation);
         (void)finalize_playback_terminal_if_ready(
             "speaker_fault_watchdog_runtime_reset");
-    } else if (conversation_state_current() != NUWAX_APP_STATE_SLEEPING) {
+    } else if (!local_power_sleep_owner &&
+               conversation_state_current() != NUWAX_APP_STATE_SLEEPING) {
         recover_normal_conversation_after_playback_abort(
             "speaker_fault_watchdog_runtime_reset");
     }
@@ -9389,10 +11084,19 @@ static void drain_speaker_owner_events(void) {
 
     nuwax_speaker_owner_event_t event = {0};
     while (xQueueReceive(s_speaker_owner_events, &event, 0) == pdTRUE) {
+        const int64_t owner_delay_us =
+            esp_timer_get_time() - event.event_timestamp_us;
+        if (event.event_timestamp_us > 0 && owner_delay_us > 250000LL) {
+            ESP_LOGW(TAG,
+                     "speaker owner event delayed type=%d epoch=%lu generation=%lu queue_ms=%lld",
+                     (int)event.type,
+                     (unsigned long)event.ws_connection_epoch,
+                     (unsigned long)event.speaker_generation,
+                     (long long)(owner_delay_us / 1000LL));
+        }
         const uint32_t active_epoch = active_ws_epoch_snapshot();
-        if (event.type != NUWAX_SPEAKER_OWNER_EVENT_VOLUME &&
-            (event.ws_connection_epoch == 0U ||
-             event.ws_connection_epoch != active_epoch)) {
+        if (event.ws_connection_epoch == 0U ||
+            event.ws_connection_epoch != active_epoch) {
             ESP_LOGI(TAG,
                      "stale speaker owner event ignored type=%d generation=%lu event_epoch=%lu active_epoch=%lu",
                      (int)event.type,
@@ -9401,8 +11105,7 @@ static void drain_speaker_owner_events(void) {
                      (unsigned long)active_epoch);
             continue;
         }
-        if (event.type != NUWAX_SPEAKER_OWNER_EVENT_VOLUME &&
-            sleep_transaction_blocks_new_audio()) {
+        if (sleep_transaction_blocks_new_audio()) {
             if (event.type == NUWAX_SPEAKER_OWNER_EVENT_TTS_START &&
                 event.speaker_generation != 0U) {
                 clear_pending_speaker_start_if(event.speaker_generation);
@@ -9616,6 +11319,7 @@ static void drain_speaker_owner_events(void) {
                             event.ws_connection_epoch,
                             awake_generation,
                             event.speaker_generation);
+                    note_valid_conversation_activity();
                     const nuwax_visual_round_kind_t kind =
                         visual_bound ? s_visual_round.kind
                                      : NUWAX_VISUAL_ROUND_NONE;
@@ -9930,7 +11634,10 @@ static void drain_speaker_owner_events(void) {
                     break;
                 }
                 clear_active_turn_guard("speaker_cancel_recovery_without_terminal");
-                if (conversation_state_current() != NUWAX_APP_STATE_SLEEPING) {
+                const bool local_power_sleep_owner =
+                    local_power_transition_active();
+                if (!local_power_sleep_owner &&
+                    conversation_state_current() != NUWAX_APP_STATE_SLEEPING) {
 #if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
                     if (nuwax_capture_phase_cancel_recovery_needs_resume(
                             s_prelisten.capture_active,
@@ -10107,9 +11814,6 @@ static void drain_speaker_owner_events(void) {
                 request_during_playback_capture(
                     "speaker_playback_fault_terminal_wait", true);
                 break;
-            case NUWAX_SPEAKER_OWNER_EVENT_VOLUME:
-                nuwax_app_shell_set_volume_percent(event.volume_percent);
-                break;
             default:
                 break;
         }
@@ -10248,6 +11952,7 @@ static bool recover_post_end_cloud_response_timeout(nuwax_ws_client_t *ws,
      * The next owner pass drains that work before reconsidering the timeout. */
     bool arrived_cloud_work = false;
     uint32_t active_callbacks = 0U;
+    uint32_t notification_queued = 0U;
     uint32_t critical_queued = 0U;
     uint32_t progress_queued = 0U;
     portENTER_CRITICAL(&s_post_end_boundary_lock);
@@ -10257,17 +11962,22 @@ static bool recover_post_end_cloud_response_timeout(nuwax_ws_client_t *ws,
                           ? (uint32_t)uxQueueMessagesWaiting(
                                 s_session_critical_commands)
                           : 0U;
+    notification_queued = s_session_notification_commands
+                              ? (uint32_t)uxQueueMessagesWaiting(
+                                    s_session_notification_commands)
+                              : 0U;
     progress_queued = s_session_commands
                           ? (uint32_t)uxQueueMessagesWaiting(
                                 s_session_commands)
                           : 0U;
-    arrived_cloud_work = active_callbacks != 0U || critical_queued != 0U ||
-                         progress_queued != 0U;
+    arrived_cloud_work = active_callbacks != 0U || notification_queued != 0U ||
+                         critical_queued != 0U || progress_queued != 0U;
     portEXIT_CRITICAL(&s_post_end_boundary_lock);
     if (arrived_cloud_work) {
         ESP_LOGI(TAG,
-                 "post-END timeout deferred for arrived cloud work callbacks=%lu critical=%lu progress=%lu",
+                 "post-END timeout deferred for arrived cloud work callbacks=%lu notification=%lu critical=%lu progress=%lu",
                  (unsigned long)active_callbacks,
+                 (unsigned long)notification_queued,
                  (unsigned long)critical_queued,
                  (unsigned long)progress_queued);
         return false;
@@ -10409,7 +12119,57 @@ static void check_conversation_turn_timeout(nuwax_ws_client_t *ws) {
             "playback_terminal_local_quarantine");
         return;
     }
-    if (!nuwax_turn_guard_deadline_expired(&s_turn_guard, now_ms)) {
+    bool first_pcm_timeout = false;
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    if (s_turn_guard.active && s_turn_guard.phase == NUWAX_TURN_PHASE_PLAYING &&
+        s_turn_guard.speaker_generation == 0U) {
+        /* Uses the original playback_begin timestamp (duplicate metadata does
+         * not renew it), with a locked START/readiness/physical-owner check. */
+        first_pcm_timeout = nuwax_speaker_playback_expire_metadata_only_session(
+            s_turn_guard.turn_id, s_turn_guard.playback_id,
+            NUWAX_CONVERSATION_FIRST_PCM_TIMEOUT_MS);
+    }
+#endif
+    if (!first_pcm_timeout &&
+        !nuwax_turn_guard_deadline_expired(&s_turn_guard, now_ms)) {
+        return;
+    }
+
+    /* Before first PCM the logical state may still be SLEEPING, although
+     * the awake owner has already stopped the wake detector. Generic abort
+     * recovery deliberately ignores SLEEPING and would strand that owner.
+     * Retire this connection instead of accepting late greeting metadata
+     * into a newly opened microphone turn on the same epoch. */
+    const uint32_t greeting_ws_epoch = ws ? nuwax_ws_connection_epoch(ws) : 0U;
+    if (nuwax_wake_greeting_needs_epoch_recovery(
+            &s_visual_round, &s_turn_guard, greeting_ws_epoch,
+            nuwax_awake_session_state_generation(&s_awake_session)) &&
+        greeting_ws_epoch == active_ws_epoch_snapshot() &&
+        nuwax_awake_session_state_is_active(&s_awake_session) &&
+        nuwax_ws_is_connected(ws) && !local_power_transition_active() &&
+        !sleep_lifecycle_blocks_new_capture() &&
+        !exclusive_audio_mode_blocks_normal_audio() &&
+        !nuwax_notification_blocks_conversation(&s_notification_transaction)) {
+        /* Keep the bound, expired guard for the next owner tick during OTA;
+         * do not tear down a transport which OTA currently owns. */
+        if (ota_blocks_wake_detector()) {
+            return;
+        }
+        const uint32_t greeting_turn_epoch = s_turn_guard.epoch;
+        (void)update_normal_downlink_admission(false);
+        if (nuwax_ws_close_if_epoch(ws, greeting_ws_epoch,
+                                    NUWAX_WS_CLOSE_CAUSE_WAKE_GREETING_TIMEOUT)) {
+            ESP_LOGW(TAG,
+                     "unresolved wake greeting retired epoch=%lu turn_epoch=%lu request=%s; reconnect will restore awake owner",
+                     (unsigned long)greeting_ws_epoch,
+                     (unsigned long)greeting_turn_epoch, s_turn_guard.request_id);
+            wake_greeting_metrics_cancel("wake_greeting_timeout");
+            clear_active_turn_guard("wake_greeting_timeout");
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+            nuwax_speaker_playback_request_fade_cancel("wake_greeting_timeout", 0U);
+#endif
+        }
+        /* A stale close never opens capture; let the current owner converge. */
         return;
     }
 
@@ -10424,7 +12184,7 @@ static void check_conversation_turn_timeout(nuwax_ws_client_t *ws) {
         phase == NUWAX_TURN_PHASE_WAIT_TTS_RETRY;
     const char *timeout_reason =
         playback_ingress_idle_timeout
-            ? "tts_no_audio_timeout"
+            ? (first_pcm_timeout ? "tts_first_pcm_timeout" : "tts_no_audio_timeout")
             : (metadata_retry_timeout ? "tts_metadata_retry_timeout"
                                       : "cloud_phase_timeout");
     char request_id[sizeof(s_turn_guard.request_id)] = {0};
@@ -10455,8 +12215,8 @@ static void check_conversation_turn_timeout(nuwax_ws_client_t *ws) {
     bool cancel_sent = false;
     bool cancel_send_failed = false;
     if (playback_ingress_idle_timeout) {
-        /* Sixty seconds without accepted cloud PCM ends this turn. Close
-         * admission first so late audio cannot enter the next listen owner. */
+        /* The first-PCM or ingress-idle budget expired. Close admission first
+         * so late audio cannot enter the next listen owner. */
         (void)update_normal_downlink_admission(false);
         snprintf(cancel_request_id,
                  sizeof(cancel_request_id),
@@ -10632,6 +12392,25 @@ static esp_err_t service_application_keepalive(nuwax_ws_client_t *ws,
         return ESP_OK;
     }
 
+    /* Application ping is advisory. Do not contend with an in-flight audio
+     * frame or control transaction for the single WebSocket lifecycle lock.
+     * The WebSocket protocol ping runs independently in the RX task, while a
+     * later service pass retries this application-level ping. This keeps a
+     * short binary send from turning into a visible capture/playback stall. */
+    const nuwax_ws_tx_diagnostics_t tx = nuwax_ws_tx_diagnostics(ws);
+    if (tx.stage != NUWAX_WS_TX_STAGE_IDLE) {
+        s_ws_application_keepalive_next_attempt_ms =
+            now_ms + NUWAX_WS_APPLICATION_KEEPALIVE_RETRY_MS;
+        ESP_LOGD(TAG,
+                 "application keepalive deferred while WebSocket TX is busy context=%s epoch=%lu stage=%d stage_age_ms=%lu retry_ms=%u",
+                 context ? context : "-",
+                 (unsigned long)epoch,
+                 (int)tx.stage,
+                 (unsigned long)tx.stage_age_ms,
+                 (unsigned)NUWAX_WS_APPLICATION_KEEPALIVE_RETRY_MS);
+        return ESP_OK;
+    }
+
     const int64_t deadline_us =
         esp_timer_get_time() +
         (int64_t)NUWAX_WS_APPLICATION_KEEPALIVE_SEND_BUDGET_MS * 1000LL;
@@ -10668,6 +12447,9 @@ static esp_err_t service_idle_wait_application_keepalive(
         ws ? nuwax_ws_connection_epoch(ws) : 0U;
     const esp_err_t err =
         service_application_keepalive(ws, "idle_wait");
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    if (err == ESP_OK) service_offline_audio_replay(ws);
+#endif
     if (err == ESP_OK) {
         return ESP_OK;
     }
@@ -10760,6 +12542,7 @@ static bool mark_cloud_provision_required_if_epoch(uint32_t connection_epoch)
         s_cloud_service_ready = false;
         s_cloud_authenticated = false;
         s_cloud_auth_failed_latched = true;
+        nuwax_provision_main_note_binding_rejected();
     }
     portEXIT_CRITICAL(&s_cloud_auth_lock);
     if (!accepted) {
@@ -10770,6 +12553,19 @@ static bool mark_cloud_provision_required_if_epoch(uint32_t connection_epoch)
 #endif
     nuwax_app_shell_set_cloud_state(NUWAX_CLOUD_AUTHFAIL);
     return true;
+}
+
+static void on_ws_peer_close(uint32_t epoch, uint16_t code,
+    const uint8_t *reason, size_t reason_bytes, void *user_ctx)
+{
+    nuwax_ws_client_t *ws = (nuwax_ws_client_t *)user_ctx;
+    if (!ws || nuwax_ws_connection_epoch(ws) != epoch ||
+        !nuwax_cloud_peer_close_requires_provision(code, reason, reason_bytes))
+        return;
+    if (mark_cloud_provision_required_if_epoch(epoch)) {
+        ESP_LOGW(TAG, "cloud binding changed epoch=%lu; ordinary reconnect skipped, BLE rebind queued for owner",
+                 (unsigned long)epoch);
+    }
 }
 
 static uint32_t cloud_provision_required_epoch(void)
@@ -10791,9 +12587,9 @@ static bool consume_cloud_provision_required(uint32_t expected_epoch)
     return consumed;
 }
 
-/* The frozen formal-cloud contract validates X-Bridge-Token before returning
- * HTTP 101. This callback runs synchronously before the RX task is started, so
- * even an immediately delivered OTA command observes verified credentials. */
+/* Publish the transport epoch before RX starts. Existing command admission is
+ * retained, but 101 alone is not application readiness or proof of a binding:
+ * the peer may immediately follow it with DEVICE_NOT_BOUND. */
 static void on_ws_handshake_authenticated(void *user_ctx) {
     nuwax_ws_client_t *ws = (nuwax_ws_client_t *)user_ctx;
     if (!ws) {
@@ -10817,7 +12613,7 @@ static void on_ws_handshake_authenticated(void *user_ctx) {
 #endif
     nuwax_app_shell_set_cloud_state(NUWAX_CLOUD_CONNECTING);
     ESP_LOGI(TAG,
-             "cloud transport authenticated by WebSocket 101; awaiting application activity");
+             "cloud transport upgraded by WebSocket 101; awaiting application validation");
 }
 
 static bool cloud_service_is_ready(void) {
@@ -10827,6 +12623,58 @@ static bool cloud_service_is_ready(void) {
             s_cloud_authenticated;
     portEXIT_CRITICAL(&s_cloud_auth_lock);
     return ready;
+}
+
+
+/* Application/connection owner only. SD capture has its own task. Normal
+ * capture, speaker and no-card realtime loops keep their existing budgets. */
+static void service_audio_mode_state_sync(nuwax_ws_client_t *ws) {
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    if (!ws || !nuwax_ws_is_connected(ws) || !cloud_service_is_ready() ||
+        conversation_capture_busy_for_sleep() || nuwax_audio_uplink_sender_busy() ||
+        (nuwax_meeting_mode_state(&s_meeting_mode) == NUWAX_MEETING_STATE_ACTIVE &&
+         !atomic_load_explicit(&s_meeting_mode.sd_local, memory_order_acquire)) ||
+        (nuwax_monitoring_mode_state(&s_monitoring_mode) == NUWAX_MONITORING_STATE_ACTIVE &&
+         !atomic_load_explicit(&s_monitoring_mode.sd_local, memory_order_acquire))
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+        || nuwax_speaker_playback_has_pending()
+#endif
+        ) return;
+    nuwax_meeting_mode_sync_current_state(&s_meeting_mode, ws);
+    nuwax_monitoring_mode_sync_current_state(&s_monitoring_mode, ws);
+#else
+    (void)ws;
+#endif
+}
+
+/* Cloud-ready closes the connecting phase. Converge to the sleeping
+ * lifecycle before consuming commands, without stealing an active awake,
+ * audio, exclusive-mode, or notification owner. */
+static bool reconcile_cloud_ready_sleep_state(const char *reason) {
+    if (conversation_state_current() != NUWAX_APP_STATE_WS_CONNECTING ||
+        !cloud_service_is_ready() ||
+        s_awake_resume_after_ws_reconnect ||
+        nuwax_awake_session_state_is_active(&s_awake_session) ||
+        s_turn_guard.active || s_prelisten.pending ||
+        s_prelisten.capture_active || conversation_capture_busy_for_sleep() ||
+        nuwax_notification_blocks_conversation(
+            &s_notification_transaction) ||
+        meeting_or_monitoring_mode_blocks_sleep() ||
+        atomic_load_explicit(&s_reprovision_quiesce_requested,
+                             memory_order_acquire)
+#if CONFIG_NUWAX_OTA_ENABLE
+        || nuwax_ota_device_blocks_audio()
+#endif
+    ) {
+        return false;
+    }
+
+    ESP_LOGW(TAG,
+             "cloud-ready lifecycle still WS_CONNECTING; converging to SLEEPING before command consumption reason=%s",
+             reason ? reason : "cloud_ready_reconcile");
+    request_sleeping_conversation_state(
+        reason ? reason : "cloud_ready_reconcile");
+    return conversation_state_current() == NUWAX_APP_STATE_SLEEPING;
 }
 
 static void schedule_volume_report(uint8_t volume_percent,
@@ -10849,7 +12697,7 @@ static void schedule_current_volume_snapshot(void) {
         return;
     }
 #if CONFIG_NUWAX_SPEAKER_ENABLE
-    s_current_volume_percent = nuwax_speaker_playback_get_volume_percent();
+    s_current_volume_percent = nuwax_speaker_playback_get_confirmed_volume_percent(NULL);
 #endif
     schedule_volume_report(s_current_volume_percent, false);
 }
@@ -11088,6 +12936,7 @@ static esp_err_t wait_for_cloud_service_ready(nuwax_ws_client_t *ws) {
         return ESP_ERR_INVALID_STATE;
     }
     ESP_LOGI(TAG, "authenticated cloud application ready; audio may resume");
+    (void)reconcile_cloud_ready_sleep_state("cloud_ready_received");
     return ESP_OK;
 }
 
@@ -11205,16 +13054,582 @@ static bool queue_p5_during_playback_candidate_fast(
  * command is queued until teardown completes. Ordinary conversation data
  * must not cross either side of that ownership boundary. */
 static bool meeting_or_monitoring_mode_blocks_sleep(void) {
-    return nuwax_meeting_mode_has_audio_claim(&s_meeting_mode) ||
-           nuwax_monitoring_mode_has_audio_claim(&s_monitoring_mode);
+    bool blocked = nuwax_meeting_mode_has_audio_claim(&s_meeting_mode) ||
+                   nuwax_monitoring_mode_has_audio_claim(&s_monitoring_mode);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    blocked = blocked || offline_mode_lease_pending() ||
+              nuwax_offline_audio_capture_running();
+#endif
+    return blocked;
+}
+
+static bool power_key_short_press_dialogue_state(nuwax_app_state_t state) {
+    switch (state) {
+        case NUWAX_APP_STATE_IDLE:
+        case NUWAX_APP_STATE_LISTENING:
+        case NUWAX_APP_STATE_THINKING:
+        case NUWAX_APP_STATE_SPEAKING:
+            return true;
+        case NUWAX_APP_STATE_BOOTING:
+        case NUWAX_APP_STATE_WIFI_CONNECTING:
+        case NUWAX_APP_STATE_WS_CONNECTING:
+        case NUWAX_APP_STATE_SLEEPING:
+        case NUWAX_APP_STATE_ERROR:
+        default:
+            return false;
+    }
 }
 
 static bool exclusive_audio_mode_blocks_normal_audio(void) {
-    return atomic_load_explicit(&s_reprovision_quiesce_requested,
-                                memory_order_acquire) ||
-           nuwax_meeting_mode_has_pending(&s_meeting_mode) ||
-           nuwax_monitoring_mode_has_pending(&s_monitoring_mode);
+    bool blocked = atomic_load_explicit(&s_reprovision_quiesce_requested,
+                                        memory_order_acquire) ||
+                   nuwax_meeting_mode_has_pending(&s_meeting_mode) ||
+                   nuwax_monitoring_mode_has_pending(&s_monitoring_mode);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    /* Offline SD capture owns I2S RX even though the cloud mode controllers
+     * are reset to DISABLED after a disconnect.  Keep ordinary conversation
+     * fenced until the MIC is released and the mode lease is re-admitted.
+     * Background FILE/tail persistence has no microphone ownership. */
+    blocked = blocked || offline_mode_lease_pending() ||
+              nuwax_offline_audio_capture_running();
+#endif
+    return blocked;
 }
+
+static bool exclusive_audio_controllers_released(void) {
+    return nuwax_meeting_mode_state(&s_meeting_mode) ==
+               NUWAX_MEETING_STATE_DISABLED &&
+           nuwax_monitoring_mode_state(&s_monitoring_mode) ==
+               NUWAX_MONITORING_STATE_DISABLED &&
+           !nuwax_meeting_mode_has_pending(&s_meeting_mode) &&
+           !nuwax_monitoring_mode_has_pending(&s_monitoring_mode);
+}
+
+/* Retry the end-of-exclusive-mode sleep transition after a deferred owner
+ * (most notably the SD archive writer) releases the shared audio path.  This
+ * is deliberately a one-shot latch: a new mode or another lifecycle owner
+ * clears/blocks it, so it cannot force SLEEPING over a later conversation. */
+static void service_exclusive_audio_sleep_reconcile(void) {
+    if (!s_exclusive_audio_sleep_reconcile_pending) {
+        return;
+    }
+    if (atomic_load_explicit(&s_reprovision_quiesce_requested,
+                             memory_order_acquire)) {
+        return;
+    }
+    if (!exclusive_audio_controllers_released()) {
+        /* A queued controller event may still be draining after the first
+         * DISABLED callback. Keep the latch until that queue is quiescent;
+         * a subsequent STARTING/takeover explicitly clears it. */
+        return;
+    }
+    if (meeting_or_monitoring_mode_blocks_sleep() ||
+        conversation_capture_busy_for_sleep() || s_prelisten.capture_active ||
+        s_turn_guard.active ||
+        nuwax_notification_blocks_conversation(&s_notification_transaction)) {
+        return;
+    }
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    if (nuwax_speaker_playback_has_pending()) {
+        return;
+    }
+#endif
+    if (conversation_state_current() == NUWAX_APP_STATE_SLEEPING) {
+        s_exclusive_audio_sleep_reconcile_pending = false;
+        return;
+    }
+    /* Give already-queued local interactions and replacement transactions
+     * priority over the deferred mode-end cleanup.  The latch will be
+     * serviced again after the owner drains these queues. */
+    if ((s_wake_word_events &&
+         uxQueueMessagesWaiting(s_wake_word_events) > 0U) ||
+        s_head_touch_agent_intent.state != NUWAX_HEAD_TOUCH_AGENT_STATE_IDLE ||
+        (s_shell_actions && uxQueueMessagesWaiting(s_shell_actions) > 0U)) {
+        return;
+    }
+
+    s_exclusive_audio_sleep_reconcile_pending = false;
+    ESP_LOGI(TAG,
+             "exclusive audio owners released; reconciling sleeping state");
+    if (!commit_sleeping_conversation_state("exclusive_audio_released")) {
+        /* A last-moment owner race keeps the latch for the next service pass.
+         * The commit routine itself remains the final admission authority. */
+        s_exclusive_audio_sleep_reconcile_pending = true;
+    }
+}
+
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+static void reset_offline_capture_retry_state(void)
+{
+    s_offline_capture_retry_next_ms = 0U;
+    s_offline_capture_retry_backoff_ms = 0U;
+    s_offline_capture_retry_attempts = 0U;
+}
+
+static nuwax_audio_mode_identity_t *offline_mode_identity(void)
+{
+    return offline_mode_kind() == NUWAX_OFFLINE_AUDIO_MODE_MONITORING
+        ? &s_monitoring_mode.identity : &s_meeting_mode.identity;
+}
+
+static bool service_offline_duration_limit(void)
+{
+    if (!offline_mode_lease_pending()) {
+        return false;
+    }
+    const bool monitoring =
+        offline_mode_kind() == NUWAX_OFFLINE_AUDIO_MODE_MONITORING;
+    const bool waiting = !nuwax_offline_audio_capture_running() ||
+        !nuwax_offline_capture_health_is_recording(nuwax_offline_audio_capture_health());
+    const bool wait_expired = waiting && nuwax_offline_wait_expired(
+        monotonic_ms(), atomic_load_explicit(&s_offline_wait_started_ms, memory_order_acquire),
+        monitoring ? CONFIG_NUWAX_MONITORING_OFFLINE_MAX_HOURS : CONFIG_NUWAX_MEETING_OFFLINE_MAX_HOURS);
+    if (!nuwax_offline_audio_limit_reached() && !wait_expired) {
+        return false;
+    }
+    offline_mode_lease_store(false);
+    (void)nuwax_offline_audio_request_stop(false);
+    s_offline_mode_resume_session[0] = '\0';
+    nuwax_audio_mode_identity_clear(offline_mode_identity());
+    s_offline_mode_capture_started = false;
+    reset_offline_capture_retry_state();
+    atomic_store_explicit(&s_offline_mode_cancel_to_sleep, true, memory_order_release);
+    ESP_LOGI(TAG,
+             "offline %s %s limit reached; automatic resume cancelled",
+             monitoring ? "monitoring" : "meeting", wait_expired ? "waiting" : "capture");
+    return true;
+}
+
+static void service_offline_capture_retry_disconnected(void)
+{
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    nuwax_sd_session_network(false);
+    nuwax_meeting_mode_service_sd(&s_meeting_mode, NULL);
+    nuwax_monitoring_mode_service_sd(&s_monitoring_mode, NULL);
+    /* No-card sessions keep their existing online resume intent, but must
+     * never attach a newly inserted card halfway through the same scene. */
+    (void)service_offline_duration_limit();
+    return;
+#endif
+    if (service_offline_duration_limit()) {
+        return;
+    }
+    if (!offline_mode_lease_pending() ||
+        nuwax_offline_audio_capture_running() ||
+        s_offline_mode_resume_session[0] == '\0' ||
+        atomic_load_explicit(&s_reprovision_quiesce_requested,
+                             memory_order_acquire)) {
+        return;
+    }
+#if CONFIG_NUWAX_OTA_ENABLE
+    if (nuwax_ota_device_is_active()) {
+        return;
+    }
+#endif
+
+    const uint32_t now = monotonic_ms();
+    if (s_offline_capture_retry_next_ms != 0U &&
+        !elapsed_ms(now, s_offline_capture_retry_next_ms)) {
+        return;
+    }
+
+    /* A previous reader may have stopped after consuming frames (for example
+     * after card failure). Carry its cursor into the retry as well. */
+    if (s_offline_mode_capture_started) {
+        offline_mode_identity()->next_capture_sequence =
+            nuwax_offline_audio_next_capture_sequence();
+        s_offline_mode_capture_started = false;
+    }
+    /* Mount/scan/fsync belong to the storage supervisor. The connection
+     * owner must remain available for stop, network and power controls. */
+    const esp_err_t err = nuwax_offline_audio_start_capture_continuation(
+            offline_mode_kind(),
+            s_offline_mode_resume_session,
+            CONFIG_NUWAX_VOICE_SAMPLE_RATE,
+            CONFIG_NUWAX_VOICE_CHANNELS,
+            CONFIG_NUWAX_VOICE_FRAME_DURATION_MS,
+            offline_mode_identity()->next_capture_sequence);
+    if (err == ESP_OK) {
+        /* A local/cloud stop can arrive during task allocation. Revalidate
+         * before publishing success; the reader also checks its stop epoch. */
+        if (!offline_mode_lease_pending() || !offline_mode_identity()->resuming ||
+            atomic_load_explicit(&s_reprovision_quiesce_requested, memory_order_acquire)) {
+            (void)nuwax_offline_audio_request_stop(false);
+            return;
+        }
+        const uint32_t attempt = s_offline_capture_retry_attempts;
+        s_offline_mode_capture_started = true;
+        atomic_store_explicit(&s_offline_mode_capture_failed, false,
+                              memory_order_release);
+        reset_offline_capture_retry_state();
+        ESP_LOGI(TAG,
+                 "offline capture retry succeeded mode=%s attempt=%lu session=%s",
+                 offline_mode_kind() ==
+                         NUWAX_OFFLINE_AUDIO_MODE_MONITORING
+                     ? "monitoring"
+                     : "meeting",
+                 (unsigned long)attempt,
+                 s_offline_mode_resume_session);
+        return;
+    }
+
+    atomic_store_explicit(&s_offline_mode_capture_failed, true,
+                          memory_order_release);
+    nuwax_offline_audio_supervisor_wake();
+    if (s_offline_capture_retry_attempts < UINT32_MAX) {
+        s_offline_capture_retry_attempts++;
+    }
+    if (s_offline_capture_retry_backoff_ms == 0U) {
+        s_offline_capture_retry_backoff_ms =
+            NUWAX_OFFLINE_CAPTURE_RETRY_INITIAL_MS;
+    } else if (s_offline_capture_retry_backoff_ms <
+               NUWAX_OFFLINE_CAPTURE_RETRY_MAX_MS / 2U) {
+        s_offline_capture_retry_backoff_ms *= 2U;
+    } else {
+        s_offline_capture_retry_backoff_ms =
+            NUWAX_OFFLINE_CAPTURE_RETRY_MAX_MS;
+    }
+    s_offline_capture_retry_next_ms =
+        now + s_offline_capture_retry_backoff_ms;
+    const nuwax_audio_runtime_memory_t memory =
+        exclusive_audio_memory_snapshot();
+    char detail[NUWAX_DEVICE_ERROR_RESULT_BYTES];
+    snprintf(detail,
+             sizeof(detail),
+             "%s;attempt=%lu;retry_ms=%lu;internal=%u;largest=%u;dma=%u",
+             esp_err_to_name(err),
+             (unsigned long)s_offline_capture_retry_attempts,
+             (unsigned long)s_offline_capture_retry_backoff_ms,
+             (unsigned)memory.internal_free,
+             (unsigned)memory.internal_largest,
+             (unsigned)memory.dma_largest);
+    /* At most the initial two attempts are reported (disconnect may already
+     * count as attempt one). A card absent for hours must not keep writing
+     * diagnostic NVS; subsequent retries remain visible in serial logs. */
+    if (s_offline_capture_retry_attempts <= 2U) {
+        (void)nuwax_device_warning_report_enqueue_detail(
+            "audio", "offline_capture_retry", err, detail,
+            offline_mode_kind() == NUWAX_OFFLINE_AUDIO_MODE_MONITORING
+                ? "monitoring" : "meeting", 0U, s_offline_mode_resume_session);
+    }
+    ESP_LOGW(TAG,
+             "offline capture retry deferred mode=%s attempt=%lu err=%s next_ms=%lu internal=%u largest=%u dma=%u",
+             offline_mode_kind() == NUWAX_OFFLINE_AUDIO_MODE_MONITORING
+                 ? "monitoring"
+                 : "meeting",
+             (unsigned long)s_offline_capture_retry_attempts,
+             esp_err_to_name(err),
+             (unsigned long)s_offline_capture_retry_next_ms,
+             (unsigned)memory.internal_free,
+             (unsigned)memory.internal_largest,
+             (unsigned)memory.dma_largest);
+}
+
+static bool offline_replay_control_busy(void)
+{
+    return offline_mode_lease_pending() ||
+           (nuwax_meeting_mode_has_pending(&s_meeting_mode) &&
+            !(nuwax_sd_session_active() && !nuwax_sd_session_monitoring())) ||
+           (nuwax_monitoring_mode_has_pending(&s_monitoring_mode) && !nuwax_sd_session_monitoring()) ||
+           reprovision_request_pending() ||
+           nuwax_notification_blocks_conversation(&s_notification_transaction) ||
+           s_prelisten.capture_active || nuwax_audio_uplink_sender_busy();
+}
+
+/* Called on every idle-wait tick as well as the outer connection loop.
+ * Deadlines and ready files are level-triggered; no retry flag is required. */
+static void service_offline_audio_replay(nuwax_ws_client_t *ws)
+{
+    if (!ws || !nuwax_ws_is_connected(ws)) return;
+    if (nuwax_wifi_simulated_offline()) { nuwax_sd_session_network(false); return; }
+    nuwax_sd_session_network(true);
+    if (offline_replay_control_busy()) return;
+#if CONFIG_NUWAX_OTA_ENABLE
+    if (nuwax_ota_device_is_active()) return;
+#endif
+    const uint32_t epoch = nuwax_ws_connection_epoch(ws);
+    /* Recovery can scan a large directory for seconds. Its supervisor owns
+     * that work; never perform it on the connection/keepalive task. */
+    const bool replay_epoch_new = s_offline_replay_attempt_epoch != epoch;
+    if (replay_epoch_new) {
+        nuwax_offline_audio_supervisor_wake();
+    }
+
+    /* Replay is a bounded background service, not a once-per-epoch gate. A
+     * transient admission failure or ACK timeout must be retried in place
+     * while the same healthy WebSocket remains connected. */
+    if (replay_epoch_new) {
+        s_offline_replay_attempt_epoch = epoch;
+        s_offline_replay_next_attempt_ms = 0U;
+        s_offline_replay_backoff_ms = 0U;
+    }
+    const uint32_t replay_now_ms = monotonic_ms();
+    if (nuwax_offline_audio_replay_retry_pending() &&
+        !nuwax_offline_audio_storage_busy() &&
+        !nuwax_offline_audio_replay_running() &&
+        nuwax_offline_audio_replay_retry_required()) {
+        /* A start racing with media recovery also raises this edge. Consume
+         * it without cancelling backoff, otherwise every poll retries. */
+        ESP_LOGI(TAG,
+                 "offline archive replay retry pending; preserving backoff epoch=%lu",
+                 (unsigned long)epoch);
+    }
+    if (nuwax_offline_audio_has_ready() &&
+        !nuwax_offline_audio_storage_busy() &&
+        !nuwax_offline_audio_replay_running() &&
+        (s_offline_replay_next_attempt_ms == 0U ||
+         elapsed_ms(replay_now_ms, s_offline_replay_next_attempt_ms))) {
+        esp_err_t replay_err = ESP_OK;
+#if CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+        replay_err = nuwax_offline_audio_replay_test_start();
+#elif CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_FORMAL_ENABLE
+        /* Production replay is intentionally asynchronous.  The connection
+         * owner must remain responsive while a large SD archive waits for
+         * per-chunk persistence ACKs. */
+        replay_err = nuwax_offline_audio_replay_formal_start(ws, epoch);
+#else
+        replay_err = ESP_ERR_NOT_SUPPORTED;
+        ESP_LOGI(TAG,
+                 "offline archive replay disabled; ready archives retained");
+#endif
+        if (replay_err == ESP_OK) {
+            s_offline_replay_backoff_ms = nuwax_sd_session_active() ? 100U : 5000U;
+            s_offline_replay_next_attempt_ms = replay_now_ms +
+                                               s_offline_replay_backoff_ms;
+        } else if (replay_err == ESP_ERR_NOT_SUPPORTED) {
+            /* A disabled replay route must not close the normal connection. */
+            s_offline_replay_next_attempt_ms = replay_now_ms + 1000U;
+        } else {
+            if (s_offline_replay_backoff_ms == 0U) {
+                s_offline_replay_backoff_ms = 1000U;
+            } else if (s_offline_replay_backoff_ms < 30000U / 2U) {
+                s_offline_replay_backoff_ms *= 2U;
+            } else {
+                s_offline_replay_backoff_ms = 30000U;
+            }
+            s_offline_replay_next_attempt_ms = replay_now_ms +
+                                               s_offline_replay_backoff_ms;
+            ESP_LOGW(TAG,
+                     "offline archive replay deferred epoch=%lu err=%s",
+                     (unsigned long)epoch, esp_err_to_name(replay_err));
+        }
+    }
+
+}
+
+static esp_err_t service_offline_audio_handoff(nuwax_ws_client_t *ws)
+{
+    if (!ws || !nuwax_ws_is_connected(ws)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    if (nuwax_sd_session_active()) {
+        nuwax_sd_session_network(true);
+        service_offline_audio_replay(ws);
+        return ESP_OK;
+    }
+#endif
+    (void)service_offline_duration_limit();
+    const uint32_t epoch = nuwax_ws_connection_epoch(ws);
+    const bool cancel_to_sleep = atomic_load_explicit(
+        &s_offline_mode_cancel_to_sleep, memory_order_acquire);
+    const bool capture_pending =
+        offline_mode_lease_pending() ||
+        nuwax_offline_audio_capture_running() ||
+        nuwax_offline_audio_is_active();
+    if (!capture_pending && !nuwax_offline_audio_has_ready() &&
+        !cancel_to_sleep) {
+        return ESP_OK;
+    }
+
+    if (nuwax_offline_audio_capture_running() &&
+        (!offline_mode_lease_pending() || !offline_mode_identity()->resuming || cancel_to_sleep)) {
+        const esp_err_t stop_err = nuwax_offline_audio_request_stop(false);
+        const bool owner_still_active = nuwax_offline_audio_capture_running();
+        if (owner_still_active) {
+            ESP_LOGW(TAG,
+                     "offline audio handoff waiting for SD owner stop err=%s capture=%d active=%d",
+                     esp_err_to_name(stop_err),
+                     nuwax_offline_audio_capture_running() ? 1 : 0,
+                     nuwax_offline_audio_is_active() ? 1 : 0);
+            return stop_err == ESP_OK ? ESP_ERR_NOT_FINISHED : stop_err;
+        }
+        if (stop_err != ESP_OK) {
+            /* Degraded archives remain replayable and must not permanently
+             * fence conversation or mode restoration after the physical MIC
+             * and FILE owners have converged. */
+            atomic_store_explicit(&s_offline_mode_capture_failed, true,
+                                  memory_order_release);
+            ESP_LOGW(TAG,
+                     "offline audio owner stopped with degraded archive err=%s; continuing reconnect handoff",
+                     esp_err_to_name(stop_err));
+        }
+    }
+
+    if (s_offline_mode_capture_started && !nuwax_offline_audio_capture_running()) {
+        offline_mode_identity()->next_capture_sequence =
+            nuwax_offline_audio_next_capture_sequence();
+        s_offline_mode_capture_started = false;
+    }
+
+    service_offline_audio_replay(ws);
+
+    /* Replay owns only the archive sink and a bounded transport budget. It
+     * must never gate re-admission of a live meeting/monitoring capture. The
+     * realtime uplink has priority; replay yields whenever new frames arrive. */
+    if (nuwax_offline_audio_replay_running()) {
+        ESP_LOGD(TAG, "offline archive replay running in background; realtime mode may resume");
+    }
+
+    if (!offline_mode_lease_pending()) {
+        if (atomic_exchange_explicit(&s_offline_mode_cancel_to_sleep, false,
+                                     memory_order_acq_rel)) {
+            atomic_store_explicit(&s_offline_mode_capture_failed, false,
+                                  memory_order_release);
+            reset_offline_capture_retry_state();
+            s_offline_mode_restore_request_epoch = 0U;
+            s_offline_mode_restore_next_attempt_ms = 0U;
+            s_offline_mode_restore_started_ms = 0U;
+            enter_sleeping_conversation_state("offline_mode_cancelled");
+        }
+        return ESP_OK;
+    }
+    if (!offline_mode_identity()->resuming) {
+        /* An explicit rejection/stop ended the user's recovery intent. */
+        offline_mode_lease_store(false);
+        s_offline_mode_restore_started_ms = 0U;
+        s_offline_mode_restore_request_epoch = 0U;
+        s_offline_mode_restore_next_attempt_ms = 0U;
+        return ESP_OK;
+    }
+    const bool controller_claimed =
+        offline_mode_kind() == NUWAX_OFFLINE_AUDIO_MODE_MONITORING
+            ? (nuwax_monitoring_mode_state(&s_monitoring_mode) !=
+                   NUWAX_MONITORING_STATE_DISABLED ||
+               nuwax_monitoring_mode_has_pending(&s_monitoring_mode))
+            : (nuwax_meeting_mode_state(&s_meeting_mode) !=
+                   NUWAX_MEETING_STATE_DISABLED ||
+               nuwax_meeting_mode_has_pending(&s_meeting_mode));
+    if (controller_claimed) {
+        /* STARTING or queued commands are not successful MIC ownership.
+         * The ACTIVE callback commits the lease. Let the controller run. */
+        return ESP_ERR_NOT_FINISHED;
+    }
+    const uint32_t restore_now_ms = monotonic_ms();
+    if (s_offline_mode_restore_request_epoch != epoch) {
+        s_offline_mode_restore_request_epoch = epoch;
+        s_offline_mode_restore_next_attempt_ms = 0U;
+        s_offline_mode_restore_started_ms = restore_now_ms;
+    }
+    if (s_offline_mode_restore_started_ms != 0U &&
+        elapsed_ms(restore_now_ms,
+                   s_offline_mode_restore_started_ms +
+                       NUWAX_OFFLINE_MODE_RESTORE_TIMEOUT_MS)) {
+        const nuwax_audio_runtime_memory_t memory =
+            exclusive_audio_memory_snapshot();
+        const nuwax_audio_runtime_memory_state_t memory_state =
+            nuwax_audio_runtime_memory_classify(memory);
+        ESP_LOGE(TAG,
+                 "offline mode lease restore timed out mode=%s epoch=%lu timeout_ms=%u memory_state=%d internal=%u largest=%u dma_largest=%u",
+                 offline_mode_kind() ==
+                         NUWAX_OFFLINE_AUDIO_MODE_MONITORING
+                     ? "monitoring"
+                     : "meeting",
+                 (unsigned long)epoch,
+                 (unsigned)NUWAX_OFFLINE_MODE_RESTORE_TIMEOUT_MS,
+                 (int)memory_state,
+                 (unsigned)memory.internal_free,
+                 (unsigned)memory.internal_largest,
+                 (unsigned)memory.dma_largest);
+        if (memory_state == NUWAX_AUDIO_RUNTIME_MEMORY_CRITICAL) {
+            (void)nuwax_device_error_report_enqueue(
+                "error", "audio", "exclusive_restore_memory_critical",
+                ESP_ERR_NO_MEM, NULL, 0U, NULL);
+            nuwax_diagnostics_log_heap_label(
+                TAG, "exclusive_restore_memory_critical");
+            vTaskDelay(pdMS_TO_TICKS(100));
+            esp_restart();
+            vTaskDelay(portMAX_DELAY);
+        }
+        offline_mode_lease_store(false);
+        atomic_store_explicit(&s_offline_mode_cancel_to_sleep, false,
+                              memory_order_release);
+        atomic_store_explicit(&s_offline_mode_capture_failed, false,
+                              memory_order_release);
+        reset_offline_capture_retry_state();
+        s_offline_mode_restore_request_epoch = 0U;
+        s_offline_mode_restore_next_attempt_ms = 0U;
+        s_offline_mode_restore_started_ms = 0U;
+        enter_sleeping_conversation_state("offline_mode_restore_timeout");
+        nuwax_audio_mode_identity_clear(offline_mode_identity());
+        return ESP_ERR_TIMEOUT;
+    }
+    if (s_offline_mode_restore_request_epoch == epoch &&
+        s_offline_mode_restore_next_attempt_ms != 0U &&
+        !elapsed_ms(restore_now_ms,
+                    s_offline_mode_restore_next_attempt_ms)) {
+        return ESP_ERR_NOT_FINISHED;
+    }
+    const nuwax_audio_runtime_memory_t restore_memory =
+        exclusive_audio_memory_snapshot();
+    if (nuwax_audio_runtime_memory_classify(restore_memory) !=
+        NUWAX_AUDIO_RUNTIME_MEMORY_READY) {
+        s_offline_mode_restore_next_attempt_ms =
+            restore_now_ms + NUWAX_OFFLINE_MODE_RESTORE_RETRY_MS;
+        ESP_LOGW(TAG,
+                 "offline mode lease restore waiting for audio memory mode=%s epoch=%lu internal=%u largest=%u dma_largest=%u",
+                 offline_mode_kind() ==
+                         NUWAX_OFFLINE_AUDIO_MODE_MONITORING
+                     ? "monitoring"
+                     : "meeting",
+                 (unsigned long)epoch,
+                 (unsigned)restore_memory.internal_free,
+                 (unsigned)restore_memory.internal_largest,
+                 (unsigned)restore_memory.dma_largest);
+        (void)nuwax_device_warning_report_enqueue(
+            "audio", "exclusive_restore_memory_deferred", ESP_ERR_NO_MEM,
+            NULL, 0U, NULL);
+        return ESP_ERR_NOT_FINISHED;
+    }
+    esp_err_t restore_err;
+    if (offline_mode_kind() == NUWAX_OFFLINE_AUDIO_MODE_MONITORING) {
+        restore_err = nuwax_monitoring_mode_request_ui(
+            &s_monitoring_mode, ws, true);
+    } else {
+        restore_err = nuwax_meeting_mode_request_ui(
+            &s_meeting_mode, ws, true);
+    }
+    s_offline_mode_restore_request_epoch = epoch;
+    s_offline_mode_restore_next_attempt_ms =
+        restore_now_ms + NUWAX_OFFLINE_MODE_RESTORE_RETRY_MS;
+    const bool claimed_after_request =
+        offline_mode_kind() == NUWAX_OFFLINE_AUDIO_MODE_MONITORING
+            ? (nuwax_monitoring_mode_state(&s_monitoring_mode) !=
+                   NUWAX_MONITORING_STATE_DISABLED ||
+               nuwax_monitoring_mode_has_pending(&s_monitoring_mode))
+            : (nuwax_meeting_mode_state(&s_meeting_mode) !=
+                   NUWAX_MEETING_STATE_DISABLED ||
+               nuwax_meeting_mode_has_pending(&s_meeting_mode));
+    if (restore_err == ESP_OK && claimed_after_request) {
+        ESP_LOGI(TAG,
+                 "offline mode restore awaiting capture mode=%s epoch=%lu",
+                 offline_mode_kind() ==
+                         NUWAX_OFFLINE_AUDIO_MODE_MONITORING
+                     ? "monitoring"
+                     : "meeting",
+                 (unsigned long)epoch);
+    } else if (restore_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "offline mode lease restore deferred mode=%s err=%s",
+                 offline_mode_kind() ==
+                         NUWAX_OFFLINE_AUDIO_MODE_MONITORING
+                     ? "monitoring"
+                     : "meeting",
+                 esp_err_to_name(restore_err));
+    }
+    return restore_err == ESP_OK ? ESP_ERR_NOT_FINISHED : restore_err;
+}
+#endif
 
 static bool is_normal_audio_event(nuwax_session_event_t event) {
     switch (event) {
@@ -11232,6 +13647,25 @@ static bool is_normal_audio_event(nuwax_session_event_t event) {
         default:
             return false;
     }
+}
+
+static bool session_command_is_notification_control(
+    const nuwax_session_command_t *command) {
+    if (!command) {
+        return false;
+    }
+    if (command->has_event &&
+        (command->event == NUWAX_SESSION_EVENT_NOTIFY_PLAYBACK_BEGIN ||
+         command->event == NUWAX_SESSION_EVENT_NOTIFY_PLAYBACK_END)) {
+        return true;
+    }
+    if (!command->has_command) {
+        return false;
+    }
+    /* stop_playback is the first half of the awake notification handoff and
+     * must share the same urgent FIFO as prepare/begin/end. */
+    return strcmp(command->command, "stop_playback") == 0 ||
+           strcmp(command->command, "prepare_notify_playback") == 0;
 }
 
 static bool preserve_filtered_text_response_emotion(
@@ -11308,6 +13742,7 @@ static void discard_session_queue_at_audio_mode_boundary(const char *reason) {
 static void discard_connection_bound_queues(const char *reason) {
     clear_tts_skip_prebound_emotion("ws_boundary");
     uint32_t session_dropped = 0U;
+    uint32_t notification_dropped = 0U;
     uint32_t critical_dropped = 0U;
     uint32_t p3_dropped = 0U;
     uint32_t p5_dropped = 0U;
@@ -11336,6 +13771,11 @@ static void discard_connection_bound_queues(const char *reason) {
     if (s_session_commands) {
         session_dropped = (uint32_t)uxQueueMessagesWaiting(s_session_commands);
         (void)xQueueReset(s_session_commands);
+    }
+    if (s_session_notification_commands) {
+        notification_dropped = (uint32_t)uxQueueMessagesWaiting(
+            s_session_notification_commands);
+        (void)xQueueReset(s_session_notification_commands);
     }
     if (s_session_critical_commands) {
         critical_dropped = (uint32_t)uxQueueMessagesWaiting(
@@ -11393,19 +13833,21 @@ static void discard_connection_bound_queues(const char *reason) {
     nuwax_playback_terminal_guard_clear(&s_playback_terminal_guard);
 #endif
     memset(&s_acceptance_capture_next, 0, sizeof(s_acceptance_capture_next));
-    if (session_dropped || critical_dropped || p3_dropped || p5_dropped
+    if (session_dropped || notification_dropped || critical_dropped ||
+        p3_dropped || p5_dropped
 #if CONFIG_NUWAX_SPEAKER_ENABLE
         || speaker_dropped
 #endif
     ) {
         ESP_LOGI(TAG,
-                 "discarded connection-bound queues reason=%s progress=%lu critical=%lu p3=%lu p5=%lu"
+                 "discarded connection-bound queues reason=%s progress=%lu notification=%lu critical=%lu p3=%lu p5=%lu"
 #if CONFIG_NUWAX_SPEAKER_ENABLE
                  " speaker=%lu"
 #endif
                  ,
                  reason ? reason : "boundary",
                  (unsigned long)session_dropped,
+                 (unsigned long)notification_dropped,
                  (unsigned long)critical_dropped,
                  (unsigned long)p3_dropped,
                  (unsigned long)p5_dropped
@@ -11417,62 +13859,148 @@ static void discard_connection_bound_queues(const char *reason) {
     }
 }
 
-static bool prepare_exclusive_audio_cloud_handoff(
-    nuwax_ws_client_t *ws,
-    const char *payload,
-    int len) {
-    nuwax_monitoring_protocol_event_t monitoring = {0};
-    if (nuwax_monitoring_protocol_parse(payload, len, &monitoring)) {
-        if (monitoring.type != NUWAX_MONITORING_PROTOCOL_EVENT_SET_COMMAND ||
-            !monitoring.enabled) {
-            return true;
-        }
-        const esp_err_t handoff_err =
-            nuwax_meeting_mode_request_handoff_stop(
-                &s_meeting_mode, ws, "superseded_by_monitoring");
-        if (handoff_err == ESP_OK) {
-            return true;
-        }
-        ESP_LOGE(TAG,
-                 "monitoring enable could not stop meeting owner request=%s err=%s",
-                 monitoring.request_id,
-                 esp_err_to_name(handoff_err));
-        if (monitoring.request_id[0]) {
-            (void)nuwax_monitoring_protocol_send_command_ack(
-                ws,
-                monitoring.request_id,
-                true,
-                false,
-                "mode_handoff_failed");
-        }
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+static bool cancel_offline_mode_lease(nuwax_offline_audio_mode_t mode,
+                                      bool return_to_sleep,
+                                      const char *reason)
+{
+    if (!offline_mode_lease_pending() ||
+        offline_mode_kind() != mode) {
         return false;
     }
+    bool expected = true;
+    if (!atomic_compare_exchange_strong_explicit(
+            &s_offline_mode_resume_pending, &expected, false,
+            memory_order_acq_rel, memory_order_acquire)) {
+        return false;
+    }
+    if (return_to_sleep) {
+        atomic_store_explicit(&s_offline_mode_cancel_to_sleep, true,
+                              memory_order_release);
+    }
+    atomic_store_explicit(&s_offline_mode_capture_failed, false,
+                          memory_order_release);
+    reset_offline_capture_retry_state();
+    (void)nuwax_offline_audio_request_stop(false);
+    nuwax_audio_mode_identity_clear(offline_mode_identity());
+    s_offline_mode_capture_started = false;
+    ESP_LOGI(TAG,
+             "offline mode lease cancelled mode=%s return_to_sleep=%d reason=%s",
+             mode == NUWAX_OFFLINE_AUDIO_MODE_MONITORING ? "monitoring"
+                                                         : "meeting",
+             return_to_sleep ? 1 : 0,
+             reason ? reason : "cloud_control");
+    return true;
+}
+#endif
 
+/* Only disable keeps the existing offline-lease cancellation on RX. Enabling
+ * is admitted by the mode owner after queue/epoch/identity validation. */
+static bool prepare_exclusive_audio_cloud_handoff(
+    nuwax_ws_client_t *ws, const char *payload, int len)
+{
+    (void)ws;
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    nuwax_monitoring_protocol_event_t monitoring = {0};
+    if (nuwax_monitoring_protocol_parse(payload, len, &monitoring)) {
+        if (monitoring.type == NUWAX_MONITORING_PROTOCOL_EVENT_SET_COMMAND && !monitoring.enabled)
+            (void)cancel_offline_mode_lease(NUWAX_OFFLINE_AUDIO_MODE_MONITORING,
+                                          true, "cloud_monitoring_disable");
+        return true;
+    }
     nuwax_meeting_protocol_event_t meeting = {0};
-    if (!nuwax_meeting_protocol_parse(payload, len, &meeting) ||
-        meeting.type != NUWAX_MEETING_PROTOCOL_EVENT_SET_COMMAND ||
-        strcmp(meeting.state, "enabled") != 0) {
-        return true;
+    if (nuwax_meeting_protocol_parse(payload, len, &meeting) &&
+        meeting.type == NUWAX_MEETING_PROTOCOL_EVENT_SET_COMMAND &&
+        strcmp(meeting.state, "enabled") != 0)
+        (void)cancel_offline_mode_lease(NUWAX_OFFLINE_AUDIO_MODE_MEETING,
+                                      true, "cloud_meeting_disable");
+#else
+    (void)payload; (void)len;
+#endif
+    return true;
+}
+
+/* Application task only. Do not put catalog reads in the WebSocket callback.
+ * A rejected start must leave the previous recording and its lease intact. */
+static esp_err_t prepare_exclusive_audio_start(nuwax_ws_client_t *ws,
+    bool monitoring, bool sd_local, const char *audio_session_id)
+{
+    if (!ws || !nuwax_ws_is_connected(ws)) return ESP_ERR_INVALID_STATE;
+    const uint32_t epoch = nuwax_ws_connection_epoch(ws);
+    const uint32_t meeting_stop = atomic_load(&s_meeting_mode.local_stop_generation);
+    const uint32_t monitoring_stop = atomic_load(&s_monitoring_mode.local_stop_generation);
+    const nuwax_audio_command_deadline_t *command = monitoring
+        ? &s_monitoring_mode.command_deadline : &s_meeting_mode.command_deadline;
+    bool other_pending = monitoring
+        ? nuwax_meeting_mode_state(&s_meeting_mode) != NUWAX_MEETING_STATE_DISABLED || nuwax_meeting_mode_has_pending(&s_meeting_mode)
+        : nuwax_monitoring_mode_state(&s_monitoring_mode) != NUWAX_MONITORING_STATE_DISABLED || nuwax_monitoring_mode_has_pending(&s_monitoring_mode);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    other_pending = other_pending || (offline_mode_lease_pending() &&
+        offline_mode_kind() == (monitoring ? NUWAX_OFFLINE_AUDIO_MODE_MEETING : NUWAX_OFFLINE_AUDIO_MODE_MONITORING));
+#endif
+    if (!other_pending) return ESP_OK;
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    if (sd_local) {
+        const char *other_id = monitoring ? s_meeting_mode.audio_session_id : s_monitoring_mode.audio_session_id;
+        /* Also cover a STARTING controller before its manifest exists. */
+        if (other_id[0] && !strcasecmp(other_id, audio_session_id)) return ESP_ERR_INVALID_STATE;
+        const esp_err_t err = nuwax_sd_session_poll_identity(monitoring
+            ? NUWAX_OFFLINE_AUDIO_MODE_MONITORING : NUWAX_OFFLINE_AUDIO_MODE_MEETING,
+            audio_session_id, nuwax_audio_command_execution_deadline(command));
+        if (err != ESP_OK) return err;
     }
-    const esp_err_t handoff_err =
-        nuwax_monitoring_mode_request_handoff_stop(
-            &s_monitoring_mode, ws, "superseded_by_meeting");
-    if (handoff_err == ESP_OK) {
-        return true;
-    }
-    ESP_LOGE(TAG,
-             "meeting enable could not stop monitoring owner request=%s err=%s",
-             meeting.request_id,
-             esp_err_to_name(handoff_err));
-    if (meeting.request_id[0]) {
-        (void)nuwax_meeting_protocol_send_command_ack(
-            ws,
-            meeting.request_id,
-            true,
-            false,
-            "mode_handoff_failed");
-    }
-    return false;
+#else
+    (void)sd_local; (void)audio_session_id;
+#endif
+    /* Catalog access can yield. A disconnect/local stop must win over this
+     * formerly valid command before any owner is asked to stop. */
+    if (!nuwax_ws_is_connected(ws) || nuwax_ws_connection_epoch(ws) != epoch ||
+        nuwax_audio_command_expired(command, esp_timer_get_time()) ||
+        atomic_load(&s_meeting_mode.local_stop_generation) != meeting_stop ||
+        atomic_load(&s_monitoring_mode.local_stop_generation) != monitoring_stop ||
+        reprovision_request_pending() || nuwax_notification_blocks_conversation(&s_notification_transaction))
+        return ESP_ERR_INVALID_STATE;
+    const char *reason = monitoring ? "superseded_by_monitoring" : "superseded_by_meeting";
+    const esp_err_t err = monitoring
+        ? nuwax_meeting_mode_request_handoff_stop(&s_meeting_mode, ws, reason)
+        : nuwax_monitoring_mode_request_handoff_stop(&s_monitoring_mode, ws, reason);
+    if (err != ESP_OK) return err;
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    (void)cancel_offline_mode_lease(monitoring ? NUWAX_OFFLINE_AUDIO_MODE_MEETING
+        : NUWAX_OFFLINE_AUDIO_MODE_MONITORING, false, reason);
+#endif
+    return ESP_OK;
+}
+
+static esp_err_t meeting_prepare_cloud_start(void *ctx, nuwax_ws_client_t *ws,
+    bool sd_local, const char *audio_session_id)
+{
+    (void)ctx;
+    return prepare_exclusive_audio_start(ws, false, sd_local, audio_session_id);
+}
+
+static esp_err_t monitoring_prepare_cloud_start(void *ctx, nuwax_ws_client_t *ws,
+    bool sd_local, const char *audio_session_id)
+{
+    (void)ctx;
+    return prepare_exclusive_audio_start(ws, true, sd_local, audio_session_id);
+}
+
+/* The current mode may be inside its capture loop. Admit queued controls for
+ * the other, idle controller without running a second capture loop. */
+static void service_exclusive_audio_handoff(nuwax_ws_client_t *ws)
+{
+    /* Both deadlines run even when the old capture owner is still STOPPING. */
+    nuwax_meeting_mode_service_command_deadline(&s_meeting_mode, ws);
+    nuwax_monitoring_mode_service_command_deadline(&s_monitoring_mode, ws);
+    if (nuwax_meeting_mode_state(&s_meeting_mode) != NUWAX_MEETING_STATE_DISABLED &&
+        (nuwax_monitoring_mode_state(&s_monitoring_mode) == NUWAX_MONITORING_STATE_DISABLED ||
+         nuwax_monitoring_mode_state(&s_monitoring_mode) == NUWAX_MONITORING_STATE_STARTING))
+        nuwax_monitoring_mode_poll_control_events(&s_monitoring_mode, ws);
+    if (nuwax_monitoring_mode_state(&s_monitoring_mode) != NUWAX_MONITORING_STATE_DISABLED &&
+        (nuwax_meeting_mode_state(&s_meeting_mode) == NUWAX_MEETING_STATE_DISABLED ||
+         nuwax_meeting_mode_state(&s_meeting_mode) == NUWAX_MEETING_STATE_STARTING))
+        nuwax_meeting_mode_poll_control_events(&s_meeting_mode, ws);
 }
 
 static __attribute__((noinline)) void on_ws_text_non_ota(
@@ -11480,6 +14008,12 @@ static __attribute__((noinline)) void on_ws_text_non_ota(
     uint32_t ws_connection_epoch);
 
 static void on_ws_text(const char *payload, int len, void *user_ctx) {
+    /* Budget before OTA and all ordinary parsers; no liveness refresh or
+     * connection teardown for an over-budget text frame. */
+    if (len <= 0 || !nuwax_json_resource_admit(payload, (size_t)len)) {
+        ESP_LOGW(TAG, "inbound JSON resource budget rejected revision=json-resources-v1 bytes=%d", len);
+        return;
+    }
     nuwax_ws_client_t *ws = (nuwax_ws_client_t *)user_ctx;
     const uint32_t ws_connection_epoch =
         ws != NULL ? nuwax_ws_connection_epoch(ws) : 0U;
@@ -11519,6 +14053,7 @@ static void on_ws_text(const char *payload, int len, void *user_ctx) {
 static __attribute__((noinline)) void on_ws_text_non_ota(
     const char *payload, int len, nuwax_ws_client_t *ws,
     uint32_t ws_connection_epoch) {
+    const uint64_t text_received_ms = (uint64_t)esp_timer_get_time() / 1000U;
     if (!nuwax_session_validate_text_frame(payload, len)) {
         ESP_LOGE(TAG,
                  "invalid inbound WebSocket text dropped bytes=%d epoch=%lu; transport retained and application liveness not refreshed",
@@ -11559,6 +14094,9 @@ static __attribute__((noinline)) void on_ws_text_non_ota(
                  "cloud rejected application authentication kind=%s epoch=%lu",
                  cloud_message_kind_name(cloud_message),
                  (unsigned long)ws_connection_epoch);
+        if (cloud_message == NUWAX_CLOUD_MESSAGE_AUTH_REJECTED) {
+            (void)mark_cloud_provision_required_if_epoch(ws_connection_epoch);
+        }
         (void)nuwax_ws_close_if_epoch(
             ws, ws_connection_epoch, NUWAX_WS_CLOSE_CAUSE_AUTH_REJECTED);
         return;
@@ -11573,6 +14111,13 @@ static __attribute__((noinline)) void on_ws_text_non_ota(
     if (cloud_message == NUWAX_CLOUD_MESSAGE_HELLO_OK) {
         return;
     }
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    if (nuwax_offline_audio_handle_protocol_text(payload, len,
+                                                 ws_connection_epoch)) {
+        ws_mark_application_activity();
+        return;
+    }
+#endif
 #if CONFIG_NUWAX_OTA_ENABLE
     if (nuwax_firmware_report_handle_text(payload, len,
                                           ws_connection_epoch)) {
@@ -11587,6 +14132,11 @@ static __attribute__((noinline)) void on_ws_text_non_ota(
     }
 #endif
     if (!prepare_exclusive_audio_cloud_handoff(ws, payload, len)) {
+        return;
+    }
+    if (nuwax_device_error_report_handle_ack(payload, len,
+                                             ws_connection_epoch)) {
+        ws_mark_application_activity();
         return;
     }
     if (nuwax_monitoring_mode_handle_protocol_text(&s_monitoring_mode,
@@ -11640,6 +14190,13 @@ static __attribute__((noinline)) void on_ws_text_non_ota(
     }
     if (command.has_pong) {
         ws_mark_rx_activity();
+        if (command.pong_server_ms && nuwax_ws_is_connected(ws) &&
+            nuwax_ws_connection_epoch(ws) == ws_connection_epoch &&
+            nuwax_cloud_time_observe(command.pong_server_ms, text_received_ms)) {
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+            nuwax_offline_audio_supervisor_wake();
+#endif
+        }
     }
 #if CONFIG_NUWAX_OTA_ENABLE
     if (nuwax_ota_device_blocks_audio() &&
@@ -11680,11 +14237,12 @@ static __attribute__((noinline)) void on_ws_text_non_ota(
         return;
     }
 #endif
-    if (exclusive_audio_mode_blocks_normal_audio() && command.has_event &&
+    if ((product_music_blocks_audio() || exclusive_audio_mode_blocks_normal_audio()) && command.has_event &&
         is_normal_audio_event(command.event)) {
-        (void)preserve_filtered_text_response_emotion(
-            &command,
-            "exclusive_mode_rx");
+        if (!product_music_blocks_audio())
+            (void)preserve_filtered_text_response_emotion(
+                &command,
+                "exclusive_mode_rx");
         ESP_LOGI(TAG,
                  "exclusive audio mode quarantined normal session event=%d",
                  (int)command.event);
@@ -11697,13 +14255,15 @@ static __attribute__((noinline)) void on_ws_text_non_ota(
                 command.turn_id,
                 command.playback_id)) {
             ESP_LOGW(TAG,
-                     "normal playback BEGIN overlaps an unresolved notification stream epoch=%lu turn=%s playback=%s; quarantining ambiguous stream while retaining WebSocket",
+                     "normal playback BEGIN overlaps an unresolved audio stream epoch=%lu turn=%s playback=%s; quarantining ambiguous stream while retaining WebSocket",
                      (unsigned long)ws_connection_epoch,
                      command.turn_id[0] ? command.turn_id : "-",
                      command.playback_id[0] ? command.playback_id : "-");
             notification_rx_barrier_reject_epoch(
                 ws_connection_epoch, "normal_notification_stream_overlap");
-            return;
+            /* Preserve the rejected BEGIN identity for owner-thread cleanup.
+             * Dropping it here leaves an interaction pinned until 30s expiry. */
+            command.rx_playback_rejected = true;
         }
     }
     if (queue_p3_softref_ab_fast(&command, ws_connection_epoch)) {
@@ -11714,14 +14274,19 @@ static __attribute__((noinline)) void on_ws_text_non_ota(
         return;
     }
     if ((command.has_command || command.has_mcp || command.has_event) &&
-        s_session_commands && s_session_critical_commands) {
+        s_session_commands && s_session_critical_commands &&
+        s_session_notification_commands) {
         const bool is_low_priority_progress =
             command.has_event &&
             (command.event == NUWAX_SESSION_EVENT_AUDIO_PROGRESS ||
              command.event == NUWAX_SESSION_EVENT_ASR_PARTIAL);
-        QueueHandle_t target_queue = is_low_priority_progress
-                                         ? s_session_commands
-                                         : s_session_critical_commands;
+        const bool is_notification_control =
+            session_command_is_notification_control(&command);
+        QueueHandle_t target_queue = is_notification_control
+                                         ? s_session_notification_commands
+                                         : is_low_priority_progress
+                                               ? s_session_commands
+                                               : s_session_critical_commands;
         const nuwax_session_command_envelope_t envelope = {
             .ws_connection_epoch = ws_connection_epoch,
             .command = command,
@@ -11770,7 +14335,8 @@ static __attribute__((noinline)) void on_ws_text_non_ota(
                 }
             } else {
                 ESP_LOGE(TAG,
-                         "critical session queue full event=%d command=%s; closing bound epoch so transaction can be retried",
+                         "%s session queue full event=%d command=%s; closing bound epoch so transaction can be retried",
+                         is_notification_control ? "notification" : "critical",
                          (int)command.event,
                          command.has_command ? command.command : "-");
                 (void)nuwax_ws_request_close_if_epoch(ws,
@@ -11849,6 +14415,7 @@ static nuwax_notification_rx_state_t wait_notification_rx_barrier(
 }
 
 static void on_ws_binary(const uint8_t *payload, int len, void *user_ctx) {
+    if (product_music_blocks_audio()) return;
     nuwax_ws_client_t *ws = (nuwax_ws_client_t *)user_ctx;
     const uint32_t ws_connection_epoch = nuwax_ws_connection_epoch(ws);
     if (!payload || len <= 0) {
@@ -12972,6 +15539,7 @@ static void request_agent_interaction(nuwax_ws_client_t *ws,
                  terminal_required ? 1 : 0);
         return;
     }
+    note_valid_conversation_activity();
     if (is_shake) {
         if (source != NUWAX_HEAD_TOUCH_AGENT_SOURCE_LISTENING) {
             nuwax_state_bridge_trigger_shake();
@@ -13085,43 +15653,129 @@ static void end_wifi_connect_operation(void) {
     }
 }
 
+/* Single-slot mailbox: main publishes requests and consumes results; the
+ * existing Wi-Fi worker alone executes recovery. Release/acquire state changes
+ * protect the payload. A provisioning/user-connect cancellation invalidates
+ * results without freeing storage still owned by the worker. */
+enum { WIFI_RECOVERY_IDLE, WIFI_RECOVERY_PENDING, WIFI_RECOVERY_RUNNING,
+       WIFI_RECOVERY_DONE };
+static atomic_int s_wifi_recovery_state;
+static atomic_uint s_wifi_recovery_epoch;
+static unsigned s_wifi_recovery_request_epoch;
+static esp_err_t s_wifi_recovery_result;
+static int64_t s_wifi_recovery_next_ms; /* main owner only */
+static unsigned s_wifi_recovery_failures; /* main owner only */
+
+static void cancel_background_wifi_recovery(void) {
+    atomic_fetch_add_explicit(&s_wifi_recovery_epoch, 1U, memory_order_acq_rel);
+    int expected = WIFI_RECOVERY_PENDING;
+    (void)atomic_compare_exchange_strong_explicit(
+        &s_wifi_recovery_state, &expected, WIFI_RECOVERY_IDLE,
+        memory_order_acq_rel, memory_order_acquire);
+}
+
+/* Called only by wifi_connect_task, with no explicit request waiting. Never
+ * invoke this from main: the driver operation may wait for authentication/DHCP. */
+static void service_background_wifi_recovery(void) {
+    int expected = WIFI_RECOVERY_PENDING;
+    if (!atomic_compare_exchange_strong_explicit(
+            &s_wifi_recovery_state, &expected, WIFI_RECOVERY_RUNNING,
+            memory_order_acq_rel, memory_order_acquire)) return;
+    esp_err_t err = ESP_ERR_INVALID_STATE;
+    const int64_t started_us = esp_timer_get_time();
+    if (s_wifi_recovery_request_epoch == atomic_load_explicit(
+            &s_wifi_recovery_epoch, memory_order_acquire) &&
+        !nuwax_wifi_provisioning_active() && !nuwax_wifi_simulated_offline() &&
+        begin_wifi_connect_operation("background_recovery", 0)) {
+        err = nuwax_wifi_recover();
+        end_wifi_connect_operation();
+    }
+    ESP_LOGI(TAG, "Wi-Fi background recovery finished elapsed_ms=%lu err=%s",
+             (unsigned long)((esp_timer_get_time() - started_us) / 1000),
+             esp_err_to_name(err));
+    s_wifi_recovery_result = err;
+    atomic_store_explicit(&s_wifi_recovery_state, WIFI_RECOVERY_DONE,
+                          memory_order_release);
+}
+
 static bool recover_wifi_if_needed(void) {
     app_task_watchdog_checkpoint();
-    if (atomic_load_explicit(&s_reprovision_quiesce_requested,
-                             memory_order_acquire)) {
-        return false;
+    const bool fenced = atomic_load_explicit(&s_reprovision_quiesce_requested,
+                                             memory_order_acquire) ||
+                        nuwax_wifi_provisioning_active() ||
+                        nuwax_wifi_simulated_offline();
+    const bool connected = nuwax_wifi_is_connected();
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    if (atomic_load_explicit(&s_wifi_recovery_state, memory_order_acquire) ==
+        WIFI_RECOVERY_DONE) {
+        const esp_err_t err = s_wifi_recovery_result;
+        const bool current = s_wifi_recovery_request_epoch ==
+            atomic_load_explicit(&s_wifi_recovery_epoch, memory_order_acquire);
+        atomic_store_explicit(&s_wifi_recovery_state, WIFI_RECOVERY_IDLE,
+                              memory_order_release);
+        if (current && !fenced && connected) {
+            char ssid[33] = {0}, ip[16] = {0};
+            nuwax_wifi_get_status(ssid, sizeof(ssid), ip, sizeof(ip));
+            nuwax_app_shell_set_wifi_status(ssid, ip);
+            set_wifi_result_from_current_link(ssid, true, ip);
+            queue_wifi_status_report("connected", ssid, ip, true, "recovered");
+            ESP_LOGI(TAG, "Wi-Fi recovered ssid=%s ip=%s", ssid, ip);
+        } else if (current && !fenced && err != ESP_ERR_INVALID_STATE && err != ESP_OK) {
+            if (s_wifi_recovery_failures < 5U) ++s_wifi_recovery_failures;
+            uint32_t delay_ms = 3000U << (s_wifi_recovery_failures - 1U);
+            if (delay_ms > 30000U) delay_ms = 30000U;
+            s_wifi_recovery_next_ms = now_ms + delay_ms;
+            ESP_LOGW(TAG, "Wi-Fi recovery deferred err=%s failures=%u delay_ms=%lu",
+                     esp_err_to_name(err), s_wifi_recovery_failures,
+                     (unsigned long)delay_ms);
+            set_wifi_result_from_current_link("RECOVER", false, esp_err_to_name(err));
+            queue_wifi_status_report("failed", "RECOVER", "", false, esp_err_to_name(err));
+        } else {
+            s_wifi_recovery_next_ms = now_ms + 500;
+        }
     }
-    if (nuwax_wifi_is_connected()) {
-        return true;
+    if (fenced || connected) {
+        /* GOT_IP precedes the worker's release-store of DONE. Do not leave
+         * this owner loop before consuming completion and publishing the
+         * connected UI/report. This is a nonblocking poll, not a radio wait. */
+        const int recovery = atomic_load_explicit(
+            &s_wifi_recovery_state, memory_order_acquire);
+        if (!fenced && connected &&
+            (recovery == WIFI_RECOVERY_RUNNING || recovery == WIFI_RECOVERY_DONE)) {
+            return false;
+        }
+        int expected = WIFI_RECOVERY_PENDING;
+        const bool cancelled_pending = atomic_compare_exchange_strong_explicit(
+            &s_wifi_recovery_state, &expected, WIFI_RECOVERY_IDLE,
+            memory_order_acq_rel, memory_order_acquire);
+        if (!fenced && connected && !cancelled_pending &&
+            (expected == WIFI_RECOVERY_RUNNING || expected == WIFI_RECOVERY_DONE)) {
+            return false; /* Worker won PENDING -> RUNNING after our snapshot. */
+        }
+        if (cancelled_pending && connected && !fenced) {
+            char ssid[33] = {0}, ip[16] = {0};
+            nuwax_wifi_get_status(ssid, sizeof(ssid), ip, sizeof(ip));
+            nuwax_app_shell_set_wifi_status(ssid, ip);
+            queue_wifi_status_report("connected", ssid, ip, true, "link already recovered");
+        }
+        if (connected) {
+            s_wifi_recovery_failures = 0U;
+            s_wifi_recovery_next_ms = 0;
+        }
+        return connected && !fenced;
     }
-    if (!begin_wifi_connect_operation("recovery", 0)) {
-        return false;
-    }
-
-    ESP_LOGW(TAG, "Wi-Fi offline, running recovery");
+    if (now_ms < s_wifi_recovery_next_ms ||
+        atomic_load_explicit(&s_wifi_recovery_state, memory_order_acquire) != WIFI_RECOVERY_IDLE ||
+        atomic_load_explicit(&s_wifi_connect_in_progress, memory_order_acquire) ||
+        !s_wifi_connect_requests || uxQueueMessagesWaiting(s_wifi_connect_requests)) return false;
+    s_wifi_recovery_request_epoch = atomic_load_explicit(
+        &s_wifi_recovery_epoch, memory_order_acquire);
     nuwax_app_shell_set_bridge_status(false);
-    set_wifi_transport_connecting_state("runtime_recovery");
+    set_wifi_transport_connecting_state("background_recovery");
     queue_wifi_status_report("connecting", "RECOVER", "", false, "recovering");
-
-    esp_err_t err = nuwax_wifi_recover();
-    end_wifi_connect_operation();
-    if (err == ESP_OK) {
-        char ssid[33] = {0};
-        char ip[16] = {0};
-        nuwax_wifi_get_status(ssid, sizeof(ssid), ip, sizeof(ip));
-        nuwax_app_shell_set_wifi_status(ssid, ip);
-        set_wifi_result_from_current_link(
-            ssid[0] ? ssid : "RECOVER", true, ip);
-        queue_wifi_status_report("connected", ssid, ip, true, "recovered");
-        ESP_LOGI(TAG, "Wi-Fi recovered ssid=%s ip=%s", ssid, ip);
-        return true;
-    }
-
-    ESP_LOGW(TAG, "Wi-Fi recovery failed: %s", esp_err_to_name(err));
-    set_wifi_result_from_current_link("RECOVER", false,
-                                      esp_err_to_name(err));
-    queue_wifi_status_report("failed", "RECOVER", "", false, esp_err_to_name(err));
-    set_wifi_transport_connecting_state("runtime_recovery_failed");
+    atomic_store_explicit(&s_wifi_recovery_state, WIFI_RECOVERY_PENDING,
+                          memory_order_release);
+    ESP_LOGI(TAG, "Wi-Fi recovery queued; main remains responsive");
     return false;
 }
 
@@ -13223,7 +15877,7 @@ static void shell_dispatch_clear_auto_followup(void *ctx, const char *reason) {
 static bool exclusive_audio_playback_active(void *ctx) {
     (void)ctx;
 #if CONFIG_NUWAX_SPEAKER_ENABLE
-    return nuwax_speaker_playback_has_pending();
+    return product_music_audio_active() || nuwax_speaker_playback_has_pending();
 #else
     return false;
 #endif
@@ -13233,6 +15887,7 @@ static void exclusive_audio_fade_and_cancel_playback(void *ctx,
                                                      uint32_t fade_ms,
                                                      const char *reason) {
     (void)ctx;
+    product_music_cancel(reason ? reason : "exclusive_audio_mode");
     clear_auto_followup(reason ? reason : "exclusive_audio_mode");
 #if CONFIG_NUWAX_SPEAKER_ENABLE
     nuwax_speaker_playback_request_fade_cancel(
@@ -13246,8 +15901,21 @@ static void exclusive_audio_fade_and_cancel_playback(void *ctx,
 static void exclusive_audio_poll_controls(void *ctx, nuwax_ws_client_t *ws) {
     (void)ctx;
     app_task_watchdog_checkpoint();
+    if (atomic_load_explicit(&s_reprovision_quiesce_requested,
+                             memory_order_acquire)) {
+        /* Owner-side transport loss releases the mode MIC and seals its SD
+         * archive through the normal cleanup path. Never start another replay. */
+        (void)nuwax_ws_force_close_if_epoch(ws, nuwax_ws_connection_epoch(ws));
+        return;
+    }
     drain_shell_actions(ws);
+    service_exclusive_audio_handoff(ws);
     (void)service_application_keepalive(ws, "exclusive_audio");
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    service_offline_audio_replay(ws);
+#endif
+    /* All replay starts, including newly sealed rolling files, go through
+     * service_offline_audio_replay and its shared admission/backoff gate. */
 }
 
 #if CONFIG_NUWAX_OTA_ENABLE
@@ -13399,15 +16067,9 @@ static esp_err_t ota_check_boot_health(void *ctx, char *detail,
     }
     nuwax_battery_service_snapshot_t battery = {0};
     esp_err_t battery_err = nuwax_battery_service_get_snapshot(&battery);
-    const nuwax_ota_power_result_t power_result = nuwax_ota_power_evaluate(
-        battery_err == ESP_OK && battery.sample_available,
-        battery.stale,
-        battery.battery_present,
-        battery.power_state == NUWAX_BATTERY_POWER_EXTERNAL,
-        battery.valid,
-        battery.low,
-        battery.percent,
-        CONFIG_NUWAX_OTA_MIN_BATTERY_PERCENT);
+    const nuwax_ota_power_result_t power_result = nuwax_ota_boot_power_evaluate(
+        battery_err == ESP_OK && battery.power_valid,
+        battery.power_stale, battery.hard_low_voltage);
     if (power_result == NUWAX_OTA_POWER_UNKNOWN) {
         snprintf(detail, detail_size,
                  "waiting for valid power sample err=%s available=%d stale=%d present=%d valid=%d",
@@ -13418,8 +16080,8 @@ static esp_err_t ota_check_boot_health(void *ctx, char *detail,
     }
     if (power_result == NUWAX_OTA_POWER_LOW) {
         snprintf(detail, detail_size,
-                 "battery below OTA threshold: %u%%", battery.percent);
-        return ESP_ERR_INVALID_STATE;
+                 "waiting for physical power recovery: %umV", battery.voltage_mv);
+        return ESP_ERR_NOT_FINISHED;
     }
 #endif
 
@@ -13813,12 +16475,39 @@ static bool reprovision_request_pending(void)
 
 static bool reprovision_audio_mode_busy(void)
 {
-    return nuwax_meeting_mode_state(&s_meeting_mode) !=
+    bool busy = nuwax_meeting_mode_state(&s_meeting_mode) !=
                NUWAX_MEETING_STATE_DISABLED ||
            nuwax_meeting_mode_has_pending(&s_meeting_mode) ||
            nuwax_monitoring_mode_state(&s_monitoring_mode) !=
                NUWAX_MONITORING_STATE_DISABLED ||
            nuwax_monitoring_mode_has_pending(&s_monitoring_mode);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    busy = busy || offline_mode_lease_pending() ||
+           nuwax_offline_audio_capture_running() ||
+           nuwax_offline_audio_is_active() ||
+           nuwax_offline_audio_replay_running();
+#endif
+    return busy;
+}
+
+/* Connection-owner only. Keep servicing the controllers until their storage
+ * owners have sealed the last file; parking earlier strands SD modes ACTIVE
+ * while the provisioning worker waits for DISABLED. No cloud ACK is needed. */
+static void service_reprovision_audio_modes(void)
+{
+    nuwax_sd_session_network(false);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    offline_mode_lease_store(false);
+    (void)nuwax_offline_audio_request_stop(true);
+#endif
+    if (nuwax_meeting_mode_state(&s_meeting_mode) != NUWAX_MEETING_STATE_STOPPING)
+        (void)nuwax_meeting_mode_request_ui(&s_meeting_mode, NULL, false);
+    if (nuwax_monitoring_mode_state(&s_monitoring_mode) != NUWAX_MONITORING_STATE_STOPPING)
+        (void)nuwax_monitoring_mode_request_ui(&s_monitoring_mode, NULL, false);
+    nuwax_meeting_mode_notify_ws_disconnected(&s_meeting_mode);
+    nuwax_monitoring_mode_notify_ws_disconnected(&s_monitoring_mode);
+    nuwax_meeting_mode_service_sd(&s_meeting_mode, NULL);
+    nuwax_monitoring_mode_service_sd(&s_monitoring_mode, NULL);
 }
 
 static const char *reprovision_hard_busy_reason(bool include_power_gate)
@@ -13831,9 +16520,6 @@ static const char *reprovision_hard_busy_reason(bool include_power_gate)
     if (nuwax_notification_blocks_conversation(
             &s_notification_transaction)) {
         return "notification playback active";
-    }
-    if (reprovision_audio_mode_busy()) {
-        return "continuous audio active";
     }
     if (include_power_gate) {
         const uint32_t owners =
@@ -13966,13 +16652,65 @@ static esp_err_t wait_for_cloud_owner_to_park_for_reprovision(void)
     return ESP_ERR_TIMEOUT;
 }
 
+#if CONFIG_NUWAX_PROVISION_RUNTIME_REBOOT_ENABLE || CONFIG_NUWAX_OTA_ENABLE
+/* Runtime reprovisioning must cross a clean boot boundary before BLE is
+ * initialized.  The verified rollback record is the durable transaction
+ * boundary; the low-memory marker makes the next boot select the provisioning
+ * allocation profile before audio/UI owners are recreated. */
+static esp_err_t prepare_runtime_reprovision_boot(void)
+{
+    esp_err_t err = nuwax_provision_main_reset_wifi_credentials();
+    if (err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+        /* Diagnostics are best-effort.  Release their persisted snapshot and
+         * retry so the rollback record remains the first-class transaction. */
+        const esp_err_t release_err =
+            nuwax_device_error_report_release_persisted_storage();
+        if (release_err == ESP_OK) {
+            err = nuwax_provision_main_reset_wifi_credentials();
+        } else {
+            ESP_LOGW(TAG,
+                     "runtime reprovision rollback retry unavailable err=%s",
+                     esp_err_to_name(release_err));
+        }
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "runtime reprovision reboot refused: rollback record was not persisted err=%s",
+                 esp_err_to_name(err));
+        return err;
+    }
+
+    /* The durable rollback record itself also forces the provisioning boot
+     * profile.  Keep the explicit marker for interrupted/diagnostic boots;
+     * failure to write this advisory marker must not discard the durable
+     * rollback transaction. */
+    const esp_err_t profile_err =
+        nuwax_provision_main_request_low_memory_boot_profile();
+    if (profile_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "runtime reprovision low-memory boot marker deferred err=%s; durable rollback still selects provisioning",
+                 esp_err_to_name(profile_err));
+    }
+    return ESP_OK;
+}
+#endif
+
+#if CONFIG_NUWAX_OTA_ENABLE
+static esp_err_t ota_prepare_reprovision_boot(void *ctx)
+{
+    (void)ctx;
+    if (!nuwax_provision_main_binding_required()) return ESP_ERR_INVALID_STATE;
+    return prepare_runtime_reprovision_boot();
+}
+#endif
+
 static esp_err_t restore_audio_after_runtime_provisioning(void)
 {
     esp_err_t result = ESP_OK;
     void *aec_contiguous_guard = NULL;
     atomic_store_explicit(&s_conversation_live_aec_post_reprovision_restart,
                           false, memory_order_release);
-#if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
+#if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC && CONFIG_NUWAX_LIVE_AEC_ENABLE
     /* BLE and its security session leave a sufficiently large block, but
      * reconstructing MultiNet fragments that last block before AEC can claim
      * it. Keep one exact AEC-admission block allocated across model restore,
@@ -14033,7 +16771,7 @@ static esp_err_t restore_audio_after_runtime_provisioning(void)
         }
     }
 #endif
-#if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
+#if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC && CONFIG_NUWAX_LIVE_AEC_ENABLE
     if (result == ESP_OK && aec_contiguous_guard) {
         bool published = false;
         portENTER_CRITICAL(&s_conversation_live_aec_pool_lock);
@@ -14082,12 +16820,27 @@ static esp_err_t run_runtime_ble_reprovision(void)
     bool rollback_record_saved = false;
     bool rollback_attempted = false;
     bool rollback_succeeded = false;
+    bool rollback_failed = false;
     bool provision_completed = false;
     bool provision_cancelled = false;
 
     if (result != ESP_OK) {
         goto cleanup;
     }
+#if CONFIG_NUWAX_PROVISION_RUNTIME_REBOOT_ENABLE
+    result = prepare_runtime_reprovision_boot();
+    if (result != ESP_OK) {
+        goto cleanup;
+    }
+    ESP_LOGW(TAG,
+             "runtime BLE reprovision prepared durable rollback; rebooting into clean BLE provisioning profile");
+    /* Let the already-published provisioning visual reach the display before
+     * the clean boot boundary. No LVGL calls or display locks in this worker. */
+    vTaskDelay(pdMS_TO_TICKS(350));
+    esp_restart();
+    vTaskDelay(portMAX_DELAY);
+    return ESP_ERR_INVALID_STATE;
+#endif
     set_reprovision_phase(NUWAX_REPROVISION_PHASE_WIFI_HANDOFF);
 #if CONFIG_NUWAX_UI_USE_LVGL
     result = nuwax_lvgl_port_set_runtime_provisioning_memory(true);
@@ -14120,8 +16873,28 @@ static esp_err_t run_runtime_ble_reprovision(void)
     if (s_wifi_connect_requests) {
         xQueueReset(s_wifi_connect_requests);
     }
+    cancel_background_wifi_recovery();
 
     result = nuwax_provision_main_reset_wifi_credentials();
+    if (result == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+        /* Error reports are diagnostic only.  Releasing their persisted
+         * snapshot gives the Wi-Fi/cloud transaction first claim on the
+         * shared NVS partition, without erasing user credentials. */
+        const esp_err_t release_err =
+            nuwax_device_error_report_release_persisted_storage();
+        if (release_err == ESP_OK) {
+            result = nuwax_provision_main_reset_wifi_credentials();
+        } else {
+            ESP_LOGW(TAG,
+                     "diagnostic NVS release unavailable err=%s; current Wi-Fi will be retained",
+                     esp_err_to_name(release_err));
+        }
+        if (result == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+            /* Keep the error: do not disconnect the verified network or start
+             * BLE when a reset could lose its only rollback snapshot. */
+            nuwax_provision_main_discard_volatile_rollback();
+        }
+    }
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "save Wi-Fi reprovision state failed: %s",
                  esp_err_to_name(result));
@@ -14195,13 +16968,13 @@ static esp_err_t run_runtime_ble_reprovision(void)
         goto cleanup;
     }
     set_state(NUWAX_APP_STATE_WIFI_CONNECTING);
-    nuwax_app_shell_set_provisioning_active(true);
     result = nuwax_provision_main_start("runtime_reprovision");
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "runtime BLE provisioning start failed: %s",
                  esp_err_to_name(result));
         goto cleanup;
     }
+    nuwax_app_shell_set_provisioning_active(true);
     nuwax_app_shell_schedule_provisioning_qr(0U);
     set_reprovision_phase(NUWAX_REPROVISION_PHASE_BLE_WAIT);
     ESP_LOGW(TAG,
@@ -14253,7 +17026,7 @@ cleanup:
         nuwax_provision_main_is_reprovisioning()) {
         rollback_attempted = true;
         const esp_err_t rollback_err =
-            nuwax_provision_main_rollback_wifi_credentials();
+            rollback_wifi_credentials_guarded();
         if (rollback_err == ESP_OK) {
             rollback_succeeded = true;
             if (provision_cancelled) {
@@ -14264,6 +17037,7 @@ cleanup:
         } else {
             ESP_LOGE(TAG, "runtime BLE provisioning rollback failed: %s",
                      esp_err_to_name(rollback_err));
+            rollback_failed = true;
             result = rollback_err;
         }
     }
@@ -14287,6 +17061,31 @@ cleanup:
     }
     if (wifi_mutex_owned) {
         xSemaphoreGive(s_wifi_connect_mutex);
+    }
+    if (rollback_failed) {
+        /* A failed rollback means the active Wi-Fi credentials are not known
+         * to be usable. Release only the serialized Wi-Fi owner; retain the
+         * reprovision quiesce fence and power inhibit so cloud/audio tasks
+         * cannot resume against a half-restored network. The watchdog will
+         * reboot from this isolated state if the owner cannot be repaired. */
+        const nuwax_reprovision_snapshot_t failed_snapshot =
+            reprovision_snapshot();
+        const esp_err_t interlock_err = release_reprovision_wifi_interlock();
+        if (interlock_err != ESP_OK) {
+            ESP_LOGE(TAG,
+                     "BLE reprovision rollback failure retained Wi-Fi isolation release_err=%s",
+                     esp_err_to_name(interlock_err));
+        }
+        set_reprovision_phase(NUWAX_REPROVISION_PHASE_RESTORE);
+        set_state(NUWAX_APP_STATE_ERROR);
+        nuwax_app_shell_set_provisioning_active(false);
+        set_cloud_transport_connecting_state(
+            "ble_reprovision_rollback_failed");
+        set_wifi_result_from_current_link(
+            "BLE", false, "Provisioning failed; Wi-Fi recovery pending");
+        ESP_LOGE(TAG,
+                 "runtime BLE reprovision rollback failed; retaining isolation and waiting for controlled watchdog restart generation=%lu",
+                 (unsigned long)failed_snapshot.generation);
     }
     if (provision_completed) {
         char ssid[33] = {0};
@@ -14327,7 +17126,9 @@ cleanup:
                 : "runtime_provision_ui_memory_retained_psram");
     }
 #endif
-    clear_reprovision_reservation(true);
+    if (!rollback_failed) {
+        clear_reprovision_reservation(true);
+    }
     if (audio_restore_err != ESP_OK) {
         /* Provisioning/rollback is already durable and all transient owners
          * are released. Never resume normal capture with raw uplink and
@@ -14366,8 +17167,18 @@ static bool ota_continuous_audio_busy(void *ctx)
     const bool meeting_busy = nuwax_meeting_mode_blocks_ota(&s_meeting_mode);
     const bool monitoring_busy =
         nuwax_monitoring_mode_blocks_ota(&s_monitoring_mode);
-    const bool busy = reprovision_busy || notification_busy || meeting_busy ||
-                      monitoring_busy;
+    const bool offline_busy =
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+        offline_mode_lease_pending() ||
+        nuwax_offline_audio_capture_running() ||
+        nuwax_offline_audio_is_active() ||
+        nuwax_offline_audio_replay_blocks_ota();
+#else
+        false;
+#endif
+    const bool busy = nuwax_power_ctrl_shutdown_preparing() ||
+                      reprovision_busy || notification_busy || meeting_busy ||
+                      monitoring_busy || offline_busy;
     if (busy) {
         ESP_LOGW(TAG,
                  "OTA admission blocked reprovision=%d notification=%d meeting_state=%d meeting_pending=%d meeting_blocks=%d monitoring_state=%d monitoring_pending=%d monitoring_blocks=%d",
@@ -14380,14 +17191,41 @@ static bool ota_continuous_audio_busy(void *ctx)
                  nuwax_monitoring_mode_has_pending(&s_monitoring_mode) ? 1 : 0,
                  monitoring_busy ? 1 : 0);
     }
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    if (offline_busy) {
+        ESP_LOGW(TAG,
+                 "OTA admission blocked by offline audio owner lease=%d capture=%d archive=%d replay_fault=%d",
+                 offline_mode_lease_pending() ? 1 : 0,
+                 nuwax_offline_audio_capture_running() ? 1 : 0,
+                 nuwax_offline_audio_is_active() ? 1 : 0,
+                 nuwax_offline_audio_replay_blocks_ota() ? 1 : 0);
+    }
+#endif
     return busy;
 }
 
 static esp_err_t ota_prepare_audio(void *ctx)
 {
     (void)ctx;
+    product_music_cancel("ota_update");
     if (ota_continuous_audio_busy(NULL)) {
         return ESP_ERR_INVALID_STATE;
+    }
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    const esp_err_t replay_err = nuwax_offline_audio_replay_prepare_ota(5000U);
+    if (replay_err != ESP_OK) {
+        ESP_LOGW(TAG, "OTA replay transport quiesce failed: %s", esp_err_to_name(replay_err));
+        return replay_err;
+    }
+#endif
+    const nuwax_app_state_t state_before_ota = conversation_state_current();
+    if (state_before_ota == NUWAX_APP_STATE_SLEEPING ||
+        state_before_ota == NUWAX_APP_STATE_WS_CONNECTING) {
+        atomic_store_explicit(&s_ota_wake_restore_pending, true,
+                              memory_order_release);
+        ESP_LOGI(TAG,
+                 "OTA wake recovery armed state=%s",
+                 nuwax_app_state_name(state_before_ota));
     }
     stop_sleep_wake_word_detector("ota_update");
     if (s_prelisten.capture_active) {
@@ -14401,15 +17239,18 @@ static esp_err_t ota_prepare_audio(void *ctx)
     if (s_session_commands) {
         xQueueReset(s_session_commands);
     }
+    if (s_session_notification_commands) {
+        xQueueReset(s_session_notification_commands);
+    }
     if (s_session_critical_commands) {
         xQueueReset(s_session_critical_commands);
     }
-    const uint32_t deadline = monotonic_ms() + 1500U;
+    const uint32_t deadline = monotonic_ms() + 5000U;
     unsigned idle_checks = 0;
     while ((int32_t)(monotonic_ms() - deadline) < 0) {
         bool playback_busy = false;
 #if CONFIG_NUWAX_SPEAKER_ENABLE
-        playback_busy = nuwax_speaker_playback_has_pending();
+        playback_busy = product_music_audio_active() || nuwax_speaker_playback_has_pending();
 #endif
         if (!s_prelisten.capture_active && !playback_busy) {
             if (++idle_checks >= 2U) {
@@ -14433,6 +17274,48 @@ static esp_err_t ota_prepare_audio(void *ctx)
 }
 #endif
 
+/* Runtime BLE reprovisioning may restore the previous Wi-Fi configuration
+ * after the wake model has already been brought back. Keep every rollback
+ * NVS operation behind the same Flash/cache fence used by the detector. */
+static esp_err_t rollback_wifi_credentials_guarded(void)
+{
+    const esp_err_t guard_err =
+        nuwax_wake_word_detector_begin_flash_operation(500U);
+    if (guard_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "Wi-Fi rollback deferred while wake detector is active: %s",
+                 esp_err_to_name(guard_err));
+        return guard_err;
+    }
+    const esp_err_t result =
+        nuwax_provision_main_rollback_wifi_credentials();
+    nuwax_wake_word_detector_end_flash_operation();
+    return result;
+}
+
+static esp_err_t exclusive_audio_acquire_mic(void *ctx, nuwax_mic_input_t *mic,
+                                               nuwax_mic_owner_t owner)
+{
+    (void)ctx;
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    if (nuwax_offline_audio_capture_running()) {
+        if (!offline_mode_lease_pending() || !offline_mode_identity()->resuming)
+            return ESP_ERR_INVALID_STATE;
+        const nuwax_mic_owner_t expected = offline_mode_kind() == NUWAX_OFFLINE_AUDIO_MODE_MEETING
+            ? NUWAX_MIC_OWNER_MEETING_CAPTURE : NUWAX_MIC_OWNER_MONITORING_CAPTURE;
+        if (owner != expected) return ESP_ERR_INVALID_STATE;
+        const esp_err_t err = nuwax_offline_audio_take_capture_input(mic, 1000U);
+        if (err != ESP_OK) return err;
+        offline_mode_identity()->next_capture_sequence = nuwax_offline_audio_next_capture_sequence();
+        s_offline_mode_capture_started = false;
+        ESP_LOGI(TAG, "offline MIC transferred without DMA reset next_sequence=%lu",
+                 (unsigned long)offline_mode_identity()->next_capture_sequence);
+        return ESP_OK;
+    }
+#endif
+    return nuwax_mic_input_init_with_owner(mic, owner);
+}
+
 static bool meeting_can_start(void *ctx) {
     (void)ctx;
     return !reprovision_request_pending() &&
@@ -14448,7 +17331,9 @@ static bool monitoring_can_start(void *ctx) {
 }
 
 static void begin_exclusive_audio_takeover(const char *owner) {
+    product_music_cancel(owner ? owner : "exclusive_audio");
     const char *mode = owner && owner[0] ? owner : "exclusive_audio";
+    s_exclusive_audio_sleep_reconcile_pending = false;
     clear_deferred_shell_listen_actions(mode);
     const nuwax_deferred_sleep_intent_t deferred_sleep =
         s_deferred_sleep_intent;
@@ -14550,10 +17435,32 @@ static void meeting_state_changed(void *ctx,
                                   nuwax_meeting_state_t state,
                                   const char *reason) {
     (void)ctx;
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    if (state == NUWAX_MEETING_STATE_ACTIVE && offline_mode_lease_pending() &&
+        offline_mode_kind() == NUWAX_OFFLINE_AUDIO_MODE_MEETING) {
+        offline_mode_lease_store(false);
+        s_meeting_mode.identity.resuming = false;
+        s_offline_mode_restore_request_epoch = 0U;
+        s_offline_mode_restore_started_ms = 0U;
+        s_offline_mode_restore_next_attempt_ms = 0U;
+        atomic_store_explicit(&s_offline_mode_capture_failed, false, memory_order_release);
+        reset_offline_capture_retry_state();
+        ESP_LOGI(TAG, "offline meeting restore committed after capture started");
+    }
+#endif
     ESP_LOGI(TAG,
-             "meeting UI state=%d reason=%s",
+             "meeting UI state=%d reason=%s offline_resume_pending=%d offline_lease=%d capture=%d archive=%d",
              (int)state,
-             reason ? reason : "-");
+             reason ? reason : "-",
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+             nuwax_meeting_mode_offline_resume_pending(&s_meeting_mode) ? 1 : 0,
+             offline_mode_lease_pending() ? 1 : 0,
+             nuwax_offline_audio_capture_running() ? 1 : 0,
+             nuwax_offline_audio_is_active() ? 1 : 0
+#else
+             0, 0, 0, 0
+#endif
+             );
     if (state == NUWAX_MEETING_STATE_STARTING) {
         begin_exclusive_audio_takeover("meeting");
         clear_awake_session("meeting_start");
@@ -14584,11 +17491,27 @@ static void meeting_state_changed(void *ctx,
     }
     /* shell_task reconciles the controller state into the UI mailbox. Keeping
      * one publisher prevents callback/shell ordering from restoring stale UI. */
+    if (state == NUWAX_MEETING_STATE_ERROR) {
+        /* ERROR may become DISABLED before the single state publisher runs.
+         * Latch the terminal result separately; LVGL consumes this before
+         * draining subsequent touch actions, with no transient ERROR frame. */
+        nuwax_app_shell_notify_action_rejected(NUWAX_APP_SHELL_ACTION_SET_MEETING_MODE);
+    }
     nuwax_ws_client_t *active_ws = active_ws_snapshot(NULL);
-    if (state == NUWAX_MEETING_STATE_DISABLED && active_ws &&
-        nuwax_ws_is_connected(active_ws) &&
-        !nuwax_monitoring_mode_has_pending(&s_monitoring_mode)) {
-        enter_sleeping_conversation_state("meeting_end");
+    if (state == NUWAX_MEETING_STATE_DISABLED) {
+        const bool monitoring_released =
+            nuwax_monitoring_mode_state(&s_monitoring_mode) ==
+                NUWAX_MONITORING_STATE_DISABLED &&
+            !nuwax_monitoring_mode_has_pending(&s_monitoring_mode);
+        if (monitoring_released) {
+            s_exclusive_audio_sleep_reconcile_pending = true;
+            if (active_ws && nuwax_ws_is_connected(active_ws)) {
+                service_exclusive_audio_sleep_reconcile();
+            }
+        } else {
+            /* Keep the latch for the final controller-release callback. */
+            s_exclusive_audio_sleep_reconcile_pending = true;
+        }
     }
 }
 
@@ -14596,6 +17519,19 @@ static void monitoring_state_changed(void *ctx,
                                      nuwax_monitoring_state_t state,
                                      const char *reason) {
     (void)ctx;
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    if (state == NUWAX_MONITORING_STATE_ACTIVE && offline_mode_lease_pending() &&
+        offline_mode_kind() == NUWAX_OFFLINE_AUDIO_MODE_MONITORING) {
+        offline_mode_lease_store(false);
+        s_monitoring_mode.identity.resuming = false;
+        s_offline_mode_restore_request_epoch = 0U;
+        s_offline_mode_restore_started_ms = 0U;
+        s_offline_mode_restore_next_attempt_ms = 0U;
+        atomic_store_explicit(&s_offline_mode_capture_failed, false, memory_order_release);
+        reset_offline_capture_retry_state();
+        ESP_LOGI(TAG, "offline monitoring restore committed after capture started");
+    }
+#endif
     ESP_LOGI(TAG,
              "monitoring state=%d reason=%s",
              (int)state,
@@ -14625,10 +17561,20 @@ static void monitoring_state_changed(void *ctx,
     }
     /* shell_task reconciles the controller state into the UI mailbox. */
     nuwax_ws_client_t *active_ws = active_ws_snapshot(NULL);
-    if (state == NUWAX_MONITORING_STATE_DISABLED && active_ws &&
-        nuwax_ws_is_connected(active_ws) &&
-        !nuwax_meeting_mode_has_pending(&s_meeting_mode)) {
-        enter_sleeping_conversation_state("monitoring_end");
+    if (state == NUWAX_MONITORING_STATE_DISABLED) {
+        const bool meeting_released =
+            nuwax_meeting_mode_state(&s_meeting_mode) ==
+                NUWAX_MEETING_STATE_DISABLED &&
+            !nuwax_meeting_mode_has_pending(&s_meeting_mode);
+        if (meeting_released) {
+            s_exclusive_audio_sleep_reconcile_pending = true;
+            if (active_ws && nuwax_ws_is_connected(active_ws)) {
+                service_exclusive_audio_sleep_reconcile();
+            }
+        } else {
+            /* Keep the latch for the final controller-release callback. */
+            s_exclusive_audio_sleep_reconcile_pending = true;
+        }
     }
 }
 
@@ -14636,6 +17582,21 @@ static void shell_dispatch_set_meeting_mode(void *ctx,
                                              nuwax_ws_client_t *ws,
                                              bool enabled) {
     (void)ctx;
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    if (!enabled &&
+        offline_mode_kind() == NUWAX_OFFLINE_AUDIO_MODE_MEETING &&
+        (offline_mode_lease_pending() ||
+         nuwax_offline_audio_capture_running() ||
+         nuwax_offline_audio_is_active())) {
+        /* A local privacy stop must terminate disconnected SD capture as well;
+         * the asynchronous request avoids blocking the UI/shell task on card
+         * I/O.  Clearing the lease prevents automatic meeting re-admission on
+         * the next cloud epoch. */
+        (void)cancel_offline_mode_lease(
+            NUWAX_OFFLINE_AUDIO_MODE_MEETING, true, "local_meeting_disable");
+        ESP_LOGI(TAG, "offline meeting capture stop requested by local UI");
+    }
+#endif
     if (enabled && nuwax_monitoring_mode_has_pending(&s_monitoring_mode)) {
         ESP_LOGW(TAG,
                  "meeting mode request rejected while monitoring owns audio");
@@ -14659,10 +17620,9 @@ static void shell_dispatch_set_meeting_mode(void *ctx,
         return;
     }
 #endif
-    /* Disabling is a local privacy action and must still stop capture when
-     * the bridge has already gone away.  Enabling still requires a live
-     * bridge because cloud authorization is the start gate. */
-    if (enabled && (!ws || !nuwax_ws_is_connected(ws))) {
+    /* Disabling remains local even without the bridge. A known SD card may
+     * wait for local readiness offline; the cardless path needs the bridge. */
+    if (enabled && (!ws || !nuwax_ws_is_connected(ws)) && !nuwax_sd_session_prefers_local()) {
         ESP_LOGW(TAG, "meeting mode request ignored: WebSocket is not connected");
         if (ui_ready_snapshot()) {
             nuwax_app_shell_set_meeting_state(NUWAX_MEETING_UI_ERROR);
@@ -14732,6 +17692,11 @@ static void shell_dispatch_request_shake_agent(void *ctx,
 
 static void shake_detector_event(void *ctx) {
     (void)ctx;
+    if (product_music_blocks_audio()) {
+        product_music_cancel("shake");
+        nuwax_shake_detector_release_shake();
+        return;
+    }
     if (!nuwax_app_shell_request_action(
             NUWAX_APP_SHELL_ACTION_SHAKE_AGENT, 0)) {
         ESP_LOGW(TAG, "qualified shake dropped because shell action queue is full");
@@ -14739,12 +17704,33 @@ static void shake_detector_event(void *ctx) {
     }
 }
 
-static void shell_dispatch_apply_volume_percent(void *ctx, int volume_percent) {
+static void shell_dispatch_cycle_brightness(void *ctx) {
+    (void)ctx;
+    /* Resolve each admitted click on the owner, not against a potentially
+     * older UI snapshot. Fast consecutive clicks must each advance once. */
+    const uint8_t current = nuwax_display_brightness_percent();
+    const int percent = current == 40U ? 70 : current == 70U ? 100 : 40;
+    const esp_err_t err = local_power_transition_active() ||
+        !nuwax_display_brightness_valid((unsigned)percent) ? ESP_ERR_INVALID_STATE :
+        nuwax_display_brightness_apply((uint8_t)percent);
+    nuwax_app_shell_set_brightness_percent(nuwax_display_brightness_percent());
+    ESP_LOGI(TAG, "brightness request target=%d applied=%u result=%s",
+             percent, (unsigned)nuwax_display_brightness_percent(), esp_err_to_name(err));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "brightness change rejected: %s", esp_err_to_name(err));
+        nuwax_app_shell_notify_action_rejected(NUWAX_APP_SHELL_ACTION_CYCLE_BRIGHTNESS);
+    }
+}
+
+static void shell_dispatch_apply_volume_percent(void *ctx, int volume_percent, uint32_t sequence) {
     (void)ctx;
 #if CONFIG_NUWAX_SPEAKER_ENABLE
-    nuwax_speaker_playback_apply_volume_percent(volume_percent, true);
-    s_current_volume_percent = nuwax_speaker_playback_get_volume_percent();
+    if (!nuwax_speaker_playback_apply_volume_commit_percent(volume_percent, true, sequence)) {
+        return;
+    }
+    s_current_volume_percent = nuwax_speaker_playback_get_confirmed_volume_percent(NULL);
 #else
+    (void)sequence;
     s_current_volume_percent = (uint8_t)(volume_percent < 0
                                              ? 0
                                              : (volume_percent > 100
@@ -14755,7 +17741,9 @@ static void shell_dispatch_apply_volume_percent(void *ctx, int volume_percent) {
              "speaker volume UI set to %u%% but speaker output is disabled",
              (unsigned)s_current_volume_percent);
 #endif
-    schedule_volume_report(s_current_volume_percent, true);
+    /* Report the accepted release, never a newer uncommitted drag preview. */
+    schedule_volume_report((uint8_t)(volume_percent < 0 ? 0 :
+                                    volume_percent > 100 ? 100 : volume_percent), true);
 }
 
 static void shell_dispatch_select_wifi(void *ctx, int index) {
@@ -14804,6 +17792,8 @@ static void flash_ops_task(void *arg) {
                          busy_reason);
                 set_wifi_result_from_current_link(
                     "", false, "Provisioning blocked: system busy");
+                nuwax_app_shell_set_provisioning_active(false);
+                set_cloud_transport_connecting_state("ble_reprovision_busy");
                 clear_reprovision_reservation(true);
                 nuwax_app_shell_notify_action_rejected(
                     NUWAX_APP_SHELL_ACTION_REPROVISION_WIFI);
@@ -14817,16 +17807,25 @@ static void flash_ops_task(void *arg) {
                 set_reprovision_phase(NUWAX_REPROVISION_PHASE_CLEANUP);
                 set_wifi_result_from_current_link(
                     "", false, "Provisioning wait timeout");
+                nuwax_app_shell_set_provisioning_active(false);
+                set_cloud_transport_connecting_state(
+                    "ble_reprovision_ready_timeout");
                 clear_reprovision_reservation(true);
                 nuwax_app_shell_notify_action_rejected(
                     NUWAX_APP_SHELL_ACTION_REPROVISION_WIFI);
                 continue;
             }
 
+            product_music_cancel("ble_reprovision");
             set_reprovision_phase(NUWAX_REPROVISION_PHASE_AUDIO_QUIESCE);
             ESP_LOGW(TAG,
                      "BLE reprovision audio quiesce started timeout_ms=%u",
                      (unsigned)NUWAX_REPROVISION_AUDIO_QUIESCE_TIMEOUT_MS);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+            /* The resume lease is revoked by the connection owner before it
+             * parks. Stop admission now, but let the writer drain and seal. */
+            (void)nuwax_offline_audio_request_stop(true);
+#endif
 #if CONFIG_NUWAX_SPEAKER_ENABLE
             nuwax_speaker_playback_request_fade_cancel(
                 "ble_reprovision", NUWAX_REPROVISION_AUDIO_FADE_MS);
@@ -14844,6 +17843,7 @@ static void flash_ops_task(void *arg) {
             bool capture_runtime_active = false;
             bool playback_busy = false;
             bool wake_detector_running = false;
+            bool cloud_owner_parked = false;
             while ((int32_t)(monotonic_ms() - deadline) < 0) {
                 capture_starting = atomic_load_explicit(
                     &s_conversation_capture_starting, memory_order_acquire);
@@ -14851,7 +17851,7 @@ static void flash_ops_task(void *arg) {
                     &s_conversation_capture_runtime_active,
                     memory_order_acquire);
 #if CONFIG_NUWAX_SPEAKER_ENABLE
-                playback_busy = nuwax_speaker_playback_has_pending();
+                playback_busy = product_music_audio_active() || nuwax_speaker_playback_has_pending();
                 if (!playback_busy && !speaker_output_released) {
                     nuwax_speaker_playback_release_idle_output(
                         "ble_reprovision");
@@ -14867,8 +17867,14 @@ static void flash_ops_task(void *arg) {
 #else
                 wake_detector_running = false;
 #endif
+                /* Controller state belongs to the connection owner. Its
+                 * release/acquire acknowledgement proves that mode state,
+                 * writer and replay have drained without cross-task reads. */
+                cloud_owner_parked = atomic_load_explicit(
+                    &s_cloud_owner_parked, memory_order_acquire);
                 if (!capture_starting && !capture_runtime_active &&
-                    !playback_busy && !wake_detector_running) {
+                    !playback_busy && !wake_detector_running &&
+                    cloud_owner_parked) {
                     if (++idle_checks >= NUWAX_REPROVISION_AUDIO_IDLE_CHECKS) {
                         break;
                     }
@@ -14880,11 +17886,12 @@ static void flash_ops_task(void *arg) {
             }
             if (idle_checks < NUWAX_REPROVISION_AUDIO_IDLE_CHECKS) {
                 ESP_LOGE(TAG,
-                         "BLE reprovision audio quiesce timed out capture_starting=%d capture_runtime=%d playback=%d wake_detector=%d",
+                         "BLE reprovision audio quiesce timed out capture_starting=%d capture_runtime=%d playback=%d wake_detector=%d cloud_parked=%d",
                          capture_starting ? 1 : 0,
                          capture_runtime_active ? 1 : 0,
                          playback_busy ? 1 : 0,
-                         wake_detector_running ? 1 : 0);
+                         wake_detector_running ? 1 : 0,
+                         cloud_owner_parked ? 1 : 0);
                 set_reprovision_phase(NUWAX_REPROVISION_PHASE_CLEANUP);
                 clear_reprovision_reservation(true);
 #if CONFIG_NUWAX_WAKE_WORD_ENABLE
@@ -14893,6 +17900,9 @@ static void flash_ops_task(void *arg) {
 #endif
                 set_wifi_result_from_current_link(
                     "", false, "Provisioning audio stop timeout");
+                nuwax_app_shell_set_provisioning_active(false);
+                set_cloud_transport_connecting_state(
+                    "ble_reprovision_audio_quiesce_timeout");
                 nuwax_app_shell_notify_action_rejected(
                     NUWAX_APP_SHELL_ACTION_REPROVISION_WIFI);
                 continue;
@@ -14907,7 +17917,7 @@ static void flash_ops_task(void *arg) {
 #endif
             ESP_LOGW(TAG, "BLE reprovision audio paths are idle");
             ESP_LOGW(TAG,
-                     "BLE reprovision worker starting in-process provisioning");
+                     "BLE reprovision worker preparing provisioning entry");
             const esp_err_t reprovision_err = run_runtime_ble_reprovision();
             ESP_LOGI(TAG, "in-process BLE reprovision finished result=%s",
                      esp_err_to_name(reprovision_err));
@@ -14941,6 +17951,15 @@ static bool queue_ble_reprovision_request(const char *source) {
                  (unsigned long)(monotonic_ms() -
                                  active.transaction_started_ms));
         nuwax_app_shell_set_wifi_connecting("BLE PROVISIONING");
+        /* The worker may still be waiting for audio quiescence. Publish the
+         * provisioning owner immediately so a manual tap or a cloud-triggered
+         * rebind cannot leave the old listening face on screen. */
+        set_state(NUWAX_APP_STATE_WIFI_CONNECTING);
+        if (nuwax_provision_main_is_active()) {
+            nuwax_app_shell_set_provisioning_active(true);
+        } else {
+            nuwax_app_shell_set_provisioning_starting();
+        }
         return true;
     }
 
@@ -14950,6 +17969,8 @@ static bool queue_ble_reprovision_request(const char *source) {
                  source ? source : "unknown",
                  nuwax_provision_main_service_name());
         nuwax_app_shell_set_wifi_connecting("BLE PROVISIONING");
+        set_state(NUWAX_APP_STATE_WIFI_CONNECTING);
+        nuwax_app_shell_set_provisioning_active(true);
         return true;
     }
 
@@ -15004,6 +18025,7 @@ static bool queue_ble_reprovision_request(const char *source) {
      * was already in flight. This closes the request-to-owner handoff window
      * without blocking the UI/control callback on the Wi-Fi mutex. */
     nuwax_wifi_request_provisioning_handoff();
+    cancel_background_wifi_recovery();
 
     busy_reason = reprovision_hard_busy_reason(false);
     if (busy_reason) {
@@ -15021,6 +18043,8 @@ static bool queue_ble_reprovision_request(const char *source) {
              (unsigned long)active.generation,
              (unsigned long)nuwax_power_ctrl_shutdown_inhibit_owners());
     nuwax_app_shell_set_wifi_connecting("BLE PROVISIONING");
+    set_state(NUWAX_APP_STATE_WIFI_CONNECTING);
+    nuwax_app_shell_set_provisioning_starting();
     if (xTaskNotify(s_flash_ops_task,
                     NUWAX_FLASH_OP_REPROVISION,
                     eSetBits) != pdPASS) {
@@ -15029,6 +18053,9 @@ static bool queue_ble_reprovision_request(const char *source) {
         clear_reprovision_reservation(true);
         set_wifi_result_from_current_link(
             "", false, "Provisioning worker unavailable");
+        nuwax_app_shell_set_provisioning_active(false);
+        set_cloud_transport_connecting_state(
+            "ble_reprovision_worker_unavailable");
         return false;
     }
     return true;
@@ -15038,17 +18065,35 @@ static bool service_cloud_binding_reprovision(void)
 {
     static uint32_t next_attempt_ms;
     const uint32_t rejected_epoch = cloud_provision_required_epoch();
-    if (rejected_epoch == 0U) {
+    if (!nuwax_provision_main_binding_required()) {
+        /* A manual handoff can win the race with an RX rejection. Its old
+         * notice must not launch a second rebind after new credentials commit
+         * on the optional in-process path. The binding latch is authoritative. */
+        if (rejected_epoch != 0U) (void)consume_cloud_provision_required(rejected_epoch);
+        s_cloud_http_rebind_pending = false;
         next_attempt_ms = 0U;
         return false;
     }
-
+    /* An admitted transaction must reach the owner-side drain/park branch.
+     * The durable rejection remains latched until a replacement pair commits. */
+    if (atomic_load_explicit(&s_reprovision_quiesce_requested,
+                             memory_order_acquire)) return false;
     const uint32_t now_ms = monotonic_ms();
     if (next_attempt_ms != 0U && !elapsed_ms(now_ms, next_attempt_ms)) {
         return true;
     }
+#if CONFIG_NUWAX_OTA_ENABLE
+    /* A pending OTA needs cloud confirmation, while rebind needs a clean boot.
+     * Let the OTA controller persist the existing rebind record and perform
+     * one ordered rollback; bypass neither flashing nor image validation. */
+    if (nuwax_ota_device_request_binding_recovery()) {
+        next_attempt_ms = now_ms + 1000U;
+        return true;
+    }
+#endif
     if (queue_ble_reprovision_request("cloud_device_not_bound")) {
-        if (!consume_cloud_provision_required(rejected_epoch)) {
+        s_cloud_http_rebind_pending = false;
+        if (rejected_epoch != 0U && !consume_cloud_provision_required(rejected_epoch)) {
             ESP_LOGW(TAG,
                      "cloud binding reprovision queued but rejection epoch changed expected=%lu pending=%lu",
                      (unsigned long)rejected_epoch,
@@ -15058,7 +18103,10 @@ static bool service_cloud_binding_reprovision(void)
                      "cloud binding reprovision handed to existing BLE coordinator rejected_epoch=%lu",
                      (unsigned long)rejected_epoch);
         }
-        next_attempt_ms = 0U;
+        /* If asynchronous preparation fails, retain the rejection and retry
+         * without a tight stop/restart loop. An admitted owner bypasses this
+         * timer above so it can drain and park immediately. */
+        next_attempt_ms = now_ms + 1000U;
         return true;
     }
 
@@ -15120,14 +18168,26 @@ static const nuwax_shell_action_dispatch_callbacks_t s_shell_action_dispatch_cal
     .request_cancel_turn = shell_dispatch_request_cancel_turn,
     .request_head_touch_agent = shell_dispatch_request_head_touch_agent,
     .request_shake_agent = shell_dispatch_request_shake_agent,
-    .apply_volume_percent = shell_dispatch_apply_volume_percent,
+    .apply_volume_commit_percent = shell_dispatch_apply_volume_percent,
+    .cycle_brightness = shell_dispatch_cycle_brightness,
     .set_meeting_mode = shell_dispatch_set_meeting_mode,
+    .set_simulated_offline = shell_dispatch_set_simulated_offline,
     .select_wifi = shell_dispatch_select_wifi,
     .connect_saved_wifi = shell_dispatch_connect_saved_wifi,
     .set_reprovisioning = shell_dispatch_set_reprovisioning,
 };
 
 static void handle_shell_action(nuwax_ws_client_t *ws, const nuwax_app_shell_result_t *action) {
+    if (action && product_music_blocks_audio() &&
+        (action->action == NUWAX_APP_SHELL_ACTION_HEAD_TOUCH_AGENT ||
+         action->action == NUWAX_APP_SHELL_ACTION_SHAKE_AGENT ||
+         action->action == NUWAX_APP_SHELL_ACTION_CANCEL ||
+         action->action == NUWAX_APP_SHELL_ACTION_START_LISTEN)) {
+        product_music_cancel(action->action == NUWAX_APP_SHELL_ACTION_SHAKE_AGENT ? "shake" : "touch");
+        if (action->action == NUWAX_APP_SHELL_ACTION_SHAKE_AGENT) nuwax_shake_detector_release_shake();
+        if (action->action == NUWAX_APP_SHELL_ACTION_HEAD_TOUCH_AGENT) nuwax_shake_detector_release_head_touch();
+        return;
+    }
     nuwax_shell_action_dispatch(ws, action, &s_shell_action_dispatch_callbacks);
     service_pending_volume_report(ws);
 }
@@ -15136,9 +18196,11 @@ static void wifi_connect_task(void *arg) {
     (void)arg;
     while (true) {
         wifi_connect_request_t request = {0};
-        if (xQueueReceive(s_wifi_connect_requests, &request, portMAX_DELAY) != pdTRUE) {
+        if (xQueueReceive(s_wifi_connect_requests, &request, pdMS_TO_TICKS(100)) != pdTRUE) {
+            service_background_wifi_recovery();
             continue;
         }
+        cancel_background_wifi_recovery();
         nuwax_app_shell_set_wifi_connecting(request.ssid);
         queue_wifi_status_report_for_request(request.request_id,
                                              "connecting",
@@ -16222,6 +19284,28 @@ static void service_head_touch_agent_intent(nuwax_ws_client_t *ws) {
         return;
     }
 
+    /* Check the audio identity through the final drain/commit stages too:
+     * a new capture can be scheduled between any two owner-loop iterations. */
+    if (s_head_touch_agent_intent.asr_deferred &&
+        !nuwax_listen_resume_state_event_matches(
+            &s_listen_resume, awake_generation,
+            s_head_touch_agent_intent.audio_session_id)) {
+        clear_head_touch_agent_intent("deferred_asr_session_changed");
+        return;
+    }
+    if (nuwax_head_touch_agent_intent_asr_expired(
+            &s_head_touch_agent_intent, monotonic_ms())) {
+        const bool resume_no_speech = s_head_touch_agent_intent.asr_no_speech &&
+            !atomic_load_explicit(&s_conversation_capture_runtime_active,
+                                  memory_order_acquire) &&
+            !s_prelisten.capture_active && !s_turn_guard.active;
+        clear_head_touch_agent_intent("deferred_asr_timeout");
+        if (resume_no_speech) {
+            (void)resume_prelisten_after_no_speech();
+        }
+        return;
+    }
+
     if (s_head_touch_agent_intent.state ==
         NUWAX_HEAD_TOUCH_AGENT_STATE_ARBITRATING) {
         if (s_head_touch_agent_intent.source ==
@@ -16230,6 +19314,16 @@ static void service_head_touch_agent_intent(nuwax_ws_client_t *ws) {
                 clear_head_touch_agent_intent(
                     "post_end_user_turn_won");
                 return;
+            }
+            if (s_head_touch_agent_intent.asr_deferred) {
+                /* A local VAD decision is not proof of speech. Wait for this
+                 * utterance's explicit no-speech result and actual teardown;
+                 * an ASR timeout must never manufacture a touch request. */
+                if (!s_head_touch_agent_intent.asr_no_speech ||
+                    !s_head_touch_agent_intent.capture_released ||
+                    !s_head_touch_agent_intent.terminal_released) {
+                    return;
+                }
             }
             const bool matching_asr_wait =
                 nuwax_listen_resume_state_is_waiting_post_end_asr(
@@ -16524,6 +19618,15 @@ static esp_err_t send_wake_word_greeting(nuwax_ws_client_t *ws, const char *wake
         wake_greeting_metrics_cancel("wake_greeting_epoch_lost");
         return ESP_ERR_INVALID_STATE;
     }
+    /* Keep the current face until the owned greeting actually starts playing.
+     * Playback metadata alone does not mean audio is available. The existing
+     * generation-checked first-PCM handler publishes LISTENING; playback
+     * completion remains the only successful-greeting capture handoff. */
+    ESP_LOGI(TAG,
+             "wake feedback deferred revision=wake-pcm-v3 request=%s wake_to_request_ms=%ld capture_started=0 trigger=first_pcm",
+             request_id,
+             (long)metrics_delta_ms(s_wake_greeting_metrics.wake_detected_ms,
+                                   monotonic_ms()));
     esp_err_t err = nuwax_session_send_text_request_with_timeout_if_epoch(
         ws,
         request_id,
@@ -16554,6 +19657,13 @@ static esp_err_t wait_for_mic_start_action(nuwax_ws_client_t *ws) {
 #endif
     while (true) {
         app_task_watchdog_checkpoint();
+        service_power_key_events(ws);
+        /* Cancellation is serviced before connection/state exits so the
+         * isolated HTTP worker cannot outlive a product preemption edge. */
+        (void)service_music_url_test(false);
+        if (s_power_shutdown_requested) {
+            return ESP_ERR_INVALID_STATE;
+        }
         if (atomic_load_explicit(&s_reprovision_quiesce_requested,
                                  memory_order_acquire)) {
             ESP_LOGI(TAG,
@@ -16572,6 +19682,24 @@ static esp_err_t wait_for_mic_start_action(nuwax_ws_client_t *ws) {
             return ESP_OK;
         }
         drain_session_commands(ws);
+        /* A close ACK may release the last mode owner while this blocking
+         * wait prevents the outer loop from completing its pending cleanup.
+         * Keep the same one-shot owner guards; do not strand ERROR here. */
+        service_exclusive_audio_sleep_reconcile();
+        /* OTA commands are consumed inside this blocking wake wait. Service
+         * the non-reboot recovery marker here as well as in the outer owner
+         * loop; otherwise the outer loop cannot run until a wake or another
+         * lifecycle event breaks this wait. */
+        service_ota_wake_detector_recovery();
+#if CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+        /* The control-center test switch must be serviced while the normal
+         * conversation owner is waiting for a wake word as well as during an
+         * exclusive meeting/monitoring run. */
+        drain_shell_actions(ws);
+        if (nuwax_wifi_simulated_offline()) {
+            return ESP_ERR_INVALID_STATE;
+        }
+#endif
         /* PLAYBACK_DONE is delivered through drain_session_commands() and can
          * start post-playback capture synchronously. Recheck before entering
          * the generic owner wait; otherwise every successful handoff pays an
@@ -16579,6 +19707,29 @@ static esp_err_t wait_for_mic_start_action(nuwax_ws_client_t *ws) {
          * armed. */
         if (s_prelisten.capture_active) {
             return ESP_OK;
+        }
+        /* A committed sleep state still owns the wake-word detector, but it
+         * does not need to tear down and recreate the normal audio source on
+         * every poll. Keep this wait loop alive so it can consume a wake word
+         * or a notification command while refusing normal MIC ownership.
+         * Pending/quiescing sleep, notification takeover, reprovision, and
+         * power shutdown remain hard preemption paths below. */
+        if (product_music_blocks_audio()) {
+            drain_shell_actions(ws);
+            (void)service_application_keepalive(ws, "music_wait");
+            conversation_owner_wait_ms(20U);
+            continue;
+        }
+        const bool sleeping_idle_wait =
+            conversation_state_current() == NUWAX_APP_STATE_SLEEPING &&
+            !s_sleep_transaction.active &&
+            !s_sleep_request_pending &&
+            !s_deferred_sleep_intent.active &&
+            !nuwax_notification_blocks_conversation(
+                &s_notification_transaction);
+        if (sleep_lifecycle_blocks_new_capture() &&
+            !sleeping_idle_wait) {
+            return ESP_ERR_INVALID_STATE;
         }
         if (nuwax_sleep_transaction_requires_local_sleep_reconcile(
                 &s_sleep_transaction,
@@ -16589,7 +19740,10 @@ static esp_err_t wait_for_mic_start_action(nuwax_ws_client_t *ws) {
         }
         service_wake_interrupt_cancel(ws);
         maybe_enter_idle_sleep();
-        ensure_sleep_wake_word_detector();
+        const bool music_url_test_active = service_music_url_test(true);
+        if (!music_url_test_active) {
+            ensure_sleep_wake_word_detector();
+        }
         int64_t now_ms = now_ms_i64();
         esp_err_t activity_err =
             service_idle_wait_application_keepalive(ws);
@@ -16661,9 +19815,8 @@ static esp_err_t wait_for_mic_start_action(nuwax_ws_client_t *ws) {
                 stop_sleep_wake_word_detector("wake_word_greeting");
                 clear_auto_followup("wake_word_greeting");
                 clear_last_listen_resume();
-                /* Keep the sleeping face while the fixed wake reply is only
-                 * metadata. The first physical PCM write owns the transition
-                 * to LISTENING + listening. */
+                /* First PCM owns the greeting visual; owned playback completion
+                 * controls microphone capture. */
                 set_conversation_status_guarded(
                     "VOICE", "WAKE_REPLY", NUWAX_WAKE_WORD_GREETING_TEXT, false);
                 esp_err_t greet_err = send_wake_word_greeting(ws, wake_event.wake_word);
@@ -16754,40 +19907,67 @@ static esp_err_t wait_for_mic_start_action(nuwax_ws_client_t *ws) {
 
 static bool poll_mic_stop_action(nuwax_ws_client_t *ws) {
 #if CONFIG_NUWAX_VOICE_MIC_TOUCH_TRIGGER
+    service_power_key_events(ws);
     if (!s_shell_actions) {
-        return false;
+        return sleep_lifecycle_blocks_new_capture() ||
+               s_power_shutdown_requested;
     }
-    bool should_stop = false;
+    bool should_stop = sleep_lifecycle_blocks_new_capture() ||
+                       s_power_shutdown_requested;
     nuwax_app_shell_result_t action = {0};
     bool have_action = take_deferred_shell_listen_action(&action);
-    while (have_action ||
-           xQueueReceive(s_shell_actions, &action, 0) == pdTRUE) {
+    const int64_t drain_started_us = esp_timer_get_time();
+    uint32_t handled = 0U;
+    while (handled < NUWAX_SHELL_ACTION_DRAIN_MAX &&
+           (have_action ||
+           xQueueReceive(s_shell_actions, &action, 0) == pdTRUE)) {
         have_action = false;
+        app_task_watchdog_checkpoint();
         if (action.action == NUWAX_APP_SHELL_ACTION_STOP_LISTEN) {
             if (s_prelisten.mic_release_stops_capture) {
                 should_stop = true;
             } else {
                 ESP_LOGI(TAG, "mic release ignored in continuous listen mode");
             }
+            handled++;
             continue;
         }
         if (action.action == NUWAX_APP_SHELL_ACTION_START_LISTEN) {
+            handled++;
             continue;
         }
         handle_shell_action(ws, &action);
+        handled++;
+        app_task_watchdog_checkpoint();
+        if (esp_timer_get_time() - drain_started_us >=
+            NUWAX_SHELL_ACTION_DRAIN_BUDGET_US) {
+            break;
+        }
     }
     return should_stop;
 #else
+    service_power_key_events(ws);
     if (s_shell_actions) {
         nuwax_app_shell_result_t action = {0};
-        while (xQueueReceive(s_shell_actions, &action, 0) == pdTRUE) {
+        const int64_t drain_started_us = esp_timer_get_time();
+        uint32_t handled = 0U;
+        while (handled < NUWAX_SHELL_ACTION_DRAIN_MAX &&
+               xQueueReceive(s_shell_actions, &action, 0) == pdTRUE) {
+            app_task_watchdog_checkpoint();
             if (action.action == NUWAX_APP_SHELL_ACTION_SHAKE_AGENT ||
                 action.action == NUWAX_APP_SHELL_ACTION_HEAD_TOUCH_AGENT) {
                 handle_shell_action(ws, &action);
             }
+            handled++;
+            app_task_watchdog_checkpoint();
+            if (esp_timer_get_time() - drain_started_us >=
+                NUWAX_SHELL_ACTION_DRAIN_BUDGET_US) {
+                break;
+            }
         }
     }
-    return false;
+    return sleep_lifecycle_blocks_new_capture() ||
+           s_power_shutdown_requested;
 #endif
 }
 
@@ -16845,7 +20025,12 @@ static esp_err_t prepare_mic_cloud_upload(
         return ESP_ERR_NOT_FINISHED;
     }
     if (nuwax_audio_terminal_recovery_pending()) {
-        (void)service_audio_terminal_recovery(ws);
+        /* Recovery may send END/stop with a bounded network deadline. Never
+         * execute it inside the live DSP consumer; leaving this round lets
+         * the outer owner service recovery after capture releases I2S. */
+        if (!conversation_capture_busy_for_sleep()) {
+            (void)service_audio_terminal_recovery(ws);
+        }
         if (nuwax_audio_terminal_recovery_pending()) {
             ESP_LOGW(TAG,
                      "listen start deferred until prior terminal transaction closes mode=%s session=%s",
@@ -16961,24 +20146,19 @@ static esp_err_t start_mic_cloud_upload(nuwax_ws_client_t *ws,
     if (!listen_start_committed) {
         const uint32_t expected_epoch = active_ws_epoch_snapshot();
         if (expected_epoch == 0U ||
-            nuwax_ws_connection_epoch(ws) != expected_epoch) {
+            nuwax_ws_connection_epoch(ws) != expected_epoch ||
+            send_ctx->ws_connection_epoch != expected_epoch) {
             result = ESP_ERR_INVALID_STATE;
         } else {
-            const int64_t deadline_us =
-                esp_timer_get_time() +
-                (int64_t)NUWAX_INTERACTIVE_CONTROL_SEND_TIMEOUT_MS * 1000LL;
-            result = nuwax_session_send_listen_with_audio_session_until_if_epoch(
-                ws,
-                "start",
-                mode ? mode : "i2s-mic-stream",
-                audio_session_id,
-                request_id,
-                deadline_us,
-                expected_epoch);
+            /* Capture keeps consuming 20ms frames while the sender commits
+             * the bounded control frame. Its existing queue retains the
+             * onset and enforces listen/start before the first PCM packet. */
+            result = nuwax_audio_uplink_schedule_listen_start(
+                send_ctx, NUWAX_INTERACTIVE_CONTROL_SEND_TIMEOUT_MS);
         }
         if (result != ESP_OK) {
             ESP_LOGE(TAG,
-                     "listen start failed after local uplink prepare: %s; aborting current audio session while retaining WebSocket",
+                     "listen start admission failed after local uplink prepare: %s; aborting current audio session while retaining WebSocket",
                      esp_err_to_name(result));
             const esp_err_t discard_err =
                 nuwax_audio_uplink_discard_uncommitted(send_ctx);
@@ -16990,6 +20170,8 @@ static esp_err_t start_mic_cloud_upload(nuwax_ws_client_t *ws,
             return result;
         }
         if (listen_started) {
+            /* During capture this denotes ownership of the admitted upload.
+             * Cleanup resolves its actual wire commit before END/stop. */
             *listen_started = true;
         }
     }
@@ -18524,7 +21706,7 @@ static esp_err_t rt_capture_start(nuwax_rt_capture_ctx_t *ctx,
         NUWAX_RT_CAPTURE_TASK_PRIORITY,
         (StackType_t *)ctx->task_stack,
         &s_rt_capture_task_tcb,
-        0);
+        NUWAX_RT_CAPTURE_TASK_CORE);
     if (!ctx->task) {
         ESP_LOGE(TAG, "rt capture task static creation failed");
         heap_caps_free(ctx->task_stack);
@@ -18535,13 +21717,15 @@ static esp_err_t rt_capture_start(nuwax_rt_capture_ctx_t *ctx,
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(TAG,
-             "rt capture started depth=%u samples_per_frame=%u buffer_ms=%u software_ref_delay=%lu fir_ref_delay=%lu fir_ref_lag=%u ref_cursor=continuous task_stack=psram static_tcb=1",
+             "rt capture started depth=%u samples_per_frame=%u buffer_ms=%u software_ref_delay=%lu fir_ref_delay=%lu fir_ref_lag=%u ref_cursor=continuous task_stack=psram static_tcb=1 core=%u priority=%u",
              (unsigned)NUWAX_RT_CAPTURE_QUEUE_DEPTH,
              (unsigned)samples_per_frame,
              (unsigned)(NUWAX_RT_CAPTURE_QUEUE_DEPTH * CONFIG_NUWAX_VOICE_FRAME_DURATION_MS),
              (unsigned long)software_ref_delay_samples,
              (unsigned long)ctx->software_fir_ref_delay_samples,
-             (unsigned)NUWAX_HUMAN_RESCUE_FIR_REF_LAG_SAMPLES);
+             (unsigned)NUWAX_HUMAN_RESCUE_FIR_REF_LAG_SAMPLES,
+             (unsigned)NUWAX_RT_CAPTURE_TASK_CORE,
+             (unsigned)NUWAX_RT_CAPTURE_TASK_PRIORITY);
     return ESP_OK;
 }
 
@@ -19554,12 +22738,51 @@ static bool head_touch_agent_consume_capture_frame(
         return false;
     }
 
-    const nuwax_head_touch_agent_frame_action_t action =
-        nuwax_head_touch_agent_intent_observe_frame(
+    if (s_head_touch_agent_intent.asr_deferred) {
+        return false; /* Keep the real utterance recording normally. */
+    }
+    if (user_speech_confirmed && listen_started && upload_started &&
+        nuwax_head_touch_agent_intent_defer_asr(
             &s_head_touch_agent_intent,
-            monotonic_ms(),
-            user_speech_confirmed,
-            user_speech_candidate);
+            barge_audio_session_id && barge_audio_session_id[0]
+                ? barge_audio_session_id : conversation_audio_session_id,
+            monotonic_ms())) {
+        ESP_LOGI(TAG,
+                 "head touch agent deferred for ASR token=%lu session=%s timeout_ms=%u",
+                 (unsigned long)s_head_touch_agent_intent.token,
+                 s_head_touch_agent_intent.audio_session_id,
+                 (unsigned)NUWAX_HEAD_TOUCH_AGENT_ASR_WAIT_MS);
+        return false;
+    }
+
+    const bool shake_listening_bypasses_chat_guard =
+        s_head_touch_agent_intent.interaction ==
+            NUWAX_AGENT_INTERACTION_SHAKE &&
+        s_head_touch_agent_intent.source ==
+            NUWAX_HEAD_TOUCH_AGENT_SOURCE_LISTENING;
+    /* A shake is an explicit physical interrupt.  In the normal LISTENING
+     * source it intentionally does not wait for VAD confirmation or a quiet
+     * window: the next frame ends the current listen transaction so the shake
+     * request can be submitted promptly.  All ownership/epoch checks above
+     * remain active; touch keeps the speech-protection policy below. */
+    const nuwax_head_touch_agent_frame_action_t action =
+        shake_listening_bypasses_chat_guard
+            ? (nuwax_head_touch_agent_intent_begin_quiesce(
+                   &s_head_touch_agent_intent)
+                   ? NUWAX_HEAD_TOUCH_AGENT_FRAME_BEGIN_QUIESCE
+                   : NUWAX_HEAD_TOUCH_AGENT_FRAME_WAIT)
+            : nuwax_head_touch_agent_intent_observe_frame(
+                  &s_head_touch_agent_intent,
+                  monotonic_ms(),
+                  user_speech_confirmed,
+                  user_speech_candidate);
+    if (shake_listening_bypasses_chat_guard) {
+        ESP_LOGI(TAG,
+                 "shake agent bypassing listening speech guard token=%lu confirmed=%d candidate=%d",
+                 (unsigned long)s_head_touch_agent_intent.token,
+                 user_speech_confirmed ? 1 : 0,
+                 user_speech_candidate ? 1 : 0);
+    }
     if (action == NUWAX_HEAD_TOUCH_AGENT_FRAME_USER_WON) {
         ESP_LOGI(TAG,
                  "head touch agent yielded to user speech token=%lu source=%s",
@@ -19611,6 +22834,26 @@ static bool head_touch_agent_consume_capture_frame(
 }
 
 static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
+    typedef struct {
+        nuwax_audio_cleaner_t audio_cleaner;
+        nuwax_live_aec_t live_aec;
+        nuwax_barge_controller_t barge_controller;
+        nuwax_conversation_audio_health_t barge_audio_health;
+        nuwax_rt_capture_ctx_t capture_ctx;
+    } capture_owner_work_t;
+    /* Main-owner-only, just like s_audio_samples; retained across sessions so
+     * repeated listening never fragments the internal heap. Capture workers
+     * are joined during cleanup before the next call can reset this memory. */
+    static capture_owner_work_t *work;
+    if (!work) {
+        work = heap_caps_calloc(1, sizeof(*work),
+                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (work) ESP_LOGI(TAG, "capture owner work allocated heap=psram bytes=%u",
+                          (unsigned)sizeof(*work));
+    }
+    if (!work) return ESP_ERR_NO_MEM;
+    memset(work, 0, sizeof(*work));
+
     const size_t samples_per_frame = nuwax_audio_uplink_samples_per_frame();
     const size_t default_max_record_samples =
         ((size_t)CONFIG_NUWAX_VOICE_SAMPLE_RATE * CONFIG_NUWAX_VOICE_MIC_MAX_RECORD_MS) / 1000;
@@ -19644,6 +22887,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
     bool uplink_finish_succeeded = false;
     bool uplink_end_committed = false;
     bool listen_stop_succeeded = false;
+    bool local_power_uplink_preempted = false;
     esp_err_t uplink_finish_result = ESP_ERR_INVALID_STATE;
     size_t recorded_samples = 0;
     uint32_t recorded_frames = 0;
@@ -19867,11 +23111,6 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
     uint32_t preroll_count = 0;
     acceptance_capture_request_t acceptance_capture = {0};
     nuwax_audio_uplink_t *send_ctx = nuwax_audio_uplink_create();
-    nuwax_audio_cleaner_t audio_cleaner = {0};
-    nuwax_live_aec_t live_aec = {0};
-    nuwax_barge_controller_t barge_controller = {0};
-    nuwax_conversation_audio_health_t barge_audio_health = {0};
-    nuwax_rt_capture_ctx_t capture_ctx = {0};
     nuwax_aec_alignment_context_t *aec_alignment_contexts = NULL;
     size_t aec_alignment_read = 0U;
     size_t aec_alignment_count = 0U;
@@ -19936,15 +23175,15 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             &stop_reason, NUWAX_MIC_CAPTURE_STOP_PROCESSING_ERROR);
         goto cleanup;
     }
-    nuwax_audio_cleaner_init(&audio_cleaner);
-    if (!nuwax_barge_controller_init(&barge_controller, NULL)) {
+    nuwax_audio_cleaner_init(&(work->audio_cleaner));
+    if (!nuwax_barge_controller_init(&(work->barge_controller), NULL)) {
         ESP_LOGE(TAG, "barge-in controller initialization failed");
         result = ESP_ERR_INVALID_STATE;
         mic_capture_set_stop_reason(
             &stop_reason, NUWAX_MIC_CAPTURE_STOP_PROCESSING_ERROR);
         goto cleanup;
     }
-    if (!nuwax_conversation_audio_health_init(&barge_audio_health, NULL)) {
+    if (!nuwax_conversation_audio_health_init(&(work->barge_audio_health), NULL)) {
         ESP_LOGE(TAG, "conversation audio health initialization failed");
         result = ESP_ERR_INVALID_STATE;
         mic_capture_set_stop_reason(
@@ -19972,6 +23211,19 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             mic_capture_set_stop_reason(
                 &stop_reason, NUWAX_MIC_CAPTURE_STOP_EXCLUSIVE_PREEMPT);
             ESP_LOGI(TAG, "normal audio source yielded to exclusive audio mode");
+        } else if (normal_audio_source_notification_preempted(result)) {
+            mic_capture_set_stop_reason(
+                &stop_reason, NUWAX_MIC_CAPTURE_STOP_NOTIFICATION_TAKEOVER);
+            ESP_LOGI(TAG,
+                     "normal audio source yielded to notification transaction");
+        } else if (normal_audio_source_sleep_preempted(result)) {
+            mic_capture_set_stop_reason(
+                &stop_reason, NUWAX_MIC_CAPTURE_STOP_SESSION_COMMAND);
+            ESP_LOGI(TAG,
+                     "normal audio source yielded to sleep lifecycle state=%s sleep_txn=%s",
+                     nuwax_app_state_name(conversation_state_current()),
+                     nuwax_sleep_transaction_state_name(
+                         s_sleep_transaction.state));
         } else {
             mic_capture_set_stop_reason(
                 &stop_reason,
@@ -19999,10 +23251,10 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
         restart_if_post_reprovision_aec_failed("capture_prepare");
     }
     live_aec_pool_acquired =
-        conversation_live_aec_pool_acquire(&live_aec);
+        conversation_live_aec_pool_acquire(&(work->live_aec));
     if (!live_aec_pool_acquired) {
-        nuwax_live_aec_init(&live_aec);
-        live_aec.enabled = false;
+        nuwax_live_aec_init(&(work->live_aec));
+        (work->live_aec).enabled = false;
         ESP_LOGE(TAG,
                  "conversation live AEC pool unavailable status=%s in_use=%d degraded=%d; raw uplink remains available but barge-in is fail-closed",
                  esp_err_to_name(s_conversation_live_aec_pool_status),
@@ -20010,8 +23262,8 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                  atomic_load_explicit(&s_conversation_live_aec_degraded,
                                       memory_order_acquire) ? 1 : 0);
     }
-    live_aec_pool_delay_samples = live_aec.delay_samples;
-    nuwax_live_aec_set_internal_software_ref_enabled(&live_aec, false);
+    live_aec_pool_delay_samples = (work->live_aec).delay_samples;
+    nuwax_live_aec_set_internal_software_ref_enabled(&(work->live_aec), false);
     vTaskPrioritySet(NULL, NUWAX_AUDIO_DSP_TASK_PRIORITY);
     audio_task_priority_raised = true;
     auto_followup_mode = s_prelisten.capture_active;
@@ -20097,7 +23349,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
         acceptance_capture_enabled = true;
         max_record_ms = acceptance_capture.duration_ms;
         if (acceptance_capture.has_delay_samples) {
-            live_aec.delay_samples = acceptance_capture.delay_samples;
+            (work->live_aec).delay_samples = acceptance_capture.delay_samples;
             live_aec_custom_delay_active =
                 live_aec_pool_acquired &&
                 acceptance_capture.delay_samples !=
@@ -20113,7 +23365,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                  acceptance_capture.request_id[0] ? acceptance_capture.request_id : "-",
                  acceptance_capture.audio_session_id[0] ? acceptance_capture.audio_session_id : "-",
                  (unsigned long)acceptance_capture.duration_ms,
-                 (unsigned long)live_aec.delay_samples,
+                 (unsigned long)(work->live_aec).delay_samples,
                  (unsigned)max_record_samples);
     }
     if (max_record_samples != SIZE_MAX) {
@@ -20187,21 +23439,21 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
     }
 #endif
 
-    result = nuwax_live_aec_begin_session(&live_aec, samples_per_frame);
+    result = nuwax_live_aec_begin_session(&(work->live_aec), samples_per_frame);
     if (result != ESP_OK) {
         ESP_LOGE(TAG,
                  "live AEC session reset failed frame_samples=%u err=%s; this round remains raw and barge-in fail-closed",
                  (unsigned)samples_per_frame,
                  esp_err_to_name(result));
         live_aec_runtime_faulted = true;
-        live_aec.enabled = false;
+        (work->live_aec).enabled = false;
         result = ESP_OK;
     }
     ESP_LOGI(TAG,
              "live AEC session resources pooled=%d enabled=%d initialized=%d free_internal=%u largest_internal=%u free_dma=%u largest_dma=%u",
              live_aec_pool_acquired ? 1 : 0,
-             nuwax_live_aec_is_enabled(&live_aec) ? 1 : 0,
-             live_aec.initialized ? 1 : 0,
+             nuwax_live_aec_is_enabled(&(work->live_aec)) ? 1 : 0,
+             (work->live_aec).initialized ? 1 : 0,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
@@ -20318,8 +23570,8 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                  during_playback_mode ? "during_playback_nearend" : "local_vad");
     }
 
-    result = rt_capture_start(&capture_ctx, &mic, samples_per_frame,
-                              live_aec.delay_samples);
+    result = rt_capture_start(&(work->capture_ctx), &mic, samples_per_frame,
+                              (work->live_aec).delay_samples);
     if (result != ESP_OK) {
         mic_capture_set_stop_reason(
             &stop_reason, NUWAX_MIC_CAPTURE_STOP_MIC_ERROR);
@@ -20754,13 +24006,13 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
         nuwax_rt_capture_frame_t *capture_frame = NULL;
         nuwax_aec_alignment_context_t *staged_alignment_context = NULL;
         const bool capture_frame_ready = rt_capture_receive(
-            &capture_ctx,
+            &(work->capture_ctx),
             &capture_frame,
             NUWAX_CONVERSATION_CAPTURE_OWNER_POLL_MS);
         const nuwax_rt_capture_wait_result_t capture_wait_result =
             nuwax_rt_capture_wait_classify(
                 capture_frame_ready,
-                atomic_load_explicit(&capture_ctx.stopped,
+                atomic_load_explicit(&(work->capture_ctx).stopped,
                                      memory_order_acquire));
         if (capture_wait_result ==
             NUWAX_RT_CAPTURE_WAIT_CONTROL_POLL_IDLE) {
@@ -20770,8 +24022,8 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             continue;
         }
         if (capture_wait_result == NUWAX_RT_CAPTURE_WAIT_WORKER_STOPPED) {
-            result = capture_ctx.last_error != ESP_OK
-                         ? capture_ctx.last_error
+            result = (work->capture_ctx).last_error != ESP_OK
+                         ? (work->capture_ctx).last_error
                          : ESP_ERR_INVALID_STATE;
             mic_capture_set_stop_reason(
                 &stop_reason, NUWAX_MIC_CAPTURE_STOP_MIC_ERROR);
@@ -20802,11 +24054,11 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                     (uint64_t)NUWAX_RT_CAPTURE_MAX_DECISION_AGE_MS * 1000ULL &&
                 !preserve_stale_capture_frame) {
                 const uint32_t stale_sequence = capture_frame->seq;
-                rt_capture_release(&capture_ctx, capture_frame);
+                rt_capture_release(&(work->capture_ctx), capture_frame);
                 rt_capture_stale_decision_drops++;
                 if (s_conversation_runtime_metrics_ready) {
                     (void)nuwax_conversation_metrics_count_event(
-                        &s_conversation_runtime_metrics,
+                        s_conversation_runtime_metrics,
                         NUWAX_CONVERSATION_EVENT_STALE_CAPTURE_FRAME,
                         1U);
                 }
@@ -20819,9 +24071,9 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                              (unsigned long long)capture_age_us,
                              (unsigned)NUWAX_RT_CAPTURE_MAX_DECISION_AGE_MS,
                              (unsigned long)rt_capture_stale_decision_drops,
-                             capture_ctx.ready_slots
+                             (work->capture_ctx).ready_slots
                                  ? (unsigned)uxQueueMessagesWaiting(
-                                       capture_ctx.ready_slots)
+                                       (work->capture_ctx).ready_slots)
                                  : 0U);
                 }
                 continue;
@@ -20844,18 +24096,18 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                              (unsigned long)capture_frame->seq,
                              (unsigned long long)capture_age_us,
                              (unsigned long)barge_stale_frames_preserved,
-                             capture_ctx.ready_slots
+                             (work->capture_ctx).ready_slots
                                  ? (unsigned)uxQueueMessagesWaiting(
-                                       capture_ctx.ready_slots)
+                                       (work->capture_ctx).ready_slots)
                                  : 0U);
                 }
             }
             if (s_conversation_runtime_metrics_ready &&
-                capture_ctx.ready_slots) {
+                (work->capture_ctx).ready_slots) {
                 (void)nuwax_conversation_metrics_observe_queue(
-                    &s_conversation_runtime_metrics,
+                    s_conversation_runtime_metrics,
                     NUWAX_CONVERSATION_QUEUE_CAPTURE,
-                    (uint32_t)uxQueueMessagesWaiting(capture_ctx.ready_slots),
+                    (uint32_t)uxQueueMessagesWaiting((work->capture_ctx).ready_slots),
                     NUWAX_RT_CAPTURE_QUEUE_DEPTH);
             }
             err = capture_frame->err;
@@ -20959,7 +24211,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                          "AEC alignment context overflow count=%u seq=%lu",
                          (unsigned)aec_alignment_count,
                          (unsigned long)capture_frame->seq);
-                rt_capture_release(&capture_ctx, capture_frame);
+                rt_capture_release(&(work->capture_ctx), capture_frame);
                 result = ESP_ERR_INVALID_SIZE;
                 mic_capture_set_stop_reason(
                     &stop_reason, NUWAX_MIC_CAPTURE_STOP_PROCESSING_ERROR);
@@ -21002,7 +24254,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             const uint32_t aec_gate_now_ms =
                 capture_frame->read_finished_ms != 0 ? capture_frame->read_finished_ms : monotonic_ms();
             staged_alignment_context->aec_gate_now_ms = aec_gate_now_ms;
-            rt_capture_release(&capture_ctx, capture_frame);
+            rt_capture_release(&(work->capture_ctx), capture_frame);
             if (capture_sequence_seen) {
                 const uint32_t expected_sequence = last_capture_sequence + 1U;
                 if (capture_sequence != expected_sequence) {
@@ -21017,7 +24269,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                     capture_sequence_gap_events++;
                     if (s_conversation_runtime_metrics_ready) {
                         (void)nuwax_conversation_metrics_count_event(
-                            &s_conversation_runtime_metrics,
+                            s_conversation_runtime_metrics,
                             NUWAX_CONVERSATION_EVENT_SEQUENCE_GAP,
                             gap == 0U ? 1U : gap);
                     }
@@ -21271,6 +24523,9 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                      (unsigned long)captured_frames);
         }
         consecutive_timeouts = 0;
+        if (samples_read == samples_per_frame && persistent_conversation_mode) {
+            nuwax_normal_conversation_note_capture_frame(&s_normal_conversation);
+        }
         if (samples_read != samples_per_frame) {
             ESP_LOGW(TAG, "mic short read samples=%u expected=%u",
                      (unsigned)samples_read,
@@ -21339,7 +24594,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             if (!playback_active && aec_alignment_count > 1U) {
                 const size_t dropped_contexts = aec_alignment_count - 1U;
                 const size_t dropped_samples =
-                    nuwax_live_aec_flush_pending(&live_aec);
+                    nuwax_live_aec_flush_pending(&(work->live_aec));
                 aec_alignment_read =
                     (aec_alignment_read + dropped_contexts) %
                     NUWAX_AEC_ALIGNMENT_CONTEXT_CAPACITY;
@@ -21368,7 +24623,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                     frame_reference_provenance,
                     live_aec_reference_provenance)) {
                 if (live_aec_reference_provenance.snapshot) {
-                    nuwax_live_aec_reset_reference_epoch(&live_aec);
+                    nuwax_live_aec_reset_reference_epoch(&(work->live_aec));
                     NUWAX_RT_DIAG_LOGI(
                         TAG,
                         "live AEC reference epoch reset source=%d/%lu -> %d/%lu frame=%lu",
@@ -21417,10 +24672,10 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                            live_aec_fir_ref_delay_revision) {
                     fir_ref_delay_revision_changed = true;
                     const bool fir_ready_before =
-                        live_aec.human_rescue_fir_ready;
-                    const size_t pending_before = live_aec.pending_count;
+                        (work->live_aec).human_rescue_fir_ready;
+                    const size_t pending_before = (work->live_aec).pending_count;
                     if (!software_ref_generation_changed) {
-                        nuwax_live_aec_reset_reference_epoch(&live_aec);
+                        nuwax_live_aec_reset_reference_epoch(&(work->live_aec));
                     }
                     NUWAX_RT_DIAG_LOGI(TAG,
                              "AEC_FIR_DELAY dsp_handoff frame=%lu generation=%lu old=%lu new=%lu revision=%lu->%lu reset=%s fir_ready_before=%d pending=%u main_delay=%d",
@@ -21452,7 +24707,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                     !software_ref_generation_changed &&
                     !fir_ref_delay_revision_changed) {
                     const bool model_preserved =
-                        nuwax_live_aec_reanchor_reference(&live_aec);
+                        nuwax_live_aec_reanchor_reference(&(work->live_aec));
                     NUWAX_RT_DIAG_LOGI(TAG,
                              "live AEC software reference cursor reanchor old=%llu new=%llu frame=%lu model=%s",
                              (unsigned long long)
@@ -21494,13 +24749,13 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                 playback_active && playback_human_seed_seen &&
                 playback_human_seed_hangover_remaining > 0U;
             nuwax_live_aec_set_human_protection(
-                &live_aec,
+                &(work->live_aec),
                 playback_active && aec_input_preserve &&
                     !aec_input_confirmed,
                 playback_active && aec_input_preserve &&
                     !aec_input_confirmed,
                 aec_input_confirmed);
-            nuwax_live_aec_set_nearend_hint(&live_aec,
+            nuwax_live_aec_set_nearend_hint(&(work->live_aec),
                                             aec_input_preserve,
                                             aec_input_confirmed ||
                                                 aec_input_preserve);
@@ -21510,7 +24765,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             if (playback_active) {
                 frame_aec_process_result =
                     nuwax_live_aec_process_with_refs_and_dual_mic(
-                        &live_aec,
+                        &(work->live_aec),
                         s_audio_samples,
                         s_audio_mic2_samples,
                         s_audio_ref_samples,
@@ -21520,7 +24775,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             } else {
                 frame_aec_process_result =
                     nuwax_live_aec_process_with_dual_mic(
-                        &live_aec,
+                        &(work->live_aec),
                         s_audio_samples,
                         s_audio_mic2_samples,
                         samples_read,
@@ -21530,13 +24785,13 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             frame_aec_process_attempted = true;
             frame_aec_process_result = have_aec_ref
                                            ? nuwax_live_aec_process_with_ref(
-                                                 &live_aec,
+                                                 &(work->live_aec),
                                                  s_audio_samples,
                                                  s_audio_ref_samples,
                                                  samples_read,
                                                  playback_active)
                                            : nuwax_live_aec_process(
-                                                 &live_aec,
+                                                 &(work->live_aec),
                                                  s_audio_samples,
                                                  samples_read,
                                                  playback_active);
@@ -21557,7 +24812,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             }
         }
 
-        if (!nuwax_live_aec_output_emitted(&live_aec)) {
+        if (!nuwax_live_aec_output_emitted(&(work->live_aec))) {
             aec_alignment_startup_frames++;
             continue;
         }
@@ -21751,7 +25006,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             barge_probe_playback_generation = 0U;
             barge_probe_candidate_id = 0U;
             barge_probe_elapsed_frames = 0U;
-            nuwax_barge_controller_reset(&barge_controller);
+            nuwax_barge_controller_reset(&(work->barge_controller));
             nuwax_barge_in_nearfield_tracker_reset(
                 &playback_human_nearfield_tracker);
             nuwax_barge_in_nearfield_tracker_reset(
@@ -22152,7 +25407,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             barge_audio_session_id[0] = '\0';
             barge_parent_turn_id[0] = '\0';
             barge_playback_id[0] = '\0';
-            nuwax_barge_controller_reset(&barge_controller);
+            nuwax_barge_controller_reset(&(work->barge_controller));
             nuwax_barge_in_nearfield_tracker_reset(
                 &playback_human_nearfield_tracker);
             nuwax_barge_in_nearfield_tracker_reset(
@@ -22970,13 +26225,13 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
 #if CONFIG_NUWAX_LIVE_AEC_DYNAMIC_FIR_DELAY_ENABLE
         const bool aec_delay_shadow_dynamic_apply_allowed =
             !aec_delay_shadow_human_block &&
-            live_aec.pending_count == 0U &&
-            live_aec.chunk_samples > 0 &&
-            samples_read == (size_t)live_aec.chunk_samples;
+            (work->live_aec).pending_count == 0U &&
+            (work->live_aec).chunk_samples > 0 &&
+            samples_read == (size_t)(work->live_aec).chunk_samples;
 #else
         const bool aec_delay_shadow_dynamic_apply_allowed = false;
 #endif
-        rt_capture_shadow_delay_observe(&capture_ctx,
+        rt_capture_shadow_delay_observe(&(work->capture_ctx),
                                         s_audio_samples,
                                         samples_read,
                                         capture_sequence,
@@ -22997,7 +26252,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
         }
         if (samples_read > 0) {
             if (nuwax_live_aec_copy_human_rescue_frame(
-                    &live_aec,
+                    &(work->live_aec),
                     s_audio_human_rescue_source,
                     samples_read,
                     &frame_rescue_provenance)) {
@@ -23016,19 +26271,19 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             }
         }
         /* L3 interrupt level: NVS-gated legacy experiment. Skip it while live AEC owns the main path. */
-        if (samples_read > 0 && !nuwax_live_aec_is_enabled(&live_aec)) {
+        if (samples_read > 0 && !nuwax_live_aec_is_enabled(&(work->live_aec))) {
             (void)nuwax_p3_l3_process_chunk(s_audio_samples, samples_read);
         }
         if (samples_read > 0) {
             memcpy(s_audio_preclean_samples,
                    s_audio_samples,
                    samples_read * sizeof(s_audio_preclean_samples[0]));
-            frame_cleaner_state_before = capture_preroll_cleaner_state(&audio_cleaner);
+            frame_cleaner_state_before = capture_preroll_cleaner_state(&(work->audio_cleaner));
         }
         nuwax_audio_cleaner_result_t clean_result = {0};
         const uint64_t cleaner_started_us = (uint64_t)esp_timer_get_time();
         if (s_audio_cleaner_runtime_enabled) {
-            nuwax_audio_cleaner_process_with_ref(&audio_cleaner,
+            nuwax_audio_cleaner_process_with_ref(&(work->audio_cleaner),
                                                  s_audio_samples,
                                                   samples_read,
                                                   playback_active,
@@ -23126,16 +26381,16 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
         const bool frame_aec_processed =
             frame_aec_process_attempted &&
             frame_aec_process_result == ESP_OK &&
-            nuwax_live_aec_output_stats_fully_aec(&live_aec.last_output,
+            nuwax_live_aec_output_stats_fully_aec(&(work->live_aec).last_output,
                                                    samples_read);
         const bool frame_output_fallback =
-            nuwax_live_aec_output_stats_has_fallback(&live_aec.last_output);
+            nuwax_live_aec_output_stats_has_fallback(&(work->live_aec).last_output);
         const bool frame_ref_missing =
-            live_aec.last_output.ref_missing_samples > 0U;
+            (work->live_aec).last_output.ref_missing_samples > 0U;
         const uint32_t output_underrun_samples =
-            live_aec.last_output.underrun_samples > UINT32_MAX
+            (work->live_aec).last_output.underrun_samples > UINT32_MAX
                 ? UINT32_MAX
-                : (uint32_t)live_aec.last_output.underrun_samples;
+                : (uint32_t)(work->live_aec).last_output.underrun_samples;
         const bool aec_processing_error =
             frame_aec_process_attempted &&
             frame_aec_process_result != ESP_OK;
@@ -23203,7 +26458,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
         if (playback_upload_gate_required) {
             bool playback_ref_healthy = false;
             playback_nearend_candidate =
-                during_playback_nearend_candidate(&live_aec,
+                during_playback_nearend_candidate(&(work->live_aec),
                                                   raw_level,
                                                   level,
                                                   &clean_result,
@@ -23286,17 +26541,17 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                     : (uint16_t)(frame_age_us / 1000ULL);
 
             const bool new_playback_generation =
-                !barge_controller.playback_active ||
-                barge_controller.playback_generation !=
+                !(work->barge_controller).playback_active ||
+                (work->barge_controller).playback_generation !=
                     speaker_submitted_generation;
             if (new_playback_generation) {
-                nuwax_conversation_audio_health_reset(&barge_audio_health);
+                nuwax_conversation_audio_health_reset(&(work->barge_audio_health));
                 barge_probe_active = false;
                 barge_probe_playback_generation = 0U;
                 barge_probe_candidate_id = 0U;
                 barge_probe_elapsed_frames = 0U;
                 (void)nuwax_barge_controller_begin_playback(
-                    &barge_controller,
+                    &(work->barge_controller),
                     speaker_submitted_generation,
                     speaker_volume_generation,
                     speaker_volume_percent,
@@ -23313,8 +26568,8 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                     ? UINT32_MAX
                     : (uint32_t)frame_age_us;
             const nuwax_conversation_audio_health_frame_t health_frame = {
-                .enabled = nuwax_live_aec_is_enabled(&live_aec),
-                .initialized = live_aec.initialized,
+                .enabled = nuwax_live_aec_is_enabled(&(work->live_aec)),
+                .initialized = (work->live_aec).initialized,
                 .playback_active = playback_active,
                 .reference_generation_matches =
                     reference_source_present &&
@@ -23333,7 +26588,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             };
             nuwax_conversation_audio_health_result_t health = {0};
             if (!nuwax_conversation_audio_health_process(
-                    &barge_audio_health, &health_frame, &health)) {
+                    &(work->barge_audio_health), &health_frame, &health)) {
                 health.aec_health = NUWAX_BARGE_HEALTH_RED;
                 health.reference_health = NUWAX_BARGE_HEALTH_RED;
                 health.fail_closed = true;
@@ -23345,7 +26600,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                 health.metrics_reason_bits != last_audio_health_reasons) {
                 if (s_conversation_runtime_metrics_ready) {
                     (void)nuwax_conversation_metrics_set_aec_runtime(
-                        &s_conversation_runtime_metrics,
+                        s_conversation_runtime_metrics,
                         health.metrics_runtime_state,
                         health.metrics_reason_bits,
                         decision_now_us);
@@ -23388,7 +26643,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             if (s_conversation_runtime_metrics_ready) {
                 if (speaker_pending && frame_output_fallback) {
                     (void)nuwax_conversation_metrics_count_event(
-                        &s_conversation_runtime_metrics,
+                        s_conversation_runtime_metrics,
                         NUWAX_CONVERSATION_EVENT_AEC_FALLBACK,
                         1U);
                 }
@@ -23431,7 +26686,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                 if (barge_probe_playback_generation !=
                         speaker_submitted_generation ||
                     barge_probe_candidate_id !=
-                        barge_controller.candidate_id) {
+                        (work->barge_controller).candidate_id) {
                     barge_probe_active = false;
                     barge_probe_playback_generation = 0U;
                     barge_probe_candidate_id = 0U;
@@ -23491,7 +26746,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             };
             nuwax_barge_controller_result_t decision = {0};
             if (nuwax_barge_controller_process_frame(
-                    &barge_controller, &decision_frame, &decision)) {
+                    &(work->barge_controller), &decision_frame, &decision)) {
                 if (decision.event ==
                     NUWAX_BARGE_EVENT_CANDIDATE_STARTED) {
                     playback_human_nearfield_onset_valid = true;
@@ -23609,7 +26864,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                         }
                         const bool local_stop_marked =
                             nuwax_barge_controller_mark_local_stop_started(
-                            &barge_controller,
+                            &(work->barge_controller),
                             decision.event_playback_generation,
                             decision.candidate_id,
                             local_stop_request_us);
@@ -23677,7 +26932,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                                  "barge controller confirmation superseded before stop expected_generation=%lu request_status=%d",
                                  (unsigned long)decision.event_playback_generation,
                                  (int)cancel_request.status);
-                        nuwax_barge_controller_reset(&barge_controller);
+                        nuwax_barge_controller_reset(&(work->barge_controller));
                         barge_event_initialized = false;
                         barge_event_id[0] = '\0';
                         barge_audio_session_id[0] = '\0';
@@ -23707,32 +26962,32 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
 
         if (barge_controller_confirmed &&
             barge_physical_stop_observed &&
-            nuwax_barge_controller_state(&barge_controller) ==
+            nuwax_barge_controller_state(&(work->barge_controller)) ==
                 NUWAX_BARGE_CONTROLLER_LOCAL_STOPPING) {
             if (barge_physical_stop_timestamp_us >=
-                barge_controller.timestamps.confirmed_timestamp_us) {
+                (work->barge_controller).timestamps.confirmed_timestamp_us) {
                 metrics_record_duration(
                     NUWAX_CONVERSATION_LATENCY_BARGE_CONFIRM_TO_LOCAL_STOP,
-                    barge_controller.timestamps.confirmed_timestamp_us,
+                    (work->barge_controller).timestamps.confirmed_timestamp_us,
                     barge_physical_stop_timestamp_us);
             }
             if (barge_physical_stop_timestamp_us >=
-                barge_controller.timestamps.candidate_started_timestamp_us) {
+                (work->barge_controller).timestamps.candidate_started_timestamp_us) {
                 metrics_record_duration(
                     NUWAX_CONVERSATION_LATENCY_BARGE_ONSET_TO_LOCAL_STOP,
-                    barge_controller.timestamps.candidate_started_timestamp_us,
+                    (work->barge_controller).timestamps.candidate_started_timestamp_us,
                     barge_physical_stop_timestamp_us);
             }
             uint64_t controller_stop_marker_us =
                 barge_physical_stop_timestamp_us;
             if (controller_stop_marker_us <
-                barge_controller.timestamps.local_stop_started_timestamp_us) {
+                (work->barge_controller).timestamps.local_stop_started_timestamp_us) {
                 controller_stop_marker_us =
-                    barge_controller.timestamps.local_stop_started_timestamp_us;
+                    (work->barge_controller).timestamps.local_stop_started_timestamp_us;
             }
             const bool playback_stop_marked =
                 nuwax_barge_controller_mark_playback_stopped(
-                &barge_controller,
+                &(work->barge_controller),
                 barge_stop_playback_generation,
                 barge_controller_candidate_id,
                 controller_stop_marker_us);
@@ -23776,7 +27031,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                 level.avg_abs,
                 level.peak,
                 clean_result.before.avg_abs,
-                audio_cleaner.noise_floor_avg_abs,
+                (work->audio_cleaner).noise_floor_avg_abs,
                 (uint32_t)CONFIG_NUWAX_AUDIO_CLEANER_SPEECH_GUARD_AVG_ABS,
                 (uint32_t)CONFIG_NUWAX_AUDIO_CLEANER_SPEECH_GUARD_PEAK);
         const bool fresh_weak_speech_evidence =
@@ -23789,13 +27044,14 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
              dual_mic_voice_hint);
         if (primary_frame_is_speech || trusted_weak_speech_evidence) {
             last_confirmed_speech_us = esp_timer_get_time();
+            if (vad_speech_seen && !during_playback_mode) note_valid_conversation_activity();
         }
         const bool weak_start_level_evidence =
             nuwax_conversation_weak_start_level_evidence(
                 level.avg_abs,
                 level.peak,
                 clean_result.before.avg_abs,
-                audio_cleaner.noise_floor_avg_abs,
+                (work->audio_cleaner).noise_floor_avg_abs,
                 (uint32_t)CONFIG_NUWAX_AUDIO_CLEANER_SPEECH_GUARD_AVG_ABS,
                 (uint32_t)CONFIG_NUWAX_AUDIO_CLEANER_SPEECH_GUARD_PEAK);
         const bool fresh_weak_start_evidence =
@@ -23808,7 +27064,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                 dual_mic_voice_hint,
                 dual_mic_human_first_hint);
         const uint32_t noise_floor_avg_abs =
-            audio_cleaner.noise_floor_avg_abs;
+            (work->audio_cleaner).noise_floor_avg_abs;
         const uint32_t relative_stable_avg_limit =
             noise_floor_avg_abs + noise_floor_avg_abs / 2U + 20U;
         const uint32_t relative_stable_peak_limit =
@@ -24059,6 +27315,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
         if (weak_continuation_confirmed) {
             weak_continuation_confirmed_frames++;
             last_confirmed_speech_us = esp_timer_get_time();
+            if (vad_speech_seen && !during_playback_mode) note_valid_conversation_activity();
         }
         const bool unified_weak_confirmed_now =
             short_policy_owns_confirmation &&
@@ -24219,6 +27476,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                     monotonic_ms() +
                     NUWAX_CONVERSATION_ASR_PROGRESS_TIMEOUT_MS;
             }
+            note_valid_conversation_activity();
             reset_awake_wait_budget_paused(
                 during_playback_mode
                     ? "confirmed_human_speech_during_playback"
@@ -24343,7 +27601,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                 s_audio_ref_samples,
                 samples_read,
                 playback_active,
-                live_aec.human_rescue_mix_q15,
+                (work->live_aec).human_rescue_mix_q15,
                 frame_rescue_source_kind,
                 &frame_rescue_provenance,
                 &frame_cleaner_state_before,
@@ -24374,7 +27632,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                 0,
                 (uint32_t)CONFIG_NUWAX_LIVE_AEC_HUMAN_RESCUE_CONFIRMED_MIX_Q15,
                 s_audio_cleaner_runtime_enabled,
-                &audio_cleaner,
+                &(work->audio_cleaner),
                 &repair_actual_start_sequence,
                 &repaired_frames,
                 &untrusted_source_frames);
@@ -24442,7 +27700,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                 s_audio_ref_samples,
                 samples_read,
                 true,
-                live_aec.human_rescue_mix_q15,
+                (work->live_aec).human_rescue_mix_q15,
                 frame_rescue_source_kind,
                 &frame_rescue_provenance,
                 &frame_cleaner_state_before,
@@ -24471,7 +27729,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                 0,
                 (uint32_t)CONFIG_NUWAX_LIVE_AEC_HUMAN_RESCUE_CONFIRMED_MIX_Q15,
                 s_audio_cleaner_runtime_enabled,
-                &audio_cleaner,
+                &(work->audio_cleaner),
                 &repair_actual_start_sequence,
                 &repaired_frames,
                 &untrusted_source_frames);
@@ -24592,7 +27850,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                         s_audio_ref_samples,
                         samples_read,
                         playback_active,
-                        live_aec.human_rescue_mix_q15,
+                        (work->live_aec).human_rescue_mix_q15,
                         frame_rescue_source_kind,
                         &frame_rescue_provenance,
                         &frame_cleaner_state_before,
@@ -24625,7 +27883,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                         NUWAX_BARGE_IN_PREROLL_LEAD_FRAMES,
                         (uint32_t)CONFIG_NUWAX_LIVE_AEC_HUMAN_RESCUE_CONFIRMED_MIX_Q15,
                         s_audio_cleaner_runtime_enabled,
-                        &audio_cleaner,
+                        &(work->audio_cleaner),
                         &repair_actual_start_sequence,
                         &repaired_frames,
                         &untrusted_source_frames);
@@ -24736,7 +27994,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                             s_audio_ref_samples,
                             samples_read,
                             playback_active,
-                            live_aec.human_rescue_mix_q15,
+                            (work->live_aec).human_rescue_mix_q15,
                             frame_rescue_source_kind,
                             &frame_rescue_provenance,
                             &frame_cleaner_state_before,
@@ -24771,7 +28029,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                             0,
                             (uint32_t)CONFIG_NUWAX_LIVE_AEC_HUMAN_RESCUE_CONFIRMED_MIX_Q15,
                             s_audio_cleaner_runtime_enabled,
-                            &audio_cleaner,
+                            &(work->audio_cleaner),
                             &repair_actual_start_sequence,
                             &repaired_frames,
                             &untrusted_source_frames);
@@ -24854,7 +28112,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                                 s_audio_ref_samples,
                                 samples_read,
                                 playback_active,
-                                live_aec.human_rescue_mix_q15,
+                                (work->live_aec).human_rescue_mix_q15,
                                 frame_rescue_source_kind,
                                 &frame_rescue_provenance,
                                 &frame_cleaner_state_before,
@@ -25037,7 +28295,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                             s_audio_ref_samples,
                             samples_read,
                             playback_active,
-                            live_aec.human_rescue_mix_q15,
+                            (work->live_aec).human_rescue_mix_q15,
                             frame_rescue_source_kind,
                             &frame_rescue_provenance,
                             &frame_cleaner_state_before,
@@ -25210,10 +28468,10 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                     NUWAX_CONVERSATION_ASR_PROGRESS_TIMEOUT_MS;
             }
             if (during_playback_mode && barge_controller_confirmed &&
-                nuwax_barge_controller_state(&barge_controller) ==
+                nuwax_barge_controller_state(&(work->barge_controller)) ==
                     NUWAX_BARGE_CONTROLLER_POST_STOP_TAIL) {
                 (void)nuwax_barge_controller_mark_uplink_active(
-                    &barge_controller,
+                    &(work->barge_controller),
                     barge_stop_playback_generation,
                     barge_controller_candidate_id,
                     (uint64_t)esp_timer_get_time());
@@ -25336,13 +28594,14 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                         adaptive_actionable_prediction_count++;
                     }
                     ESP_LOGI(TAG,
-                             "adaptive endpoint prediction actionable=%d upload_started=%d vad_speech_seen=%d session_eligible=%d frame_class=%d pause_ms=%lu strict_tail_ms=%lu uncertain_seen=%d weak_pause_seen=%d commit_ms=%u",
+                             "adaptive endpoint prediction actionable=%d upload_started=%d vad_speech_seen=%d session_eligible=%d frame_class=%d pause_ms=%lu elapsed_ms=%lu strict_tail_ms=%lu uncertain_seen=%d weak_pause_seen=%d commit_ms=%u",
                              adaptive_prediction_actionable ? 1 : 0,
                              upload_started ? 1 : 0,
                              vad_speech_seen ? 1 : 0,
                              adaptive_session_eligible ? 1 : 0,
                              (int)adaptive_frame_class,
                              (unsigned long)adaptive_endpoint.pause_ms,
+                             (unsigned long)adaptive_endpoint.pause_elapsed_ms,
                              (unsigned long)adaptive_endpoint
                                  .strict_silence_tail_ms,
                              adaptive_endpoint.uncertain_pause_seen ? 1 : 0,
@@ -25568,7 +28827,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                                                        s_audio_ref_samples,
                                                        samples_read,
                                                        playback_active,
-                                                       live_aec.human_rescue_mix_q15,
+                                                       (work->live_aec).human_rescue_mix_q15,
                                                        frame_rescue_source_kind,
                                                        &frame_rescue_provenance,
                                                        &frame_cleaner_state_before,
@@ -25597,7 +28856,7 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
                     NUWAX_PLAYBACK_HUMAN_PREROLL_REPAIR_LEAD_FRAMES,
                     (uint32_t)CONFIG_NUWAX_LIVE_AEC_HUMAN_RESCUE_CONFIRMED_MIX_Q15,
                     s_audio_cleaner_runtime_enabled,
-                    &audio_cleaner,
+                    &(work->audio_cleaner),
                     &repair_actual_start_sequence,
                     &repaired_frames,
                     &untrusted_source_frames);
@@ -25853,20 +29112,38 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
         if (during_playback_mode) {
             s_during_playback_capture_runtime_ready = false;
         }
-        const esp_err_t capture_stop_err = rt_capture_stop(&capture_ctx);
+        const esp_err_t capture_stop_err = rt_capture_stop(&(work->capture_ctx));
         if (capture_stop_err != ESP_OK && result == ESP_OK) {
             result = capture_stop_err;
         }
         capture_started = false;
-        rt_capture_read_frames = capture_ctx.read_frames;
-        rt_capture_dropped_no_slot = capture_ctx.dropped_no_slot;
-        rt_capture_dropped_oldest_ready = capture_ctx.dropped_oldest_ready;
-        rt_capture_ready_full_drops = capture_ctx.ready_full_drops;
-        rt_capture_dropped_samples = capture_ctx.dropped_samples;
-        rt_capture_max_ready_depth = capture_ctx.max_ready_depth;
+        rt_capture_read_frames = (work->capture_ctx).read_frames;
+        rt_capture_dropped_no_slot = (work->capture_ctx).dropped_no_slot;
+        rt_capture_dropped_oldest_ready = (work->capture_ctx).dropped_oldest_ready;
+        rt_capture_ready_full_drops = (work->capture_ctx).ready_full_drops;
+        rt_capture_dropped_samples = (work->capture_ctx).dropped_samples;
+        rt_capture_max_ready_depth = (work->capture_ctx).max_ready_depth;
     }
 
-    if (upload_started) {
+    nuwax_audio_uplink_stats_t final_uplink_stats = {0};
+    if (upload_started && local_power_transition_active()) {
+        /* A physical sleep/shutdown is a local privacy boundary.  Preserve the
+         * cloud protocol terminal through recovery, but do not hold the MIC
+         * and main state machine behind the normal realtime queue-drain
+         * timeout.  Remaining queued speech belongs to the cancelled round. */
+        nuwax_audio_uplink_get_stats(send_ctx, &final_uplink_stats);
+        uplink_finish_attempted = true;
+        uplink_finish_result =
+            nuwax_audio_uplink_preempt_for_local_power(send_ctx);
+        uplink_finish_succeeded = false;
+        local_power_uplink_preempted = true;
+        ESP_LOGI(TAG,
+                 "local power capture terminal detached from realtime queue result=%s queued=%lu sent=%lu dropped=%lu",
+                 esp_err_to_name(uplink_finish_result),
+                 (unsigned long)final_uplink_stats.queued_frames,
+                 (unsigned long)final_uplink_stats.sent_frames,
+                 (unsigned long)final_uplink_stats.dropped_frames);
+    } else if (upload_started) {
         uplink_finish_attempted = true;
         uplink_finish_result = nuwax_audio_uplink_finish(send_ctx);
         uplink_finish_succeeded = uplink_finish_result == ESP_OK;
@@ -25883,8 +29160,9 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             }
         }
     }
-    nuwax_audio_uplink_stats_t final_uplink_stats = {0};
-    nuwax_audio_uplink_get_stats(send_ctx, &final_uplink_stats);
+    if (!local_power_uplink_preempted) {
+        nuwax_audio_uplink_get_stats(send_ctx, &final_uplink_stats);
+    }
     queued_frames = final_uplink_stats.queued_frames;
     sent_frames = final_uplink_stats.sent_frames;
     dropped_frames = final_uplink_stats.dropped_frames;
@@ -25902,12 +29180,12 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
     }
     if (s_conversation_runtime_metrics_ready) {
         (void)nuwax_conversation_metrics_observe_queue(
-            &s_conversation_runtime_metrics,
+            s_conversation_runtime_metrics,
             NUWAX_CONVERSATION_QUEUE_CAPTURE,
             rt_capture_max_ready_depth,
             NUWAX_RT_CAPTURE_QUEUE_DEPTH);
         (void)nuwax_conversation_metrics_observe_queue(
-            &s_conversation_runtime_metrics,
+            s_conversation_runtime_metrics,
             NUWAX_CONVERSATION_QUEUE_UPLINK,
             final_uplink_stats.max_ready_depth,
             nuwax_audio_uplink_context_queue_depth(send_ctx));
@@ -25915,19 +29193,19 @@ static esp_err_t stream_microphone_audio(nuwax_ws_client_t *ws) {
             rt_capture_dropped_no_slot + rt_capture_ready_full_drops;
         if (capture_queue_failures > 0U) {
             (void)nuwax_conversation_metrics_count_event(
-                &s_conversation_runtime_metrics,
+                s_conversation_runtime_metrics,
                 NUWAX_CONVERSATION_EVENT_CAPTURE_QUEUE_FULL,
                 capture_queue_failures);
         }
         if (final_uplink_stats.queue_full_events > 0U) {
             (void)nuwax_conversation_metrics_count_event(
-                &s_conversation_runtime_metrics,
+                s_conversation_runtime_metrics,
                 NUWAX_CONVERSATION_EVENT_UPLINK_QUEUE_FULL,
                 final_uplink_stats.queue_full_events);
         }
     }
-    nuwax_live_aec_log_summary(&live_aec);
-    log_audio_cleaner_summary(&audio_cleaner);
+    nuwax_live_aec_log_summary(&(work->live_aec));
+    log_audio_cleaner_summary(&(work->audio_cleaner));
 #if CONFIG_NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE
     if (weak_continuation_evidence_frames > 0U) {
         ESP_LOGI(TAG,
@@ -26265,17 +29543,17 @@ cleanup:
         if (during_playback_mode) {
             s_during_playback_capture_runtime_ready = false;
         }
-        const esp_err_t capture_stop_err = rt_capture_stop(&capture_ctx);
+        const esp_err_t capture_stop_err = rt_capture_stop(&(work->capture_ctx));
         if (capture_stop_err != ESP_OK && result == ESP_OK) {
             result = capture_stop_err;
         }
         capture_started = false;
-        rt_capture_read_frames = capture_ctx.read_frames;
-        rt_capture_dropped_no_slot = capture_ctx.dropped_no_slot;
-        rt_capture_dropped_oldest_ready = capture_ctx.dropped_oldest_ready;
-        rt_capture_ready_full_drops = capture_ctx.ready_full_drops;
-        rt_capture_dropped_samples = capture_ctx.dropped_samples;
-        rt_capture_max_ready_depth = capture_ctx.max_ready_depth;
+        rt_capture_read_frames = (work->capture_ctx).read_frames;
+        rt_capture_dropped_no_slot = (work->capture_ctx).dropped_no_slot;
+        rt_capture_dropped_oldest_ready = (work->capture_ctx).dropped_oldest_ready;
+        rt_capture_ready_full_drops = (work->capture_ctx).ready_full_drops;
+        rt_capture_dropped_samples = (work->capture_ctx).dropped_samples;
+        rt_capture_max_ready_depth = (work->capture_ctx).max_ready_depth;
     }
 #if CONFIG_NUWAX_ADAPTIVE_ENDPOINT_MODE_SHADOW
     if (adaptive_endpoint.speech_started) {
@@ -26294,10 +29572,10 @@ cleanup:
                  (unsigned)adaptive_endpoint.frozen_commit_ms);
     }
 #endif
-    if (aec_alignment_count > 0U || live_aec.pending_count > 0U ||
-        live_aec.output_count > 0U) {
+    if (aec_alignment_count > 0U || (work->live_aec).pending_count > 0U ||
+        (work->live_aec).output_count > 0U) {
         const size_t dropped_samples =
-            nuwax_live_aec_flush_pending(&live_aec);
+            nuwax_live_aec_flush_pending(&(work->live_aec));
         if (aec_alignment_count > 1U ||
             dropped_samples > samples_per_frame) {
             ESP_LOGW(TAG,
@@ -26319,7 +29597,7 @@ cleanup:
     }
     heap_caps_free(aec_alignment_contexts);
     aec_alignment_contexts = NULL;
-    nuwax_audio_cleaner_deinit(&audio_cleaner);
+    nuwax_audio_cleaner_deinit(&(work->audio_cleaner));
     if (barge_protocol_enqueued && !listen_started) {
         nuwax_barge_dispatch_status_t dispatch_status =
             NUWAX_BARGE_DISPATCH_UNKNOWN;
@@ -26446,6 +29724,16 @@ cleanup:
         uplink_finish_succeeded = uplink_finish_result == ESP_OK;
         result = nuwax_audio_uplink_resolve_capture_finish_result(
             result, uplink_finish_result);
+    }
+    if (listen_started && send_ctx &&
+        nuwax_audio_uplink_finish_is_complete(send_ctx, NULL) &&
+        !nuwax_audio_uplink_listen_start_committed(send_ctx)) {
+        /* A failed/canceled async start opened no cloud transaction. Do not
+         * emit an orphan END/stop or close a healthy safely-unsent epoch. */
+        listen_started = false;
+        ESP_LOGI(TAG,
+                 "uncommitted listen start retired without terminal messages epoch=%lu",
+                 (unsigned long)send_ctx->ws_connection_epoch);
     }
     uplink_end_committed =
         send_ctx && nuwax_audio_uplink_end_committed(send_ctx);
@@ -26608,8 +29896,8 @@ cleanup:
                      stop_audio_session_id ? stop_audio_session_id : "-",
                      stop_request_id ? stop_request_id : "-",
                      (unsigned long)listen_stop_epoch);
-            if (stop_reason ==
-                    NUWAX_MIC_CAPTURE_STOP_HEAD_TOUCH_AGENT &&
+            if ((stop_reason == NUWAX_MIC_CAPTURE_STOP_HEAD_TOUCH_AGENT ||
+                 s_head_touch_agent_intent.asr_deferred) &&
                 nuwax_head_touch_agent_intent_audio_matches(
                     &s_head_touch_agent_intent,
                     stop_audio_session_id)) {
@@ -26633,11 +29921,11 @@ cleanup:
                        nuwax_awake_session_state_generation(
                            &s_awake_session),
                        stop_audio_session_id) &&
-                   nuwax_listen_resume_state_arm_post_end_asr(
+                   nuwax_listen_resume_state_arm_post_end_asr_bounded(
                        &s_listen_resume,
-                       nuwax_ws_connection_epoch(ws),
-                       monotonic_ms() +
-                           NUWAX_POST_END_RESPONSE_TIMEOUT_MS)) {
+                       nuwax_ws_connection_epoch(ws), monotonic_ms(),
+                       NUWAX_POST_END_RESPONSE_TIMEOUT_MS,
+                       CONFIG_NUWAX_CONVERSATION_AWAKE_IDLE_TIMEOUT_MS)) {
             ESP_LOGI(TAG,
                      "post-END cloud response watchdog armed session=%s ws_epoch=%lu timeout_ms=%u",
                      stop_audio_session_id ? stop_audio_session_id : "-",
@@ -26686,13 +29974,21 @@ cleanup:
         if (result == ESP_OK) {
             result = mic_deinit_err;
         }
-        if (stop_reason == NUWAX_MIC_CAPTURE_STOP_HEAD_TOUCH_AGENT) {
+        if (stop_reason == NUWAX_MIC_CAPTURE_STOP_HEAD_TOUCH_AGENT ||
+            s_head_touch_agent_intent.asr_deferred) {
             clear_head_touch_agent_intent("microphone_deinit_failed");
         }
     }
     atomic_store_explicit(&s_conversation_capture_runtime_active,
                           false,
                           memory_order_release);
+    if (s_head_touch_agent_intent.asr_deferred && send_ctx &&
+        mic_deinit_err == ESP_OK) {
+        (void)nuwax_head_touch_agent_intent_mark_capture_released(
+            &s_head_touch_agent_intent, send_ctx->ws_connection_epoch,
+            capture_awake_generation,
+            send_ctx->terminal_recovery_audio_session_id);
+    }
     if (stop_reason == NUWAX_MIC_CAPTURE_STOP_HEAD_TOUCH_AGENT &&
         s_head_touch_agent_intent.state ==
             NUWAX_HEAD_TOUCH_AGENT_STATE_QUIESCING) {
@@ -26742,14 +30038,14 @@ cleanup:
             live_aec_raw_diagnostic_exercised) {
             live_aec_pool_reusable_status =
                 conversation_live_aec_restore_production_state(
-                    &live_aec,
+                    &(work->live_aec),
                     samples_per_frame,
                     live_aec_pool_delay_samples);
         } else {
-            live_aec.delay_samples = live_aec_pool_delay_samples;
+            (work->live_aec).delay_samples = live_aec_pool_delay_samples;
         }
     }
-    conversation_live_aec_pool_release(&live_aec,
+    conversation_live_aec_pool_release(&(work->live_aec),
                                        live_aec_pool_acquired,
                                        live_aec_pool_reusable_status);
 #if CONFIG_NUWAX_SPEAKER_ENABLE
@@ -26906,8 +30202,11 @@ static esp_err_t service_audio_terminal_recovery(nuwax_ws_client_t *ws) {
         strcmp(completion.audio_session_id,
                s_listen_resume.audio_session_id) == 0;
     const bool head_touch_round_matches =
-        s_head_touch_agent_intent.state ==
-            NUWAX_HEAD_TOUCH_AGENT_STATE_QUIESCING &&
+        (s_head_touch_agent_intent.state ==
+             NUWAX_HEAD_TOUCH_AGENT_STATE_QUIESCING ||
+         (s_head_touch_agent_intent.state ==
+              NUWAX_HEAD_TOUCH_AGENT_STATE_ARBITRATING &&
+          s_head_touch_agent_intent.asr_deferred)) &&
         s_head_touch_agent_intent.ws_epoch == completion.ws_epoch &&
         nuwax_head_touch_agent_intent_audio_matches(
             &s_head_touch_agent_intent,
@@ -26954,14 +30253,17 @@ static esp_err_t service_audio_terminal_recovery(nuwax_ws_client_t *ws) {
         }
     }
 
-    if (!head_touch_round_matches && completion.success && current_epoch &&
+    /* Deferred touch does not replace the speech transaction yet. Keep its
+     * ordinary ASR watchdog even if the shorter touch wait later expires. */
+    if ((!head_touch_round_matches || s_head_touch_agent_intent.asr_deferred) &&
+        completion.success && current_epoch &&
         listen_round_matches &&
         !s_sleep_transaction.active &&
         nuwax_awake_session_state_is_active(&s_awake_session) &&
-        nuwax_listen_resume_state_arm_post_end_asr(
+        nuwax_listen_resume_state_arm_post_end_asr_bounded(
             &s_listen_resume,
-            completion.ws_epoch,
-            monotonic_ms() + NUWAX_POST_END_RESPONSE_TIMEOUT_MS)) {
+            completion.ws_epoch, monotonic_ms(), NUWAX_POST_END_RESPONSE_TIMEOUT_MS,
+            CONFIG_NUWAX_CONVERSATION_AWAKE_IDLE_TIMEOUT_MS)) {
         ESP_LOGI(TAG,
                  "terminal recovery armed post-END response watchdog session=%s epoch=%lu",
                  completion.audio_session_id,
@@ -27003,6 +30305,9 @@ static esp_err_t service_audio_terminal_recovery(nuwax_ws_client_t *ws) {
  * overrun by UI, Wi-Fi, or control-plane work. Restore the caller priority
  * on every return so the control loop does not inherit an audio priority. */
 static esp_err_t run_monitoring_audio_source(nuwax_ws_client_t *ws) {
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    if (s_monitoring_mode.sd_local) return nuwax_monitoring_mode_run(&s_monitoring_mode, ws);
+#endif
     const UBaseType_t previous_priority = uxTaskPriorityGet(NULL);
     const bool raised = previous_priority < NUWAX_AUDIO_DSP_TASK_PRIORITY;
     if (raised) {
@@ -27024,8 +30329,55 @@ static esp_err_t run_monitoring_audio_source(nuwax_ws_client_t *ws) {
     return err;
 }
 
+/* The meeting path also owns the shared RX channel for its full capture
+ * session. Keep its synchronous reader above UI/decode work so the 120 ms
+ * shared-I2S ring cannot overflow while the control loop is capturing. */
+static esp_err_t run_meeting_audio_source(nuwax_ws_client_t *ws) {
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    if (s_meeting_mode.sd_local) return nuwax_meeting_mode_run(&s_meeting_mode, ws);
+#endif
+    const UBaseType_t previous_priority = uxTaskPriorityGet(NULL);
+    const bool raised = previous_priority < NUWAX_AUDIO_DSP_TASK_PRIORITY;
+    if (raised) {
+        vTaskPrioritySet(NULL, NUWAX_AUDIO_DSP_TASK_PRIORITY);
+        ESP_LOGI(TAG,
+                 "meeting capture realtime priority raised previous=%u active=%u",
+                 (unsigned)previous_priority,
+                 (unsigned)NUWAX_AUDIO_DSP_TASK_PRIORITY);
+    }
+
+    const esp_err_t err = nuwax_meeting_mode_run(&s_meeting_mode, ws);
+
+    if (raised) {
+        vTaskPrioritySet(NULL, previous_priority);
+        ESP_LOGI(TAG,
+                 "meeting capture realtime priority restored priority=%u",
+                 (unsigned)previous_priority);
+    }
+    return err;
+}
+
 static esp_err_t run_audio_source(nuwax_ws_client_t *ws) {
     app_task_watchdog_checkpoint();
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    /* A replay worker may have yielded while the normal audio wait loop was
+     * already inside wait_for_mic_start_action(). Surface that edge to the
+     * connection owner instead of sleeping indefinitely with ready archives. */
+    const bool controller_ready = nuwax_meeting_mode_has_pending(&s_meeting_mode) ||
+                                  nuwax_monitoring_mode_has_pending(&s_monitoring_mode);
+    if (!controller_ready && nuwax_offline_audio_has_ready() &&
+        !nuwax_offline_audio_storage_busy() &&
+        !nuwax_offline_audio_replay_running() &&
+        nuwax_offline_audio_replay_retry_pending()) {
+        return ESP_ERR_NOT_FINISHED;
+    }
+    if ((nuwax_offline_audio_capture_running() && !controller_ready) ||
+        (offline_mode_lease_pending() && !controller_ready)) {
+        /* MIC ownership gates capture; a background FILE close does not.
+         * A new mirror retries admission after the old writer has finished. */
+        return ESP_ERR_NOT_FINISHED;
+    }
+#endif
     if (nuwax_audio_terminal_recovery_pending()) {
         const esp_err_t recovery_err = service_audio_terminal_recovery(ws);
         if (nuwax_audio_terminal_recovery_pending()) {
@@ -27039,13 +30391,27 @@ static esp_err_t run_audio_source(nuwax_ws_client_t *ws) {
     /* Finish the current exclusive owner before consuming a queued request for
      * the other mode. This makes cloud mode switches an ordered MIC handoff
      * instead of allowing two STARTING controllers to race for I2S RX. */
+    nuwax_meeting_mode_service_command_deadline(&s_meeting_mode, ws);
+    nuwax_monitoring_mode_service_command_deadline(&s_monitoring_mode, ws);
+    /* An admitted target can already be STARTING while the old SD owner
+     * drains its final writes. Always finish that owner before starting it. */
+    if (nuwax_monitoring_mode_state(&s_monitoring_mode) == NUWAX_MONITORING_STATE_STOPPING)
+        return run_monitoring_audio_source(ws);
+    if (nuwax_meeting_mode_state(&s_meeting_mode) == NUWAX_MEETING_STATE_STOPPING)
+        return run_meeting_audio_source(ws);
+    /* A target waiting for an asynchronous catalog check must not starve the
+     * still-recording owner, or acquire its microphone before handoff. */
+    if (nuwax_monitoring_mode_state(&s_monitoring_mode) == NUWAX_MONITORING_STATE_ACTIVE)
+        return run_monitoring_audio_source(ws);
+    if (nuwax_meeting_mode_state(&s_meeting_mode) == NUWAX_MEETING_STATE_ACTIVE)
+        return run_meeting_audio_source(ws);
     if (nuwax_monitoring_mode_state(&s_monitoring_mode) !=
         NUWAX_MONITORING_STATE_DISABLED) {
         return run_monitoring_audio_source(ws);
     }
     if (nuwax_meeting_mode_state(&s_meeting_mode) !=
         NUWAX_MEETING_STATE_DISABLED) {
-        return nuwax_meeting_mode_run(&s_meeting_mode, ws);
+        return run_meeting_audio_source(ws);
     }
     if (nuwax_audio_uplink_sender_busy()) {
         /* A detached sender still owns its static TCB and may be finishing a
@@ -27057,9 +30423,19 @@ static esp_err_t run_audio_source(nuwax_ws_client_t *ws) {
         return run_monitoring_audio_source(ws);
     }
     if (nuwax_meeting_mode_has_pending(&s_meeting_mode)) {
-        return nuwax_meeting_mode_run(&s_meeting_mode, ws);
+        return run_meeting_audio_source(ws);
     }
 #if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
+    /* A sleeping device waits on the wake-word/control plane without
+     * allocating a normal uplink session. Once the wait admits a wake or
+     * touch action, stream_microphone_audio() sees the armed prelisten window
+     * and proceeds with the ordinary capture initialization. */
+    if (conversation_state_current() == NUWAX_APP_STATE_SLEEPING) {
+        const esp_err_t wait_err = wait_for_mic_start_action(ws);
+        if (wait_err != ESP_OK) {
+            return wait_err;
+        }
+    }
     return stream_microphone_audio(ws);
 #else
     nuwax_touch_point_t point = {0};
@@ -27098,6 +30474,18 @@ static void wait_for_cloud_updates(nuwax_ws_client_t *ws, uint32_t wait_ms) {
     while (nuwax_ws_is_connected(ws) &&
            (uint32_t)(now_ms_i64() - started_ms) < wait_ms) {
         app_task_watchdog_checkpoint();
+        /* Return to the normal MIC owner immediately once sleeping, or when a
+         * detector hit is queued. The old 2500 ms settle loop could outlive the
+         * 2000 ms wake-event lease even though the detector was already ready.
+         * Leave the event queued for its existing epoch/age/owner validation. */
+        if (conversation_state_current() == NUWAX_APP_STATE_SLEEPING) {
+            return;
+        }
+#if CONFIG_NUWAX_WAKE_WORD_ENABLE
+        if (s_wake_word_events && uxQueueMessagesWaiting(s_wake_word_events) > 0U) {
+            return;
+        }
+#endif
         if (nuwax_audio_terminal_recovery_pending()) {
             (void)service_audio_terminal_recovery(ws);
         }
@@ -27113,6 +30501,15 @@ static void wait_for_cloud_updates(nuwax_ws_client_t *ws, uint32_t wait_ms) {
         complete_during_playback_wake_stop();
         if (exclusive_audio_mode_blocks_normal_audio() ||
             s_prelisten.pending || s_prelisten.capture_active) {
+            if (exclusive_audio_mode_blocks_normal_audio() &&
+                !nuwax_meeting_mode_has_pending(&s_meeting_mode) &&
+                !nuwax_monitoring_mode_has_pending(&s_monitoring_mode)) {
+                /* A storage/reprovision fence is not a request to run MIC. */
+                service_exclusive_audio_sleep_reconcile();
+                (void)service_application_keepalive(ws, "audio_owner_wait");
+                conversation_owner_wait_ms(20U);
+                continue;
+            }
             esp_err_t listen_err = run_audio_source(ws);
             if (listen_err != ESP_OK) {
                 if (!nuwax_ws_is_connected(ws)) {
@@ -27198,7 +30595,7 @@ static void handle_session_event(const nuwax_session_command_t *command,
         return;
     }
     if (is_normal_audio_event(command->event) &&
-        sleep_transaction_blocks_new_audio()) {
+        sleep_lifecycle_blocks_normal_cloud_audio()) {
         if (command->event == NUWAX_SESSION_EVENT_PLAYBACK_BEGIN) {
             notification_rx_barrier_reject_normal_epoch(
                 active_ws_epoch_snapshot(),
@@ -27236,6 +30633,13 @@ static void handle_session_event(const nuwax_session_command_t *command,
         return;
     }
     if (audio_input_event) {
+        if (command->event != NUWAX_SESSION_EVENT_ASR_RESULT &&
+            !nuwax_listen_resume_state_note_progress(&s_listen_resume,
+                command->sequence, command->text,
+                command->event == NUWAX_SESSION_EVENT_AUDIO_PROGRESS ? 0U :
+                command->event == NUWAX_SESSION_EVENT_ASR_FINAL ? 2U : 1U)) {
+            return;
+        }
         if (command->event == NUWAX_SESSION_EVENT_ASR_RESULT) {
             nuwax_listen_resume_state_disarm_post_end_asr(
                 &s_listen_resume);
@@ -27267,11 +30671,20 @@ static void handle_session_event(const nuwax_session_command_t *command,
                      command->audio_session_id);
             clear_head_touch_agent_intent("matching_cloud_speech_won");
         } else if (no_speech_result) {
-            ESP_LOGI(TAG,
-                     "matching no-speech result retained head touch agent token=%lu session=%s",
-                     (unsigned long)s_head_touch_agent_intent.token,
-                     command->audio_session_id);
-            return;
+            if (!s_head_touch_agent_intent.asr_deferred ||
+                nuwax_head_touch_agent_intent_accept_no_speech(
+                    &s_head_touch_agent_intent, event_ws_epoch,
+                    nuwax_awake_session_state_generation(&s_awake_session),
+                    command->audio_session_id, monotonic_ms())) {
+                ESP_LOGI(TAG,
+                         "matching no-speech result retained head touch agent token=%lu session=%s",
+                         (unsigned long)s_head_touch_agent_intent.token,
+                         command->audio_session_id);
+                return;
+            }
+            /* Late or pre-END results follow ordinary ASR recovery. They
+             * cannot release a deferred physical interaction. */
+            clear_head_touch_agent_intent("deferred_no_speech_not_recoverable");
         }
     }
     switch (command->event) {
@@ -27363,6 +30776,7 @@ static void handle_session_event(const nuwax_session_command_t *command,
                     }
                     break;
                 }
+                if (command->text[0]) note_valid_conversation_activity();
                 clear_last_listen_resume();
                 (void)enter_cloud_waiting_question("asr_result");
                 set_conversation_status_guarded("VOICE TEXT", "THINKING", command->text, true);
@@ -27459,6 +30873,9 @@ static void handle_session_event(const nuwax_session_command_t *command,
             if (command->ok) {
                 const nuwax_turn_phase_t phase_before_text =
                     s_turn_guard.phase;
+                if (phase_before_text == NUWAX_TURN_PHASE_WAIT_TEXT && command->text[0]) {
+                    note_valid_conversation_activity();
+                }
                 if (command->emotion[0] != '\0') {
                     if (visual_kind == NUWAX_VISUAL_ROUND_NORMAL &&
                         nuwax_conversation_visual_round_hold_emotion(
@@ -27767,6 +31184,28 @@ static void handle_session_event(const nuwax_session_command_t *command,
             }
             break;
         case NUWAX_SESSION_EVENT_PLAYBACK_BEGIN: {
+            if (command->rx_playback_rejected) {
+                if (event_ws_epoch == active_ws_epoch_snapshot() &&
+                    nuwax_turn_guard_accepts_rx_rejection(
+                        &s_turn_guard,
+                        nuwax_awake_session_state_generation(&s_awake_session),
+                        command->request_id, command->turn_id,
+                        command->playback_id)) {
+                    ESP_LOGW(TAG,
+                             "owned playback RX rejected; ending unstarted round request=%s turn=%s playback=%s reason=rx_stream_quarantined",
+                             command->request_id, command->turn_id,
+                             command->playback_id);
+                    clear_last_listen_resume();
+                    wake_greeting_metrics_cancel("rx_stream_quarantined");
+                    clear_active_turn_guard("rx_stream_quarantined");
+                    if (!schedule_auto_followup_after_playback()) {
+                        set_state(NUWAX_APP_STATE_IDLE);
+                    }
+                }
+                /* Never bootstrap, admit binary, or cancel a playing owner.
+                 * Existing END/epoch/timeout logic retains drain ownership. */
+                break;
+            }
             s_natural_playback_touch_protection_deadline_ms = 0U;
             bool turn_bootstrapped = false;
             if (!ensure_active_turn_guard_for_cloud_output(
@@ -27986,6 +31425,7 @@ static bool session_dispatch_request_ble_reprovision(void *ctx) {
     return queue_ble_reprovision_request("remote_command");
 }
 
+#if CONFIG_NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE
 static void p3_softref_ab_fast_task(void *arg) {
     (void)arg;
     p3_softref_ab_request_t request = {0};
@@ -28023,7 +31463,9 @@ static void p3_softref_ab_fast_task(void *arg) {
         memset(&request, 0, sizeof(request));
     }
 }
+#endif
 
+#if CONFIG_NUWAX_P5_DURING_PLAYBACK_CANDIDATE_ENABLE
 static void p5_during_playback_candidate_fast_task(void *arg) {
     (void)arg;
     p5_during_playback_candidate_request_t request = {0};
@@ -28123,6 +31565,7 @@ static void p5_during_playback_candidate_fast_task(void *arg) {
         memset(&request, 0, sizeof(request));
     }
 }
+#endif
 
 static void session_dispatch_cancel_auto_followup_capture(void *ctx, const char *reason) {
     (void)ctx;
@@ -28423,6 +31866,10 @@ static bool session_dispatch_set_emotion_common(void *ctx,
                                                 uint32_t duration_ms) {
     (void)ctx;
     s_last_set_emotion_failure_reason = "emotion rejected";
+    if (product_music_blocks_audio()) {
+        s_last_set_emotion_failure_reason = "music owns expression";
+        return false;
+    }
     if (!emotion || emotion[0] == '\0' ||
         !nuwax_state_bridge_is_semantic_emotion_name_supported(emotion)) {
         s_last_set_emotion_failure_reason = "unsupported emotion";
@@ -28609,11 +32056,24 @@ static void session_dispatch_show_status(void *ctx,
                                           text);
 }
 
+static esp_err_t session_dispatch_send_ack(nuwax_ws_client_t *ws,
+                                           const nuwax_session_command_t *command,
+                                           bool ok, const char *message, uint32_t epoch) {
+    if (conversation_capture_busy_for_sleep()) {
+        return nuwax_control_ack_tx_enqueue(ws, command, ok, message, epoch);
+    }
+    /* Recover a transient startup allocation failure outside live capture. */
+    (void)nuwax_control_ack_tx_init();
+    return nuwax_session_send_command_ack_until_if_epoch(
+        ws, command->request_id, command->command, ok, message,
+        esp_timer_get_time() + 500000LL, epoch);
+}
+
 static void session_dispatch_apply_volume_percent(void *ctx, int volume_percent, bool persist) {
     (void)ctx;
 #if CONFIG_NUWAX_SPEAKER_ENABLE
     nuwax_speaker_playback_apply_volume_percent(volume_percent, persist);
-    s_current_volume_percent = nuwax_speaker_playback_get_volume_percent();
+    s_current_volume_percent = nuwax_speaker_playback_get_confirmed_volume_percent(NULL);
 #else
     s_current_volume_percent = (uint8_t)(volume_percent < 0
                                              ? 0
@@ -28625,6 +32085,9 @@ static void session_dispatch_apply_volume_percent(void *ctx, int volume_percent,
              "remote speaker volume set to %u%% but speaker output is disabled",
              (unsigned)s_current_volume_percent);
 #endif
+    /* A newer cloud setting supersedes a local report still awaiting a retry. */
+    s_volume_report.pending = false;
+    s_volume_report.next_attempt_ms = 0U;
 }
 
 static esp_err_t session_dispatch_set_wake_word(void *ctx,
@@ -28781,6 +32244,27 @@ static esp_err_t session_dispatch_run_p3_hardref_ab(void *ctx,
     return run_p3_hardref_ab_manual(duration_ms, out_ready);
 }
 
+#include "music_playback/product_music.inc"
+
+#if defined(CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE) && \
+    CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE
+static bool session_dispatch_start_music(void *ctx,
+                                         nuwax_ws_client_t *ws,
+                                         const char *request_id,
+                                         const char *url,
+                                         const char *format) {
+    (void)ctx;
+    return product_music_request(ws, request_id, url, format, false);
+}
+
+static bool session_dispatch_stop_music(void *ctx, const char *request_id) {
+    (void)ctx;
+    (void)request_id;
+    product_music_cancel("cloud_stop");
+    return true;
+}
+#endif
+
 static esp_err_t session_dispatch_run_p3_nearend_candidate(void *ctx,
                                                            uint32_t duration_ms,
                                                            uint32_t delay_samples,
@@ -28872,6 +32356,11 @@ static const nuwax_session_dispatch_callbacks_t s_session_dispatch_callbacks = {
     .return_to_listening_after_cancel = session_dispatch_return_to_listening_after_cancel,
     .show_status = session_dispatch_show_status,
     .apply_volume_percent = session_dispatch_apply_volume_percent,
+#if defined(CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE) && \
+    CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE
+    .start_music = session_dispatch_start_music,
+    .stop_music = session_dispatch_stop_music,
+#endif
     .set_wake_word = session_dispatch_set_wake_word,
     .set_wake_words = session_dispatch_set_wake_words,
     .reset_wake_word = session_dispatch_reset_wake_word,
@@ -28971,9 +32460,11 @@ static void handle_session_command(nuwax_ws_client_t *ws,
                                    const nuwax_session_command_t *command,
                                    uint32_t event_ws_epoch) {
     bool normal_event_blocked = false;
+    if (product_music_blocks_audio() && command && command->has_event &&
+        is_normal_audio_event(command->event)) return;
     if (command && command->has_event &&
         is_normal_audio_event(command->event) &&
-        sleep_transaction_blocks_new_audio()) {
+        sleep_lifecycle_blocks_normal_cloud_audio()) {
         normal_event_blocked = true;
         if (command->event == NUWAX_SESSION_EVENT_PLAYBACK_BEGIN) {
             notification_rx_barrier_reject_normal_epoch(
@@ -29027,12 +32518,107 @@ static void handle_session_command(nuwax_ws_client_t *ws,
     nuwax_session_dispatch_command(ws, command, &s_session_dispatch_callbacks);
 }
 
+/* Owner-task only. A sleeping face alone does not prove that a cancelled
+ * playback or a new interaction has finished releasing its resources. */
+static bool diagnostic_persistence_idle(void) {
+    /* SD replay is real work even while the face is sleeping. Avoid optional
+     * NVS/volume housekeeping and its lock/Flash guards on the bulk path.
+     * Dirty state remains pending and is serviced after replay releases. */
+    if (nuwax_offline_audio_replay_running()) return false;
+    const nuwax_app_state_t state = conversation_state_current();
+    if (state != NUWAX_APP_STATE_SLEEPING && state != NUWAX_APP_STATE_IDLE) {
+        return false;
+    }
+    if (nuwax_awake_session_state_is_active(&s_awake_session) ||
+        s_turn_guard.active || s_playback_terminal_guard.active ||
+        nuwax_conversation_visual_round_is_active(&s_visual_round) ||
+        s_head_touch_agent_intent.state != NUWAX_HEAD_TOUCH_AGENT_STATE_IDLE ||
+        s_notification_transaction.active || s_sleep_transaction.active ||
+        s_deferred_sleep_intent.active || s_prelisten.pending ||
+        s_prelisten.capture_active || conversation_capture_busy_for_sleep() ||
+        nuwax_audio_uplink_sender_busy() ||
+        exclusive_audio_mode_blocks_normal_audio() ||
+        local_power_transition_active() ||
+        atomic_load_explicit(&s_reprovision_quiesce_requested,
+                             memory_order_acquire) ||
+        atomic_load_explicit(&s_ws_text_callbacks_active,
+                             memory_order_acquire) != 0U) {
+        return false;
+    }
+    if ((s_session_commands && uxQueueMessagesWaiting(s_session_commands)) ||
+        (s_session_critical_commands &&
+         uxQueueMessagesWaiting(s_session_critical_commands)) ||
+        (s_session_notification_commands &&
+         uxQueueMessagesWaiting(s_session_notification_commands))) {
+        return false;
+    }
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    if (nuwax_speaker_playback_has_pending() ||
+        (s_speaker_owner_events &&
+         uxQueueMessagesWaiting(s_speaker_owner_events))) {
+        return false;
+    }
+#endif
+#if CONFIG_NUWAX_OTA_ENABLE
+    if (nuwax_ota_device_is_active()) return false;
+#endif
+    return true;
+}
+
+static void service_idle_diagnostic_persistence(void) {
+    if (!diagnostic_persistence_idle()) return;
+    if (nuwax_lvgl_port_background_work_deferred()) return;
+    const int64_t started_us = esp_timer_get_time();
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    (void)nuwax_speaker_playback_service_volume_persistence(false);
+#endif
+    const int64_t volume_done_us = esp_timer_get_time();
+    if (diagnostic_persistence_idle() && !nuwax_lvgl_port_background_work_deferred())
+        nuwax_display_brightness_save(false);
+    const int64_t brightness_done_us = esp_timer_get_time();
+    /* Re-admit after a potentially slow volume commit: new commands or UI
+     * interaction must take priority over another optional Flash write. */
+    if (diagnostic_persistence_idle() &&
+        !nuwax_lvgl_port_background_work_deferred()) {
+        nuwax_device_error_report_housekeeping();
+    }
+    const int64_t elapsed_us = esp_timer_get_time() - started_us;
+    if (elapsed_us > 100000LL) {
+        ESP_LOGW(TAG, "idle diagnostic persistence slow elapsed_ms=%lld volume_ms=%lld brightness_ms=%lld diagnostic_ms=%lld",
+                 (long long)(elapsed_us / 1000LL),
+                 (long long)((volume_done_us - started_us) / 1000LL),
+                 (long long)((brightness_done_us - volume_done_us) / 1000LL),
+                 (long long)((elapsed_us - (brightness_done_us - started_us)) / 1000LL));
+    }
+}
+
 static void drain_session_commands_limited(nuwax_ws_client_t *ws, uint32_t max_commands) {
+    /* Converge cloud-ready to the sleep lifecycle before notification
+     * admission, preserving active audio owners. */
+    (void)reconcile_cloud_ready_sleep_state("before_command_consumption");
+    const uint32_t command_budget =
+        max_commands > NUWAX_SESSION_COMMAND_DRAIN_DEFAULT_MAX
+            ? NUWAX_SESSION_COMMAND_DRAIN_DEFAULT_MAX
+            : max_commands;
+    const int64_t drain_started_us = esp_timer_get_time();
     uint32_t handled = 0;
-    while (handled < max_commands) {
+    while (handled < max_commands && handled < command_budget) {
+        /* A command handler may send an ACK and touch the UI.  Keep the
+         * application watchdog independent of the number of queued messages. */
+        app_task_watchdog_checkpoint();
+        if (handled != 0U &&
+            esp_timer_get_time() - drain_started_us >=
+                NUWAX_SESSION_COMMAND_DRAIN_BUDGET_US) {
+            break;
+        }
         bool received = false;
-        if (s_session_critical_commands &&
-            xQueueReceive(s_session_critical_commands,
+        if (s_session_notification_commands &&
+            xQueueReceive(s_session_notification_commands,
+                          &s_session_command_work,
+                          0) == pdTRUE) {
+            received = true;
+        } else if (s_session_critical_commands &&
+                   xQueueReceive(s_session_critical_commands,
                           &s_session_command_work,
                           0) == pdTRUE) {
             received = true;
@@ -29066,43 +32652,83 @@ static void drain_session_commands_limited(nuwax_ws_client_t *ws, uint32_t max_c
         }
         memset(&s_session_command_work, 0, sizeof(s_session_command_work));
         handled++;
+        app_task_watchdog_checkpoint();
+        if (esp_timer_get_time() - drain_started_us >=
+            NUWAX_SESSION_COMMAND_DRAIN_BUDGET_US) {
+            break;
+        }
     }
     service_tts_skip_followup();
-    drain_wifi_status_reports(ws);
-    drain_wifi_scan_results(ws);
 #if CONFIG_NUWAX_SPEAKER_ENABLE
+    /* Physical PCM/stop events must not wait behind Wi-Fi report ACK sends. */
     drain_speaker_owner_events();
 #endif
+    /* Completion may arrive after an earlier link-state observation. Always
+     * reap it in the connected owner too; never run the blocking worker here. */
+    if (atomic_load_explicit(&s_wifi_recovery_state, memory_order_acquire) ==
+        WIFI_RECOVERY_DONE) {
+        (void)recover_wifi_if_needed();
+    }
+    drain_wifi_status_reports(ws);
+    drain_wifi_scan_results(ws);
     service_touch_cancel_recovery(ws);
     drain_playback_wake_events(ws);
     service_sleep_transaction();
+    service_power_key_events(ws);
     service_notification_transaction();
     service_notification_rx_rejected_timeout(ws);
     service_head_touch_agent_intent(ws);
     check_conversation_turn_timeout(ws);
+    (void)service_normal_conversation_inactivity();
     service_pending_volume_report(ws);
+    /* Diagnostics share the serialized WebSocket TX path with microphone
+     * packets. This service only sends from RAM; Flash persistence is gated
+     * separately below and never runs during playback or terminal drain. Reliable
+     * meeting/monitoring streams are intentionally exempt so a long exclusive
+     * session cannot starve diagnostic delivery indefinitely. */
+    if (!nuwax_audio_uplink_sender_busy() ||
+        exclusive_audio_mode_blocks_normal_audio()) {
+        nuwax_device_error_report_service(ws);
+    }
+    service_audio_mode_state_sync(ws);
+    service_idle_diagnostic_persistence();
 }
 
 static void drain_session_commands(nuwax_ws_client_t *ws) {
-    drain_session_commands_limited(ws, UINT32_MAX);
+    drain_session_commands_limited(
+        ws, NUWAX_SESSION_COMMAND_DRAIN_DEFAULT_MAX);
 }
 
 static void drain_shell_actions(nuwax_ws_client_t *ws) {
+    nuwax_meeting_mode_service_command_deadline(&s_meeting_mode, ws);
+    nuwax_monitoring_mode_service_command_deadline(&s_monitoring_mode, ws);
     if (!s_shell_actions) {
         return;
     }
     nuwax_app_shell_result_t action = {0};
-    while (xQueueReceive(s_shell_actions, &action, 0) == pdTRUE) {
+    const int64_t drain_started_us = esp_timer_get_time();
+    uint32_t handled = 0U;
+    while (handled < NUWAX_SHELL_ACTION_DRAIN_MAX &&
+           xQueueReceive(s_shell_actions, &action, 0) == pdTRUE) {
+        app_task_watchdog_checkpoint();
         if (nuwax_shell_action_is_listen_control(action.action)) {
+            handled++;
             continue;
         }
         if (action.action == NUWAX_APP_SHELL_ACTION_CANCEL &&
             exclusive_audio_mode_blocks_normal_audio()) {
             ESP_LOGI(TAG,
                      "exclusive audio mode dropped stale shell cancel action");
+            handled++;
             continue;
         }
         handle_shell_action(ws, &action);
+        handled++;
+        app_task_watchdog_checkpoint();
+        if (esp_timer_get_time() - drain_started_us >=
+            NUWAX_SHELL_ACTION_DRAIN_BUDGET_US) {
+            break;
+        }
     }
 }
 
@@ -29152,7 +32778,14 @@ static bool drain_shell_actions_preserving_listen_control(nuwax_ws_client_t *ws)
     }
     nuwax_app_shell_result_t action = {0};
     const UBaseType_t queued_at_entry = uxQueueMessagesWaiting(s_shell_actions);
+    const int64_t drain_started_us = esp_timer_get_time();
     for (UBaseType_t handled = 0U; handled < queued_at_entry; ++handled) {
+        app_task_watchdog_checkpoint();
+        if (handled != 0U &&
+            esp_timer_get_time() - drain_started_us >=
+                NUWAX_SHELL_ACTION_DRAIN_BUDGET_US) {
+            break;
+        }
         if (xQueueReceive(s_shell_actions, &action, 0) != pdTRUE) {
             break;
         }
@@ -29188,16 +32821,25 @@ static bool drain_shell_actions_preserving_listen_control(nuwax_ws_client_t *ws)
             continue;
         }
         handle_shell_action(ws, &action);
+        app_task_watchdog_checkpoint();
     }
     return s_deferred_shell_listen_action_count > 0U;
 }
 
-static esp_err_t audio_diagnostic_teardown_retry(const char *reason)
+typedef struct {
+    nuwax_audio_board_ref_t ref;
+    nuwax_audio_board_lease_t lease;
+} audio_diagnostic_owner_t;
+
+static esp_err_t audio_diagnostic_teardown_retry(audio_diagnostic_owner_t *owner,
+                                                  const char *reason)
 {
     const unsigned teardown_attempts = 3U;
     esp_err_t teardown_err = ESP_OK;
     for (unsigned attempt = 1U; attempt <= teardown_attempts; ++attempt) {
-        teardown_err = nuwax_audio_board_deinit();
+        teardown_err = owner->ref.token
+            ? nuwax_audio_board_deinit(&owner->ref)
+            : nuwax_audio_board_retry_teardown();
         if (teardown_err == ESP_OK) {
             if (attempt > 1U) {
                 ESP_LOGW(TAG,
@@ -29221,15 +32863,15 @@ static esp_err_t audio_diagnostic_teardown_retry(const char *reason)
     return teardown_err;
 }
 
-static esp_err_t audio_diagnostic_begin(nuwax_audio_board_lease_t *lease)
+static esp_err_t audio_diagnostic_begin(audio_diagnostic_owner_t *owner)
 {
     void *rx = NULL;
     void *tx = NULL;
-    ESP_RETURN_ON_ERROR(nuwax_audio_board_init(), TAG, "diagnostic board init failed");
-    esp_err_t err = nuwax_audio_board_acquire_diagnostic(&rx, &tx, lease);
+    ESP_RETURN_ON_ERROR(nuwax_audio_board_init(&owner->ref), TAG, "diagnostic board init failed");
+    esp_err_t err = nuwax_audio_board_acquire_diagnostic(&rx, &tx, &owner->lease);
     if (err != ESP_OK) {
         const esp_err_t cleanup_err =
-            audio_diagnostic_teardown_retry("acquire_failed");
+            audio_diagnostic_teardown_retry(owner, "acquire_failed");
         if (cleanup_err != ESP_OK) {
             ESP_LOGE(TAG,
                      "diagnostic acquire cleanup failed: %s",
@@ -29239,23 +32881,23 @@ static esp_err_t audio_diagnostic_begin(nuwax_audio_board_lease_t *lease)
     }
     ESP_LOGW(TAG,
              "exclusive audio diagnostic lease acquired generation=%lu token=%lu",
-             (unsigned long)lease->generation,
-             (unsigned long)lease->token);
+             (unsigned long)owner->lease.generation,
+             (unsigned long)owner->lease.token);
     return ESP_OK;
 }
 
-static esp_err_t audio_diagnostic_end(nuwax_audio_board_lease_t *lease)
+static esp_err_t audio_diagnostic_end(audio_diagnostic_owner_t *owner)
 {
-    ESP_RETURN_ON_ERROR(nuwax_audio_board_release(lease),
+    ESP_RETURN_ON_ERROR(nuwax_audio_board_release(&owner->lease),
                         TAG,
                         "diagnostic lease release failed");
-    return audio_diagnostic_teardown_retry("diagnostic_end");
+    return audio_diagnostic_teardown_retry(owner, "diagnostic_end");
 }
 
 static esp_err_t run_p3_aec_ref_health_gate(const char *label, bool run_ref_probe)
 {
     const char *gate = label ? label : "p3_aec_ref_gate";
-    nuwax_audio_board_lease_t diagnostic_lease = {0};
+    audio_diagnostic_owner_t diagnostic_lease = {0};
     ESP_RETURN_ON_ERROR(audio_diagnostic_begin(&diagnostic_lease),
                         TAG,
                         "AEC ref gate rejected while audio is owned");
@@ -29358,7 +33000,7 @@ static esp_err_t run_p3_aec_ref_health_manual(float volume_db,
              (unsigned long)safe_duration_ms,
              run_ref_probe ? 1 : 0);
 
-    nuwax_audio_board_lease_t diagnostic_lease = {0};
+    audio_diagnostic_owner_t diagnostic_lease = {0};
     ESP_RETURN_ON_ERROR(audio_diagnostic_begin(&diagnostic_lease),
                         TAG,
                         "manual AEC ref health rejected while audio is owned");
@@ -30238,6 +33880,9 @@ void app_main(void) {
     }
     set_state(NUWAX_APP_STATE_BOOTING);
     log_firmware_startup_info();
+    ESP_LOGI(TAG, "network recovery revision=20260922-network-recovery-v1");
+    ESP_LOGI(TAG, "cloud resume revision=20260923-cloud-resume-v1 local_wake=epoch_independent settle_delay_ms=0");
+    ESP_LOGI(TAG, "link convergence revision=20260923-link-convergence-v1");
     ESP_LOGI(TAG, "formal cloud OTA test image active version=%s",
              esp_app_get_description()->version);
     ESP_LOGI(TAG, "cloud OTA payload build marker revision=20260808_01 version=%s",
@@ -30248,6 +33893,52 @@ void app_main(void) {
              "OTA audio isolation and retryable boot mic validation enabled");
     ESP_LOGI(TAG, "OTA v1 request_id-free command dispatch enabled");
     nuwax_board_log_banner();
+#if CONFIG_NUWAX_SD_CARD_BOOT_SELFTEST_ENABLE
+    /* This is deliberately a one-shot product-compatible probe. The regular
+     * firmware never mounts the card, and the test releases the SD host before
+     * Wi-Fi, audio and UI services start. */
+    nuwax_sd_card_info_t sd_info = {0};
+    esp_err_t sd_selftest_err = nuwax_sd_card_mount(&sd_info);
+    if (sd_selftest_err == ESP_OK) {
+        sd_selftest_err = nuwax_sd_card_read_write_selftest();
+    }
+    const esp_err_t sd_unmount_err = nuwax_sd_card_unmount();
+    if (sd_selftest_err == ESP_OK && sd_unmount_err != ESP_OK) {
+        sd_selftest_err = sd_unmount_err;
+    }
+    ESP_LOGW(TAG,
+             "SD boot selftest result=%s mounted=%d capacity=%llu sector=%u max_freq=%ukHz",
+             esp_err_to_name(sd_selftest_err),
+             sd_info.mounted ? 1 : 0,
+             (unsigned long long)sd_info.capacity_bytes,
+             (unsigned)sd_info.sector_size,
+             (unsigned)sd_info.max_frequency_khz);
+#endif
+/* OFFLINE_AUDIO_ROUND_20260825_BEGIN */
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    const esp_err_t offline_audio_init_err = nuwax_offline_audio_init();
+#if CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+    const char *offline_replay_route = "test_gateway";
+#elif CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_FORMAL_ENABLE
+    const char *offline_replay_route = "formal_cloud";
+#else
+    const char *offline_replay_route = "disabled";
+#endif
+    ESP_LOGI(TAG, "offline replay route=%s test_panel=%d simulated_network=%d",
+             offline_replay_route, NUWAX_TEST_PANEL_ENABLED, NUWAX_TEST_NETWORK_ENABLED);
+    const esp_err_t sd_supervisor_err = nuwax_offline_audio_supervisor_start();
+    if (sd_supervisor_err != ESP_OK) {
+        ESP_LOGW(TAG, "SD supervisor start failed: %s", esp_err_to_name(sd_supervisor_err));
+    }
+    if (offline_audio_init_err != ESP_OK) {
+        /* SD storage is an optional durability path. Never turn a missing,
+         * full, or damaged card into a boot failure or audio-owner reset. */
+        ESP_LOGW(TAG,
+                 "offline audio archive unavailable; cardless streaming retained, detected-card recording requires qualified storage err=%s",
+                 esp_err_to_name(offline_audio_init_err));
+    }
+#endif
+/* OFFLINE_AUDIO_ROUND_20260825_END */
     nuwax_sleep_transaction_init(&s_sleep_transaction);
     nuwax_deferred_sleep_intent_init(&s_deferred_sleep_intent);
     nuwax_notification_init(&s_notification_transaction);
@@ -30292,6 +33983,14 @@ void app_main(void) {
         ESP_LOGE(TAG, "NVS initialization failed: %s", esp_err_to_name(ret));
         boot_fail_controlled_restart("nvs_init");
     }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(nuwax_device_error_report_init());
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    if (offline_audio_init_err != ESP_OK) {
+        (void)nuwax_device_warning_report_enqueue(
+            "sd", "archive_init", offline_audio_init_err,
+            "booting", 0U, NULL);
+    }
+#endif
     const bool provisioning_boot_profile =
         nuwax_provision_main_requires_low_memory_boot_profile();
     bool product_touch_ready = !CONFIG_NUWAX_TOUCH_ENABLE;
@@ -30312,6 +34011,7 @@ void app_main(void) {
         .prepare_audio_for_update = ota_prepare_audio,
         .show_local_progress = ota_show_local_progress,
         .check_boot_health = ota_check_boot_health,
+        .prepare_reprovision_boot = ota_prepare_reprovision_boot,
     };
     ret = nuwax_ota_device_init(&ota_callbacks);
     if (ret != ESP_OK) {
@@ -30370,12 +34070,37 @@ void app_main(void) {
         .return_to_listening_after_cancel = speaker_callback_return_to_listening_after_cancel,
         .on_volume_changed = speaker_callback_on_volume_changed,
     };
-    if (nuwax_speaker_playback_init(&speaker_callbacks) != ESP_OK) {
+    const esp_err_t speaker_init_err =
+        nuwax_speaker_playback_init(&speaker_callbacks);
+    if (speaker_init_err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize speaker playback");
+        (void)nuwax_device_error_report_enqueue(
+            "error", "speaker", "playback_init", speaker_init_err,
+            "booting", 0U, NULL);
         boot_fail_controlled_restart("speaker_playback_init");
     }
-    s_current_volume_percent = nuwax_speaker_playback_get_volume_percent();
+    s_current_volume_percent = nuwax_speaker_playback_get_confirmed_volume_percent(NULL);
     nuwax_speaker_playback_set_downlink_admission(1U, false);
+#if defined(CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE) && \
+    CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE
+    const esp_err_t music_playback_init_err = nuwax_music_playback_init();
+#if CONFIG_NUWAX_MUSIC_CONTROL_TEST_ENABLE
+    ESP_ERROR_CHECK_WITHOUT_ABORT(nuwax_music_test_control_init());
+#endif
+    if (music_playback_init_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "formal music playback disabled after init failure: %s",
+                 esp_err_to_name(music_playback_init_err));
+    }
+#endif
+#if CONFIG_NUWAX_MUSIC_URL_TEST_ENABLE
+    const esp_err_t music_test_init_err = nuwax_music_url_test_init();
+    if (music_test_init_err != ESP_OK) {
+        /* A development aid must never prevent the product from booting. */
+        ESP_LOGW(TAG, "music URL test disabled after init failure: %s",
+                 esp_err_to_name(music_test_init_err));
+    }
+#endif
 #if CONFIG_NUWAX_OTA_ENABLE
     ota_boot_health_mark(OTA_BOOT_HEALTH_SPEAKER_MANAGER);
 #endif
@@ -30385,9 +34110,8 @@ void app_main(void) {
      * the AEC engine. Provisioning boots reserve AEC only after BLE has stopped. */
     esp_err_t live_aec_pool_err = ESP_OK;
     if (!provisioning_boot_profile) {
-        /* Keep the scarce internal/DMA reserve available for the early local
-         * wake detector and WPA3 association. The pool is initialized after
-         * Wi-Fi has acquired an IP and before speaker output is anchored. */
+        /* Preflight runs after model construction and releases its reserve
+         * before speaker/wake and background WPA3 association start. */
         ESP_LOGI(TAG,
                  "live AEC reservation deferred until Wi-Fi and local wake bootstrap complete");
     } else {
@@ -30415,18 +34139,27 @@ void app_main(void) {
                                                      NUWAX_SESSION_COMMAND_QUEUE_DEPTH,
                                                      sizeof(nuwax_session_command_envelope_t),
                                                      NULL);
+    s_session_notification_commands = create_queue_prefer_psram(
+        "session_notification_commands",
+        NUWAX_SESSION_NOTIFICATION_QUEUE_DEPTH,
+        sizeof(nuwax_session_command_envelope_t),
+        NULL);
     s_session_critical_commands = create_queue_prefer_psram(
         "session_critical_commands",
         NUWAX_SESSION_CRITICAL_QUEUE_DEPTH,
         sizeof(nuwax_session_command_envelope_t),
         NULL);
+#if CONFIG_NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE
     s_p3_softref_ab_requests = create_queue_prefer_psram(
         "p3_softref_ab_requests", 2, sizeof(p3_softref_ab_request_t), NULL);
+#endif
+#if CONFIG_NUWAX_P5_DURING_PLAYBACK_CANDIDATE_ENABLE
     s_p5_during_playback_candidate_requests =
         create_queue_prefer_psram("p5_during_playback_candidate_requests",
                                    2,
                                    sizeof(p5_during_playback_candidate_request_t),
                                    NULL);
+#endif
     s_wake_word_events = create_queue_prefer_psram(
         "wake_word_events", 2, sizeof(wake_word_event_t), NULL);
     s_wifi_connect_requests = create_queue_prefer_psram(
@@ -30437,7 +34170,14 @@ void app_main(void) {
         "wifi_status_reports", 1, sizeof(wifi_status_report_t), NULL);
     s_wifi_connect_mutex = xSemaphoreCreateMutex();
     if (!s_shell_actions || !s_session_commands ||
-        !s_session_critical_commands || !s_p3_softref_ab_requests || !s_p5_during_playback_candidate_requests ||
+        !s_session_notification_commands ||
+        !s_session_critical_commands ||
+#if CONFIG_NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE
+        !s_p3_softref_ab_requests ||
+#endif
+#if CONFIG_NUWAX_P5_DURING_PLAYBACK_CANDIDATE_ENABLE
+        !s_p5_during_playback_candidate_requests ||
+#endif
         !s_wake_word_events || !s_wifi_connect_requests || !s_wifi_scan_results ||
         !s_wifi_status_reports || !s_wifi_connect_mutex) {
         ESP_LOGE(TAG, "failed to create app queues");
@@ -30446,29 +34186,48 @@ void app_main(void) {
     const nuwax_meeting_mode_callbacks_t meeting_callbacks = {
         .ctx = NULL,
         .can_start = meeting_can_start,
+        .prepare_cloud_start = meeting_prepare_cloud_start,
+        .acquire_mic = exclusive_audio_acquire_mic,
         .is_playback_active = exclusive_audio_playback_active,
         .fade_and_cancel_playback = exclusive_audio_fade_and_cancel_playback,
         .poll_controls = exclusive_audio_poll_controls,
         .on_state_changed = meeting_state_changed,
     };
-    if (nuwax_meeting_mode_init(&s_meeting_mode, &meeting_callbacks) != ESP_OK) {
+    const esp_err_t meeting_init_err =
+        nuwax_meeting_mode_init(&s_meeting_mode, &meeting_callbacks);
+    if (meeting_init_err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize meeting mode controller");
+        (void)nuwax_device_error_report_enqueue(
+            "error", "meeting", "mode_init", meeting_init_err,
+            "booting", 0U, NULL);
         boot_fail_controlled_restart("meeting_mode_init");
     }
     const nuwax_monitoring_mode_callbacks_t monitoring_callbacks = {
         .ctx = NULL,
         .can_start = monitoring_can_start,
+        .prepare_cloud_start = monitoring_prepare_cloud_start,
+        .acquire_mic = exclusive_audio_acquire_mic,
         .is_playback_active = exclusive_audio_playback_active,
         .fade_and_cancel_playback = exclusive_audio_fade_and_cancel_playback,
         .poll_controls = exclusive_audio_poll_controls,
         .on_state_changed = monitoring_state_changed,
     };
-    if (nuwax_monitoring_mode_init(&s_monitoring_mode,
-                                   &monitoring_callbacks) != ESP_OK) {
+    const esp_err_t monitoring_init_err =
+        nuwax_monitoring_mode_init(&s_monitoring_mode,
+                                    &monitoring_callbacks);
+    if (monitoring_init_err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize monitoring mode controller");
+        (void)nuwax_device_error_report_enqueue(
+            "error", "monitoring", "mode_init", monitoring_init_err,
+            "booting", 0U, NULL);
         nuwax_meeting_mode_deinit(&s_meeting_mode);
         boot_fail_controlled_restart("monitoring_mode_init");
     }
+    /* The power task starts before application queues and sleep state exist.
+     * Install the semantic listener only after both exclusive-mode owners are
+     * initialized; early boot presses are intentionally not replayed. */
+    nuwax_power_ctrl_set_key_event_listener(
+        power_key_event_listener, NULL);
     if (!create_app_task_internal(flash_ops_task,
                                   "nuwax_flash_ops",
                                   NUWAX_FLASH_OP_TASK_STACK_BYTES,
@@ -30488,7 +34247,9 @@ void app_main(void) {
 #endif
     nuwax_touch_gesture_set_action_queue(s_shell_actions);
     nuwax_app_shell_set_action_queue(s_shell_actions);
-    nuwax_touch_gesture_set_volume_preview_callback(nuwax_speaker_playback_preview_volume_percent);
+    nuwax_app_shell_set_volume_callbacks(nuwax_speaker_playback_preview_volume_percent_ordered,
+                                        nuwax_speaker_playback_cancel_volume_preview,
+                                        nuwax_speaker_playback_note_volume_commit_queued);
     nuwax_app_shell_set_reprovision_callback(
         shell_dispatch_set_reprovisioning, NULL);
 
@@ -30502,6 +34263,7 @@ void app_main(void) {
     esp_err_t head_touch_err = nuwax_head_touch_control_init(
         head_touch_get_conversation_state,
         head_touch_interaction_allowed,
+        head_touch_interrupt_music,
         NULL);
     ESP_ERROR_CHECK_WITHOUT_ABORT(head_touch_err);
 #elif CONFIG_NUWAX_HEAD_TOUCH_ENABLE && \
@@ -30519,6 +34281,19 @@ void app_main(void) {
 #else
     esp_err_t display_err = nuwax_display_init();
     ESP_ERROR_CHECK_WITHOUT_ABORT(display_err);
+    if (display_err == ESP_OK) {
+        /* Display init completed the logo before enabling the backlight.
+         * No LVGL writer exists yet; its output gate preserves this frame
+         * throughout normal/provisioning UI bootstrap. */
+        nuwax_display_brightness_load();
+        nuwax_app_shell_set_brightness_percent(nuwax_display_brightness_percent());
+        const esp_err_t boot_backlight_err =
+            nuwax_display_backlight_set_percent(nuwax_display_brightness_percent());
+        ESP_ERROR_CHECK_WITHOUT_ABORT(boot_backlight_err);
+        ESP_LOGI(TAG,
+                 "startup logo retained; waiting for first formal UI frame mode=%s",
+                 provisioning_boot_profile ? "provisioning" : "normal");
+    }
 #if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
     if (display_err == ESP_OK) {
         uint32_t te_edges = 0U;
@@ -30590,7 +34365,8 @@ void app_main(void) {
 #if CONFIG_NUWAX_OTA_ENABLE
             ota_boot_health_mark(OTA_BOOT_HEALTH_LVGL);
 #endif
-            esp_err_t ui_err = initialize_v28_ui_with_retry();
+            esp_err_t ui_err = initialize_v28_ui_with_retry(
+                provisioning_boot_profile);
             ESP_ERROR_CHECK_WITHOUT_ABORT(ui_err);
 #if CONFIG_NUWAX_OTA_ENABLE
             if (ui_err == ESP_OK) {
@@ -30603,12 +34379,25 @@ void app_main(void) {
         }
     }
 #endif
+#if !CONFIG_NUWAX_P3_SOFTREF_AB_SKIP_UI_RUNTIME
+    if (display_err == ESP_OK && ui_ready_snapshot()) {
+        /* Also retry a transient early backlight error after UI bootstrap. */
+        const esp_err_t backlight_err =
+            nuwax_display_backlight_set_percent(nuwax_display_brightness_percent());
+        if (backlight_err != ESP_OK) {
+            ESP_LOGW(TAG,
+                     "display backlight enable deferred after UI bootstrap: %s",
+                     esp_err_to_name(backlight_err));
+        }
+    }
+#endif
     nuwax_diagnostics_log_heap_label(TAG, "after_ui_init");
 
 #if CONFIG_NUWAX_BATTERY_SERVICE_ENABLE && \
     !CONFIG_NUWAX_P2_AUDIO_SMOKE_MODE && !CONFIG_NUWAX_HW_ACCEPTANCE_MODE
     esp_err_t battery_service_err = start_battery_service_for_ui();
     ESP_ERROR_CHECK_WITHOUT_ABORT(battery_service_err);
+    if (battery_service_err == ESP_OK) service_boot_low_battery_gate();
 #endif
 
 #if CONFIG_NUWAX_P1_HW_DIAG_MODE
@@ -30631,7 +34420,7 @@ void app_main(void) {
         ESP_LOGE(TAG, "P2-1 audio_board lifecycle selftest FAILED: %s",
                  esp_err_to_name(board_selftest_err));
     }
-    nuwax_audio_board_lease_t p2_diagnostic_lease = {0};
+    audio_diagnostic_owner_t p2_diagnostic_lease = {0};
     esp_err_t p2_diagnostic_err = audio_diagnostic_begin(&p2_diagnostic_lease);
     if (p2_diagnostic_err != ESP_OK) {
         ESP_LOGE(TAG,
@@ -30791,6 +34580,9 @@ void app_main(void) {
 
     if (wifi_init_err != ESP_OK) {
         ESP_LOGE(TAG, "Wi-Fi init failed before UI: %s", esp_err_to_name(wifi_init_err));
+        (void)nuwax_device_error_report_enqueue(
+            "error", "wifi", "manager_init", wifi_init_err,
+            "booting", 0U, NULL);
         boot_fail_controlled_restart("wifi_manager_init");
     }
 
@@ -30800,17 +34592,22 @@ void app_main(void) {
     if (provision_init_err != ESP_OK) {
         ESP_LOGE(TAG, "BLE provisioning init failed: %s",
                  esp_err_to_name(provision_init_err));
+        (void)nuwax_device_error_report_enqueue(
+            "error", "provisioning", "init", provision_init_err,
+            "booting", 0U, NULL);
         (void)nuwax_provision_main_stop();
         boot_fail_controlled_restart("ble_provisioning_init");
     }
     if (nuwax_provision_main_should_auto_enter()) {
         const bool reversible_reprovision =
-            nuwax_provision_main_is_reprovisioning();
+            nuwax_provision_main_is_reprovisioning() &&
+            !nuwax_provision_main_binding_required();
         const bool missing_provisioned_pair =
             !nuwax_provision_main_has_complete_pair();
         if (!provisioning_boot_profile) {
             ESP_LOGW(TAG,
-                     "provisioning requirement appeared after Wi-Fi init; rebooting before BLE into low-memory profile");
+                     "provisioning requirement appeared after Wi-Fi init; rebooting before BLE into low-memory profile missing_pair=%d",
+                     missing_provisioned_pair);
             const esp_err_t recovery_err =
                 nuwax_provision_main_request_low_memory_boot_profile();
             (void)nuwax_provision_main_stop();
@@ -30826,20 +34623,25 @@ void app_main(void) {
         ESP_LOGI(TAG, "Starting BLE provisioning service name=%s reversible=%d",
                  nuwax_provision_main_service_name(), reversible_reprovision);
         set_state(NUWAX_APP_STATE_WIFI_CONNECTING);
-        nuwax_app_shell_set_provisioning_active(true);
         esp_err_t provision_start_err = nuwax_provision_main_start("first_boot");
         if (provision_start_err != ESP_OK) {
             ESP_LOGE(TAG, "BLE provisioning start failed: %s",
                      esp_err_to_name(provision_start_err));
+            (void)nuwax_device_error_report_enqueue(
+                "error", "provisioning", "start", provision_start_err,
+                "wifi_connecting", 0U, NULL);
             (void)nuwax_provision_main_stop();
             nuwax_app_shell_set_provisioning_active(false);
+            nuwax_face_clear_provisioning_boot_visual();
             if (reversible_reprovision &&
-                nuwax_provision_main_rollback_wifi_credentials() == ESP_OK) {
+                rollback_wifi_credentials_guarded() == ESP_OK) {
                 ESP_LOGW(TAG, "BLE service failed to start; previous Wi-Fi retained");
             } else {
                 boot_fail_controlled_restart("ble_provisioning_start");
             }
         } else {
+            nuwax_app_shell_set_provisioning_active(true);
+            nuwax_face_clear_provisioning_boot_visual();
             nuwax_app_shell_schedule_provisioning_qr(0U);
             nuwax_provision_outcome_t provision_outcome =
                 nuwax_provision_main_run(300000);
@@ -30847,16 +34649,30 @@ void app_main(void) {
                 provision_outcome == NUWAX_PROVISION_OUTCOME_SUCCESS ||
                 provision_outcome == NUWAX_PROVISION_OUTCOME_OLD_WIFI_RECOVERED;
             if (!provision_completed) {
-                ESP_LOGE(TAG, "BLE provisioning failed outcome=%d reason=%s",
-                         (int)provision_outcome,
-                         nuwax_provision_main_last_reason());
+                const bool cancelled =
+                    provision_outcome == NUWAX_PROVISION_OUTCOME_STOPPED;
+                if (cancelled) {
+                    ESP_LOGI(TAG, "BLE provisioning cancelled; restoring previous connection");
+                } else {
+                    ESP_LOGE(TAG, "BLE provisioning failed outcome=%d reason=%s",
+                             (int)provision_outcome,
+                             nuwax_provision_main_last_reason());
+                    (void)nuwax_device_error_report_enqueue(
+                        "error", "provisioning", "transaction", ESP_FAIL,
+                        "wifi_connecting", 0U, NULL);
+                }
                 (void)nuwax_provision_main_stop();
                 nuwax_app_shell_set_provisioning_active(false);
+                nuwax_face_clear_provisioning_boot_visual();
                 if (reversible_reprovision) {
                     esp_err_t rollback_err =
-                        nuwax_provision_main_rollback_wifi_credentials();
+                        rollback_wifi_credentials_guarded();
                     if (rollback_err == ESP_OK) {
-                        ESP_LOGW(TAG, "BLE reprovision failed; previous Wi-Fi restored");
+                        if (cancelled) {
+                            ESP_LOGI(TAG, "BLE reprovision cancelled; previous Wi-Fi restored");
+                        } else {
+                            ESP_LOGW(TAG, "BLE reprovision failed; previous Wi-Fi restored");
+                        }
                     } else {
                         ESP_LOGE(TAG, "restore previous Wi-Fi failed: %s",
                                  esp_err_to_name(rollback_err));
@@ -30870,6 +34686,7 @@ void app_main(void) {
             } else {
                 (void)nuwax_provision_main_stop();
                 nuwax_app_shell_set_provisioning_active(false);
+                nuwax_face_clear_provisioning_boot_visual();
                 ESP_LOGI(TAG, "BLE provisioning exited outcome=%d reason=%s",
                          (int)provision_outcome,
                          nuwax_provision_main_last_reason());
@@ -30903,6 +34720,17 @@ void app_main(void) {
         }
     }
 
+    /* NVS accesses retain their Flash safety fence. Complete boot-only
+     * reads/config writes before wake starts instead of stopping it afterward. */
+    refresh_saved_wifi_list_ui();
+    const esp_err_t boot_sta_prepare_err = nuwax_wifi_prepare_boot_config();
+    if (boot_sta_prepare_err != ESP_OK) {
+        ESP_LOGW(TAG, "boot STA prepare deferred; connection worker will retry err=%s",
+                 esp_err_to_name(boot_sta_prepare_err));
+    }
+    ESP_LOGI(TAG, "boot optimization revision=20260922-startup-v1");
+    ESP_LOGI(TAG, "interaction optimization revision=20260922-interaction-v3");
+
     /* P3-0H: kick off the dual-SSID fallback watcher so when retries on the
      * primary SSID are exhausted, the device flips to the backup SSID and vice
      * versa. The watcher task is no-op when CONFIG_NUWAX_WIFI_SSID_B is empty. */
@@ -30934,6 +34762,74 @@ void app_main(void) {
                  "early wake word detector init failed: %s; wake supervisor will retry",
                  esp_err_to_name(wake_init_err));
     }
+#endif
+    /* Keep the AEC allocation peak before speaker DMA is anchored and before
+     * authentication starts. No wake capture needs to be stopped for preflight. */
+#if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
+#if CONFIG_NUWAX_WAKE_WORD_ENABLE
+    if (product_wake_word_ready &&
+        nuwax_wake_word_detector_is_running()) {
+        const size_t aec_internal = heap_caps_get_free_size(
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        const size_t aec_internal_largest =
+            heap_caps_get_largest_free_block(
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (aec_internal < NUWAX_LIVE_AEC_PREP_MIN_INTERNAL_FREE_BYTES ||
+            aec_internal_largest <
+                NUWAX_LIVE_AEC_PREP_MIN_INTERNAL_LARGEST_BYTES) {
+            boot_wake_parked_for_aec = true;
+            ESP_LOGI(TAG,
+                     "parking early wake for AEC reserve internal=%u largest=%u",
+                     (unsigned)aec_internal,
+                     (unsigned)aec_internal_largest);
+            stop_sleep_wake_word_detector("boot_aec_memory_reserve");
+        }
+    }
+#endif
+    if (!s_conversation_live_aec_pool_initialized) {
+        live_aec_pool_err = conversation_live_aec_pool_init();
+        ESP_ERROR_CHECK_WITHOUT_ABORT(live_aec_pool_err);
+        product_live_aec_ready = live_aec_pool_err == ESP_OK;
+        if (live_aec_pool_err == ESP_OK) {
+            const esp_err_t suspend_err =
+                conversation_live_aec_pool_suspend("boot_preflight_complete");
+            if (suspend_err != ESP_OK) {
+                ESP_LOGE(TAG,
+                         "boot live AEC preflight release failed: %s",
+                         esp_err_to_name(suspend_err));
+                (void)nuwax_device_error_report_enqueue(
+                    "error", "audio", "aec_preflight_release", suspend_err,
+                    "booting", 0U, NULL);
+                live_aec_pool_err = suspend_err;
+                product_live_aec_ready = false;
+            }
+        }
+#if CONFIG_NUWAX_OTA_ENABLE
+        if (live_aec_pool_err == ESP_OK) {
+            ota_boot_health_mark(OTA_BOOT_HEALTH_LIVE_AEC);
+        }
+#endif
+    }
+#endif
+    /* Anchor the shared I2S board once, after model construction but before
+     * the first wake capture. Flash maintenance can then park wake without
+     * tearing down and rebuilding the codec/DMA board. */
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+    if (!create_app_task(nuwax_speaker_playback_task,
+                         "nuwax_speaker",
+                         NUWAX_SPEAKER_TASK_STACK_BYTES,
+                         NUWAX_SPEAKER_TASK_PRIORITY,
+                         NULL)) {
+        return;
+    }
+    nuwax_speaker_playback_prepare_for_tts("boot_preallocate");
+#if CONFIG_NUWAX_OTA_ENABLE
+    if (nuwax_speaker_playback_output_ready()) {
+        ota_boot_health_mark(OTA_BOOT_HEALTH_SPEAKER_OUTPUT);
+    }
+#endif
+#endif
+#if CONFIG_NUWAX_WAKE_WORD_ENABLE
     if (!create_app_task(wake_word_supervisor_task,
                          "nuwax_wake_guard",
                          NUWAX_WAKE_SUPERVISOR_TASK_STACK_BYTES,
@@ -30979,25 +34875,18 @@ void app_main(void) {
     /* Start the primary<->backup fallback watcher before connecting, so retries
      * exhausted events on the active SSID flip to the other slot automatically. */
     nuwax_wifi_start_fallback_watcher();
-    esp_err_t boot_wifi_err = ESP_OK;
-    if (!nuwax_wifi_is_connected()) {
-        boot_wifi_err = nuwax_wifi_connect();
-    }
+    /* Association starts through wifi_connect_task after local/audio preflight.
+     * Never serialize a 30-second AP timeout into local startup. */
     const bool boot_wifi_connected = nuwax_wifi_is_connected();
     if (!boot_wifi_connected) {
-        nuwax_diagnostics_log_heap_label(TAG, "wifi_connect_failed");
-        ESP_LOGW(TAG,
-                 "boot Wi-Fi connection unavailable result=%s; continuing offline with background recovery",
-                 esp_err_to_name(boot_wifi_err));
+        ESP_LOGI(TAG, "boot Wi-Fi deferred to worker after local preflight");
         nuwax_app_shell_set_bridge_status(false);
-        set_wifi_transport_connecting_state("boot_wifi_unavailable");
-        set_wifi_result_from_current_link(
-            "RECOVER", false, esp_err_to_name(boot_wifi_err));
+        set_wifi_transport_connecting_state("boot_wifi_pending");
         queue_wifi_status_report("recovery_pending",
                                  "RECOVER",
                                  "",
                                  false,
-                                 esp_err_to_name(boot_wifi_err));
+                                 "background_pending");
     } else {
         nuwax_diagnostics_log_heap_label(TAG, "after_wifi_connect");
         char ssid[33] = {0};
@@ -31006,51 +34895,7 @@ void app_main(void) {
         nuwax_app_shell_set_wifi_status(ssid, ip);
         queue_wifi_status_report("connected", ssid, ip, true, "boot connected");
     }
-    refresh_saved_wifi_list_ui();
 
-#if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
-#if CONFIG_NUWAX_WAKE_WORD_ENABLE
-    if (product_wake_word_ready &&
-        nuwax_wake_word_detector_is_running()) {
-        const size_t aec_internal = heap_caps_get_free_size(
-            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        const size_t aec_internal_largest =
-            heap_caps_get_largest_free_block(
-                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        if (aec_internal < NUWAX_LIVE_AEC_PREP_MIN_INTERNAL_FREE_BYTES ||
-            aec_internal_largest <
-                NUWAX_LIVE_AEC_PREP_MIN_INTERNAL_LARGEST_BYTES) {
-            boot_wake_parked_for_aec = true;
-            ESP_LOGI(TAG,
-                     "parking early wake for AEC reserve internal=%u largest=%u",
-                     (unsigned)aec_internal,
-                     (unsigned)aec_internal_largest);
-            stop_sleep_wake_word_detector("boot_aec_memory_reserve");
-        }
-    }
-#endif
-    if (!s_conversation_live_aec_pool_initialized) {
-        live_aec_pool_err = conversation_live_aec_pool_init();
-        ESP_ERROR_CHECK_WITHOUT_ABORT(live_aec_pool_err);
-        product_live_aec_ready = live_aec_pool_err == ESP_OK;
-        if (live_aec_pool_err == ESP_OK) {
-            const esp_err_t suspend_err =
-                conversation_live_aec_pool_suspend("boot_preflight_complete");
-            if (suspend_err != ESP_OK) {
-                ESP_LOGE(TAG,
-                         "boot live AEC preflight release failed: %s",
-                         esp_err_to_name(suspend_err));
-                live_aec_pool_err = suspend_err;
-                product_live_aec_ready = false;
-            }
-        }
-#if CONFIG_NUWAX_OTA_ENABLE
-        if (live_aec_pool_err == ESP_OK) {
-            ota_boot_health_mark(OTA_BOOT_HEALTH_LIVE_AEC);
-        }
-#endif
-    }
-#endif
 
 #if CONFIG_NUWAX_WAKE_WORD_ENABLE
     if (wake_init_err != ESP_OK) {
@@ -31062,6 +34907,9 @@ void app_main(void) {
             ESP_LOGE(TAG,
                      "wake model retry on app_main internal stack failed: %s",
                      esp_err_to_name(wake_init_err));
+            (void)nuwax_device_error_report_enqueue(
+                "error", "wake", "model_init", wake_init_err,
+                "booting", 0U, NULL);
         }
     }
     if (boot_wake_parked_for_network || boot_wake_parked_for_aec) {
@@ -31075,6 +34923,19 @@ void app_main(void) {
         }
     }
     product_wake_word_ready = nuwax_wake_word_detector_is_ready();
+    if (!product_wake_word_ready && wake_init_err == ESP_OK) {
+        /* The detector can be between an ownership stop and supervisor re-arm
+         * when the one-shot product-readiness snapshot is taken. Give the
+         * supervisor one bounded convergence window so PRODUCT_READY does not
+         * report wake_word=0 while the local wake owner is recoverable. */
+        request_sleep_wake_word_detector("product_ready_recheck");
+        product_wake_word_ready = wait_for_sleep_wake_word_ready(
+            NUWAX_BOOT_WAKE_READY_WAIT_MS);
+        if (!product_wake_word_ready) {
+            ESP_LOGW(TAG,
+                     "product readiness wake detector recheck still pending; supervisor will continue recovery");
+        }
+    }
     nuwax_diagnostics_log_heap_label(TAG, "after_wake_init");
 #endif
     if (!create_app_task(wifi_scan_task, "nuwax_wifi_scan", 8192, 4, &s_wifi_scan_task)) {
@@ -31083,9 +34944,21 @@ void app_main(void) {
     if (!create_app_task(wifi_connect_task, "nuwax_wifi_conn", 4096, 4, NULL)) {
         return;
     }
+    /* Model construction and AEC preflight have finished. Start association
+     * while final local services are registered, rather than waiting for the
+     * first cloud-owner iteration. Keep the original main-loop fallback when
+     * the remaining internal/DMA reserve is too small for safe overlap. */
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 32768U &&
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 16384U &&
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) >= 8192U) {
+        (void)recover_wifi_if_needed();
+    }
+#if CONFIG_NUWAX_P3_SOFTWARE_REF_AEC_AB_ENABLE
     if (!create_app_task(p3_softref_ab_fast_task, "p3_softref_ab", 8192, 5, NULL)) {
         return;
     }
+#endif
+#if CONFIG_NUWAX_P5_DURING_PLAYBACK_CANDIDATE_ENABLE
     if (!create_app_task(p5_during_playback_candidate_fast_task,
                          "p5_candidate",
                          NUWAX_P5_CANDIDATE_TASK_STACK_BYTES,
@@ -31093,21 +34966,8 @@ void app_main(void) {
                          NULL)) {
         return;
     }
-#if CONFIG_NUWAX_SPEAKER_ENABLE
-    if (!create_app_task(nuwax_speaker_playback_task,
-                         "nuwax_speaker",
-                         NUWAX_SPEAKER_TASK_STACK_BYTES,
-                         NUWAX_SPEAKER_TASK_PRIORITY,
-                         NULL)) {
-        return;
-    }
-    nuwax_speaker_playback_prepare_for_tts("boot_preallocate");
-#if CONFIG_NUWAX_OTA_ENABLE
-    if (nuwax_speaker_playback_output_ready()) {
-        ota_boot_health_mark(OTA_BOOT_HEALTH_SPEAKER_OUTPUT);
-    }
 #endif
-#endif
+
 
 #if CONFIG_NUWAX_OTA_ENABLE && CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
     bool ota_pending_verify = false;
@@ -31200,6 +35060,10 @@ void app_main(void) {
      * be retried without ever reusing storage still referenced by a worker. */
     nuwax_ws_client_t ws;
     nuwax_ws_init(&ws);
+    /* ACK serialization may wait for transport; never execute it on the
+     * capture/DSP owner while an utterance is live. */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(nuwax_control_ack_tx_init());
+    nuwax_session_dispatch_set_ack_sender(session_dispatch_send_ack);
     ret = app_task_watchdog_register();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "application task watchdog registration failed: %s",
@@ -31213,19 +35077,44 @@ void app_main(void) {
 
     while (true) {
         app_task_watchdog_checkpoint();
+        /* Also run offline, before a Wi-Fi retry or a parked network owner. */
+        service_power_key_events(&ws);
+        /* The same idle gate applies offline: never delay pending playback
+         * completion or an interaction while compacting diagnostic NVS. */
+        service_idle_diagnostic_persistence();
         (void)service_wake_model_restore_owner();
+        service_ota_wake_detector_recovery();
+        service_exclusive_audio_sleep_reconcile();
         if (service_cloud_binding_reprovision()) {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
         if (atomic_load_explicit(&s_reprovision_quiesce_requested,
                                  memory_order_acquire)) {
+            /* Never acknowledge the handoff while transport workers still
+             * reference this owner. Failed closes retain storage for retry. */
+            const esp_err_t park_close_err = nuwax_ws_owner_close(&ws);
+            observe_ws_owner_cleanup_result(&ws, park_close_err,
+                                            "ble_reprovision_park");
+            if (park_close_err != ESP_OK) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+            service_reprovision_audio_modes();
+            if (reprovision_audio_mode_busy()) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+            /* Save from the owner before the worker can prepare/restart for
+             * provisioning; a just-clicked brightness must survive handoff. */
+            nuwax_display_brightness_save(true);
             atomic_store_explicit(&s_cloud_owner_parked, true,
                                   memory_order_release);
             ESP_LOGI(TAG, "cloud owner parked; BLE provisioning owns network");
             while (atomic_load_explicit(&s_reprovision_quiesce_requested,
                                         memory_order_acquire)) {
                 app_task_watchdog_checkpoint();
+                service_power_key_events(&ws);
                 (void)service_wake_model_restore_owner();
                 vTaskDelay(pdMS_TO_TICKS(20));
             }
@@ -31235,6 +35124,29 @@ void app_main(void) {
             set_cloud_transport_connecting_state("ble_reprovision_resume");
             continue;
         }
+        /* The test switch must remain operable after the cloud socket has
+         * already been closed.  Drain local shell actions before any network
+         * recovery decision, then hold the cloud owner parked while the
+         * physical STA association stays available for the replay gateway. */
+        drain_shell_actions(&ws);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+        if (nuwax_wifi_simulated_offline()) {
+            if (nuwax_ws_is_connected(&ws)) {
+                (void)nuwax_ws_force_close_if_epoch(
+                    &ws, nuwax_ws_connection_epoch(&ws));
+            }
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+            /* The simulator keeps the physical STA associated while the
+             * cloud socket is intentionally down. Keep retrying the offline
+             * capture handoff in this branch; otherwise a transient SD
+             * admission failure leaves the whole simulated outage unrecorded. */
+            service_offline_capture_retry_disconnected();
+#endif
+            nuwax_app_shell_set_cloud_state(NUWAX_CLOUD_DISCONNECTED);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+#endif
         if (s_awake_resume_after_ws_reconnect &&
             elapsed_ms(monotonic_ms(),
                        s_awake_disconnect_ms +
@@ -31248,9 +35160,18 @@ void app_main(void) {
          * provisioning or a cloud outage. Keep wake functional even while
          * Wi-Fi/WebSocket recovery is still pending. */
         service_offline_wake_word_detector("network_offline");
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+        /* A transient SD/MIC allocation failure must not silently discard the
+         * remainder of an exclusive meeting/monitoring session. Retry the
+         * offline owner with bounded backoff while the cloud is unavailable;
+         * the retry is skipped during provisioning/OTA and never blocks the
+         * network recovery decision. */
+        service_offline_capture_retry_disconnected();
+#endif
         if (!recover_wifi_if_needed()) {
-            delay_before_cloud_reconnect("wifi_unavailable", 0,
-                                         ESP_ERR_INVALID_STATE);
+            /* Recovery/backoff runs independently. Keep servicing UI, mode
+             * handoffs and the watchdog even during an indefinitely absent AP. */
+            vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
         ESP_ERROR_CHECK_WITHOUT_ABORT(nuwax_time_sync_once());
@@ -31282,6 +35203,8 @@ void app_main(void) {
             .on_binary = on_ws_binary,
             .on_rx_activity = on_ws_rx_activity,
             .on_handshake_verified = on_ws_handshake_authenticated,
+            .on_peer_close = on_ws_peer_close,
+            .connect_cancelled = cloud_connect_cancelled_for_reprovision,
             .user_ctx = &ws,
         };
 
@@ -31302,6 +35225,8 @@ void app_main(void) {
                 cloud_http_status_is_transient(http_status);
             if (http_status == 401 || http_status == 403) {
                 mark_cloud_auth_failed();
+                nuwax_provision_main_note_binding_rejected();
+                s_cloud_http_rebind_pending = true;
             } else {
                 mark_cloud_disconnected();
             }
@@ -31314,8 +35239,10 @@ void app_main(void) {
             } else if (!nuwax_wifi_is_connected() && recover_wifi_if_needed()) {
                 continue;
             }
-            delay_before_cloud_reconnect("websocket_connect", http_status,
-                                         err);
+            if (!s_cloud_http_rebind_pending) {
+                delay_before_cloud_reconnect("websocket_connect", http_status,
+                                             err);
+            }
             continue;
         }
         nuwax_ws_owner_close_recovery_reset(&s_ws_owner_close_recovery);
@@ -31353,8 +35280,15 @@ void app_main(void) {
             ESP_LOGE(TAG, "barge-in protocol dispatcher bind failed");
         }
         ws_mark_rx_activity();
+        /* One hello per new cloud connection, including reconnects. Mode
+         * transitions do not repeat authentication or the SD snapshot. */
+        const bool hello_has_sd_card = nuwax_sd_card_media_detected();
         esp_err_t hello_err = nuwax_session_send_hello(
-            &ws, cloud_config.device_secret);
+            &ws, cloud_config.device_secret, hello_has_sd_card);
+        if (hello_err == ESP_OK) {
+            ESP_LOGI(TAG, "connection hello sent has_sd_card=%d epoch=%lu",
+                     hello_has_sd_card, (unsigned long)nuwax_ws_connection_epoch(&ws));
+        }
         ESP_ERROR_CHECK_WITHOUT_ABORT(hello_err);
         if (hello_err != ESP_OK) {
             log_cloud_connect_failure("hello_send",
@@ -31462,6 +35396,7 @@ void app_main(void) {
             continue;
         }
         cloud_reconnect_backoff_reset();
+        service_audio_mode_state_sync(&ws);
 #if CONFIG_NUWAX_OTA_ENABLE
         const uint32_t firmware_report_epoch = nuwax_ws_connection_epoch(&ws);
         const esp_err_t firmware_report_err = nuwax_firmware_report_service(
@@ -31475,6 +35410,14 @@ void app_main(void) {
                      "initial boot firmware report deferred epoch=%lu err=%s",
                      (unsigned long)firmware_report_epoch,
                      esp_err_to_name(firmware_report_err));
+        }
+#endif
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+        if ((offline_mode_lease_pending() ||
+             nuwax_offline_audio_has_ready()) &&
+            nuwax_ws_is_connected(&ws)) {
+            (void)service_offline_audio_handoff(&ws);
+            service_exclusive_audio_sleep_reconcile();
         }
 #endif
         if (nuwax_ws_is_connected(&ws)) {
@@ -31513,10 +35456,22 @@ void app_main(void) {
                     clear_ws_reconnect_audio_recovery();
                     enter_sleeping_conversation_state("ws_reconnect_expired");
                 }
-            } else {
+            } else if (meeting_or_monitoring_mode_blocks_sleep() ||
+                       atomic_load_explicit(&s_reprovision_quiesce_requested,
+                                            memory_order_acquire)) {
+                /* A meeting/monitoring lease may have just been restored from
+                 * an offline archive.  Do not overwrite its controller/UI
+                 * state with the generic boot-ready sleeping transition. */
+                ESP_LOGI(TAG,
+                         "WebSocket recovered with exclusive audio lease; preserving mode state");
+            } else if (conversation_state_current() != NUWAX_APP_STATE_SLEEPING) {
                 enter_sleeping_conversation_state("boot_ready");
             }
-            vTaskDelay(pdMS_TO_TICKS(500));
+#if CONFIG_NUWAX_SPEAKER_ENABLE
+            /* Volume synchronization above queues an owner event. Drain it
+             * now, then enter the normal control loop without a blind delay. */
+            drain_speaker_owner_events();
+#endif
             if (resume_awake &&
                 nuwax_awake_session_state_is_active(&s_awake_session) &&
                 !s_ws_audio_recovery.pending &&
@@ -31532,10 +35487,77 @@ void app_main(void) {
 
             while (nuwax_ws_is_connected(&ws)) {
                 app_task_watchdog_checkpoint();
+                if (atomic_load_explicit(&s_reprovision_quiesce_requested,
+                                         memory_order_acquire)) {
+                    (void)nuwax_ws_force_close_if_epoch(
+                        &ws, nuwax_ws_connection_epoch(&ws));
+                    break;
+                }
+                service_power_key_events(&ws);
+                if (product_music_blocks_audio()) {
+                    drain_session_commands_limited(&ws, 4U);
+                    drain_shell_actions(&ws);
+                    (void)service_application_keepalive(&ws, "music_wait");
+                    conversation_owner_wait_ms(20U);
+                    continue;
+                }
                 service_conversation_live_aec_pool_recovery();
+                service_ota_wake_detector_recovery();
                 service_pending_ws_reconnect_audio_recovery(&ws);
+                if (nuwax_notification_blocks_conversation(
+                        &s_notification_transaction)) {
+                    /* Notification owns RX audio and speaker lifecycle. Keep
+                     * control traffic alive without constructing a normal
+                     * microphone uplink context every 100 ms. */
+                    drain_session_commands_limited(&ws, 4U);
+                    (void)drain_shell_actions_preserving_listen_control(
+                        &ws);
+                    if (nuwax_notification_blocks_conversation(
+                            &s_notification_transaction)) {
+                        (void)service_application_keepalive(
+                            &ws, "notification_wait");
+                        conversation_owner_wait_ms(100U);
+                        continue;
+                    }
+                }
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+                if (offline_mode_lease_pending() ||
+                    nuwax_offline_audio_capture_running() ||
+                    nuwax_offline_audio_is_active() ||
+                    nuwax_offline_audio_has_ready()) {
+                    (void)service_offline_audio_handoff(&ws);
+                    service_exclusive_audio_sleep_reconcile();
+                    if ((nuwax_offline_audio_capture_running() &&
+                         !nuwax_meeting_mode_has_pending(&s_meeting_mode) &&
+                         !nuwax_monitoring_mode_has_pending(&s_monitoring_mode)) ||
+                        (offline_mode_lease_pending() &&
+                         !nuwax_meeting_mode_has_pending(&s_meeting_mode) &&
+                         !nuwax_monitoring_mode_has_pending(&s_monitoring_mode))) {
+                        (void)service_application_keepalive(
+                            &ws, "offline_audio_handoff");
+                        if (nuwax_audio_terminal_recovery_pending()) {
+                            (void)service_audio_terminal_recovery(&ws);
+                        }
+                        drain_session_commands_limited(&ws, 4U);
+                        (void)drain_shell_actions_preserving_listen_control(
+                            &ws);
+                        conversation_owner_wait_ms(100U);
+                        continue;
+                    }
+                }
+#endif
                 const bool exclusive_mode_run_requested =
                     exclusive_audio_mode_blocks_normal_audio();
+                if (exclusive_mode_run_requested &&
+                    !nuwax_meeting_mode_has_pending(&s_meeting_mode) &&
+                    !nuwax_monitoring_mode_has_pending(&s_monitoring_mode)) {
+                    (void)service_application_keepalive(&ws, "audio_owner_wait");
+                    drain_session_commands_limited(&ws, 4U);
+                    (void)drain_shell_actions_preserving_listen_control(&ws);
+                    service_exclusive_audio_sleep_reconcile();
+                    conversation_owner_wait_ms(20U);
+                    continue;
+                }
                 err = run_audio_source(&ws);
                 if (err != ESP_OK) {
                     if (atomic_load_explicit(
@@ -31584,12 +35606,65 @@ void app_main(void) {
                             NUWAX_AUDIO_UPLINK_REAPER_WAIT_MS);
                         continue;
                     }
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+                    if (err == ESP_ERR_NOT_FINISHED &&
+                        nuwax_offline_audio_replay_retry_pending() &&
+                        nuwax_offline_audio_has_ready() &&
+                        !nuwax_offline_audio_storage_busy() &&
+                        !nuwax_offline_audio_replay_running()) {
+                        (void)service_offline_audio_handoff(&ws);
+                        conversation_owner_wait_ms(100U);
+                        continue;
+                    }
+                    if (err == ESP_ERR_NOT_FINISHED &&
+                        (offline_mode_lease_pending() ||
+                         nuwax_offline_audio_capture_running())) {
+                        /* Keep the control/keepalive plane alive while the SD
+                         * owner converges.  This is intentionally separate
+                         * from the generic local-audio error path: an offline
+                         * handoff is not a microphone fault and must not force
+                         * the conversation into SLEEPING. */
+                        (void)service_application_keepalive(
+                            &ws, "offline_audio_handoff");
+                        drain_session_commands_limited(&ws, 4U);
+                        (void)drain_shell_actions_preserving_listen_control(
+                            &ws);
+                        (void)service_offline_audio_handoff(&ws);
+                        conversation_owner_wait_ms(100U);
+                        continue;
+                    }
+#endif
                     const bool normal_source_preempted =
                         !exclusive_mode_run_requested &&
                         exclusive_audio_mode_blocks_normal_audio() &&
                         err == ESP_ERR_INVALID_STATE;
                     if (normal_source_preempted) {
                         ESP_LOGI(TAG, "normal audio source preempted; running exclusive audio mode");
+                        continue;
+                    }
+                    if (normal_audio_source_notification_preempted(err)) {
+                        /* Notification playback owns the audio lifecycle. It
+                         * is an intentional handoff, not a local microphone
+                         * fault, so keep the connected control plane alive. */
+                        drain_session_commands_limited(&ws, 4U);
+                        (void)drain_shell_actions_preserving_listen_control(
+                            &ws);
+                        service_notification_transaction();
+                        (void)service_application_keepalive(
+                            &ws, "notification_handoff");
+                        conversation_owner_wait_ms(100U);
+                        continue;
+                    }
+                    if (normal_audio_source_sleep_preempted(err)) {
+                        /* A committed sleep state keeps the wake detector and
+                         * WebSocket alive while normal capture is fenced. Do
+                         * not enter the generic local-audio recovery path or
+                         * spin through repeated MIC initialization. */
+                        drain_session_commands_limited(&ws, 4U);
+                        service_power_key_events(&ws);
+                        service_sleep_transaction();
+                        ensure_sleep_wake_word_detector();
+                        conversation_owner_wait_ms(100U);
                         continue;
                     }
                     const bool ws_connected_after_source =
@@ -31615,7 +35690,16 @@ void app_main(void) {
                     if (recoverable_normal_conversation_error) {
                         if (nuwax_awake_session_state_is_active(
                                 &s_awake_session)) {
+                            const uint32_t retry_ms = nuwax_normal_conversation_retry_delay(
+                                &s_normal_conversation, monotonic_ms());
+                            if (retry_ms == 0U || service_normal_conversation_inactivity()) {
+                                enter_sleeping_conversation_state("local_audio_recovery_exhausted");
+                                continue;
+                            }
                             pause_awake_waiting("local_audio_error");
+                            /* Owner notifications wake this backoff early for
+                             * cancellation, power, mode or transport changes. */
+                            conversation_owner_wait_ms(retry_ms);
                             ESP_LOGW(TAG,
                                      "normal conversation retained after local audio error err=%s waiting=%d remaining_ms=%lu generation=%lu WebSocket=connected",
                                      esp_err_to_name(err),
@@ -31638,7 +35722,6 @@ void app_main(void) {
                             enter_sleeping_conversation_state(
                                 "local_audio_error");
                         }
-                        vTaskDelay(pdMS_TO_TICKS(100));
                         continue;
                     }
                     if (exclusive_mode_run_requested ||
@@ -31672,7 +35755,33 @@ void app_main(void) {
          * teardown so a concurrent local hit cannot be replayed after reconnect. */
         store_cloud_connection_state(false, false, false);
         const nuwax_app_state_t disconnect_state = conversation_state_current();
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+        const bool meeting_was_active =
+            nuwax_meeting_mode_take_offline_resume(&s_meeting_mode) ||
+            nuwax_meeting_mode_state(&s_meeting_mode) !=
+                NUWAX_MEETING_STATE_DISABLED;
+        const bool monitoring_was_active =
+            nuwax_monitoring_mode_take_offline_resume(&s_monitoring_mode) ||
+            nuwax_monitoring_mode_state(&s_monitoring_mode) !=
+                NUWAX_MONITORING_STATE_DISABLED;
+        ESP_LOGI(TAG,
+                 "WebSocket disconnect offline ownership snapshot meeting=%d monitoring=%d meeting_state=%d monitoring_state=%d",
+                 meeting_was_active ? 1 : 0,
+                 monitoring_was_active ? 1 : 0,
+                 (int)nuwax_meeting_mode_state(&s_meeting_mode),
+                 (int)nuwax_monitoring_mode_state(&s_monitoring_mode));
+        /* A mode records offline_resume_required immediately before its
+         * cleanup transitions the controller to DISABLED.  Treat that
+         * durable handoff marker as ownership here; checking only the
+         * post-cleanup state would skip SD capture on the normal disconnect
+         * path. */
+        const bool exclusive_mode_was_active =
+            atomic_load_explicit(&s_reprovision_quiesce_requested,
+                                 memory_order_acquire) ||
+            meeting_was_active || monitoring_was_active;
+#else
         const bool exclusive_mode_was_active = exclusive_audio_owner_active();
+#endif
 #if CONFIG_NUWAX_SPEAKER_ENABLE
         const bool speaker_was_active = nuwax_speaker_playback_has_pending();
 #else
@@ -31682,10 +35791,96 @@ void app_main(void) {
             disconnect_state == NUWAX_APP_STATE_THINKING ||
             disconnect_state == NUWAX_APP_STATE_SPEAKING ||
             s_turn_guard.active || speaker_was_active;
+        nuwax_sd_session_network(false);
         nuwax_monitoring_mode_notify_ws_disconnected(&s_monitoring_mode);
         nuwax_meeting_mode_notify_ws_disconnected(&s_meeting_mode);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+        if (exclusive_mode_was_active &&
+            !s_meeting_mode.sd_local && !s_monitoring_mode.sd_local &&
+            !cloud_connect_cancelled_for_reprovision(NULL) &&
+            (meeting_was_active || monitoring_was_active) &&
+            !nuwax_offline_audio_capture_running()) {
+            /* Media discovery belongs to the background storage owner. A
+             * missing card remains non-fatal to online mode recovery. */
+            const nuwax_audio_runtime_memory_t handoff_memory =
+                exclusive_audio_memory_snapshot();
+            const nuwax_audio_runtime_memory_state_t handoff_memory_state =
+                nuwax_audio_runtime_memory_classify(handoff_memory);
+            nuwax_offline_audio_supervisor_wake();
+            offline_mode_kind_store(
+                monitoring_was_active
+                    ? NUWAX_OFFLINE_AUDIO_MODE_MONITORING
+                    : NUWAX_OFFLINE_AUDIO_MODE_MEETING);
+            nuwax_audio_mode_identity_t *identity = offline_mode_identity();
+            if (!identity->session_id[0]) {
+                /* A disconnect during initial authorization may precede the
+                 * first listen-start. Establish one local identity then. */
+                snprintf(identity->session_id, sizeof(identity->session_id),
+                         "%s_stream_%08lx", monitoring_was_active ? "monitoring" : "meeting",
+                         (unsigned long)esp_random());
+            }
+            identity->resuming = true;
+            strlcpy(s_offline_mode_resume_session, identity->session_id,
+                    sizeof(s_offline_mode_resume_session));
+            s_offline_mode_capture_started = false;
+            /* Preserve the mode lease even when the optional SD path is
+             * unavailable.  Reconnect must still re-admit the online mode. */
+            const bool offline_writer_busy = nuwax_offline_audio_capture_running();
+            const esp_err_t offline_capture_err =
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+                ((void)offline_writer_busy, ESP_ERR_NOT_SUPPORTED);
+#else
+                offline_writer_busy
+                           ? ESP_ERR_NOT_FINISHED
+                           : nuwax_offline_audio_start_capture_continuation(
+                                 offline_mode_kind(),
+                                 s_offline_mode_resume_session,
+                                 CONFIG_NUWAX_VOICE_SAMPLE_RATE,
+                                 CONFIG_NUWAX_VOICE_CHANNELS,
+                                 CONFIG_NUWAX_VOICE_FRAME_DURATION_MS,
+                                 identity->next_capture_sequence);
+#endif
+            atomic_store_explicit(&s_offline_mode_cancel_to_sleep, false,
+                                  memory_order_release);
+            atomic_store_explicit(&s_offline_mode_capture_failed,
+                                  offline_capture_err != ESP_OK,
+                                  memory_order_release);
+            if (offline_capture_err == ESP_OK) {
+                s_offline_mode_capture_started = true;
+                reset_offline_capture_retry_state();
+            } else {
+                s_offline_capture_retry_backoff_ms =
+                    NUWAX_OFFLINE_CAPTURE_RETRY_INITIAL_MS;
+                s_offline_capture_retry_next_ms =
+                    monotonic_ms() + s_offline_capture_retry_backoff_ms;
+                s_offline_capture_retry_attempts = 1U;
+            }
+            if (offline_capture_err == ESP_ERR_NO_MEM) {
+                (void)nuwax_device_warning_report_enqueue(
+                    "audio", "offline_capture_memory_deferred",
+                    ESP_ERR_NO_MEM, NULL, 0U, NULL);
+            }
+            s_offline_mode_restore_request_epoch = 0U;
+            s_offline_mode_restore_next_attempt_ms = 0U;
+            s_offline_mode_restore_started_ms = 0U;
+            offline_mode_lease_store(true);
+            ESP_LOGI(TAG,
+                     "WebSocket offline archive handoff mode=%s started=%d err=%s memory_state=%d internal=%u largest=%u dma_largest=%u",
+                     offline_mode_kind() ==
+                             NUWAX_OFFLINE_AUDIO_MODE_MONITORING
+                         ? "monitoring"
+                         : "meeting",
+                     offline_capture_err == ESP_OK ? 1 : 0,
+                     esp_err_to_name(offline_capture_err),
+                     (int)handoff_memory_state,
+                     (unsigned)handoff_memory.internal_free,
+                     (unsigned)handoff_memory.internal_largest,
+                     (unsigned)handoff_memory.dma_largest);
+        }
+#endif
         bool awake_session_preserved = false;
-        if (!exclusive_mode_was_active) {
+        if (!exclusive_mode_was_active &&
+            !cloud_connect_cancelled_for_reprovision(NULL)) {
             awake_session_preserved =
                 preserve_awake_session_for_ws_reconnect(
                     conversation_was_in_flight
@@ -31725,7 +35920,37 @@ void app_main(void) {
         nuwax_speaker_playback_release_idle_output("ws_disconnect");
 #endif
         discard_connection_bound_queues("ws_disconnect");
-        if (!awake_session_preserved) {
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+        if (nuwax_offline_audio_replay_formal_running()) {
+            const uint32_t disconnect_epoch =
+                nuwax_ws_connection_epoch(&ws);
+            const esp_err_t replay_cancel_err =
+                nuwax_offline_audio_replay_formal_cancel(
+                    disconnect_epoch, 6000U);
+            if (replay_cancel_err != ESP_OK) {
+                /* Reusing ws while a replay worker still references it would
+                 * corrupt the next transport generation. A controlled reboot
+                 * preserves .ready archives and restores ownership cleanly. */
+                ESP_LOGE(TAG,
+                         "offline formal replay did not quiesce before WebSocket close epoch=%lu err=%s; controlled restart preserves archives",
+                         (unsigned long)disconnect_epoch,
+                         esp_err_to_name(replay_cancel_err));
+                nuwax_diagnostics_log_heap_label(
+                    TAG, "offline_replay_quiesce_restart");
+                vTaskDelay(pdMS_TO_TICKS(100U));
+                esp_restart();
+                vTaskDelay(portMAX_DELAY);
+            }
+        }
+#endif
+        if (!awake_session_preserved &&
+            !cloud_connect_cancelled_for_reprovision(NULL)
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+            && !offline_mode_lease_pending()
+            && !nuwax_offline_audio_capture_running()
+            && !nuwax_offline_audio_is_active()
+#endif
+        ) {
             enter_sleeping_conversation_state(
                 conversation_was_in_flight
                     ? "ws_disconnect_inflight_aborted"
@@ -31748,6 +35973,11 @@ void app_main(void) {
                      esp_err_to_name(aec_suspend_err));
         }
         nuwax_app_shell_set_cloud_state(NUWAX_CLOUD_DISCONNECTED);
+        if (cloud_connect_cancelled_for_reprovision(NULL)) {
+            ESP_LOGI(TAG, "WebSocket cleanup yielding to BLE handoff close_err=%s; wake/reconnect skipped",
+                     esp_err_to_name(close_err));
+            continue;
+        }
 #if CONFIG_NUWAX_WAKE_WORD_ENABLE
         /* WebSocket reachability does not own the local wake lifecycle. If no
          * awake conversation is being preserved, keep/recover wake while the

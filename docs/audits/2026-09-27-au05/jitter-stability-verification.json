@@ -1,0 +1,17 @@
+{
+  "revision": "20260924-jitter-stability-v1",
+  "elfSha256": "a0383b5a5d2a31bbaae1c805be8cdaac148529ba21f3456bfca1359cbc3edb9c",
+  "binSha256": "765e73dad876df448a6b6b7f3215256a46b0ce207e4d834648a7b3df804f1021",
+  "bytes": 3828400,
+  "speakerStackFrames": {
+    "nuwax_speaker_playback_task": 336
+  },
+  "hardwareValidated": false,
+  "sourceHashes": {
+    "main/conversation/speaker_playback.c": "f173e2829a55a46cfb8e7273fc46f22dc6198e7de93701278bcfa6f47fcbe1e4",
+    "main/conversation/speaker_jitter_policy.h": "e058001769eec44392c6da5ab94dd8b76e61ea7e4e90adf1081d1b970346406a",
+    "main/speaker_jitter_policy_host_check.c": "c8318dc6ebbf66432e95a953a6c8ad1549d95981003b9ca64ace5a3a6514fe86",
+    "tools/test-jitter-stability.py": "f79942a23e6272c33eff008cc4a37c17e100f59b5cd8303352da9c6e1d81056e",
+    "tools/verify-jitter-stability-build.py": "27abbc3ad5f5b188457e16e9dcaef7ca90f47a0b6687a74f15c84c5fd8871aa4"
+  }
+}

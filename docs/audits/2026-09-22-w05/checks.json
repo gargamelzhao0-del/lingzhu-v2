@@ -1,0 +1,94 @@
+{
+  "date": "2026-09-22",
+  "scope": "W05 host audit; no product source changes or hardware test",
+  "checks": [
+    {
+      "log": "build-host-checks\\w05\\conversation.log",
+      "exit_code": 0,
+      "sha256": "ca03a26e47ddd81132e2977ad509ff4b80ffb3ba27734a64e2a45a576bc6f68e",
+      "tail": [
+        "conversation metrics host check: PASS (0 failures)",
+        "conversation source contracts: PASS",
+        "PASS: split header/audio protocol equivalence, length boundaries, short writes, TLS, epoch and overlap rejection; source audio preserved",
+        "PASS: 192 batch encodings; distinct per-frame masks; source preservation; one TCP write; TLS geometry; zero allocation; argument/epoch/overlap checks; partial-batch disconnect and zero-progress retry",
+        "PASS: 320 production legacy/buffered/split/batch interleavings; full mask/decode; short writes/backpressure metrics; partial failure closes; TLS geometry preserved; RX/other-client progress; epoch fencing; 100 reconnects"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05\\run-meeting-host-checks.ps1.log",
+      "exit_code": 0,
+      "sha256": "a8e49ef9df2fb338ce4d9995a103e3743f014fa6451f7f618cfb77d455ad0b36",
+      "tail": [
+        "meeting_processor_host_check: PASS",
+        "meeting_protocol_host_check: PASS",
+        "meeting_mode_host_check: PASS",
+        "meeting_capture_transaction_host_check: PASS"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05\\run-monitoring-host-checks.ps1.log",
+      "exit_code": 0,
+      "sha256": "c7950b9f6d382eb48cf037c84aab9677de5be5d14ed40d858b63e36251a41de0",
+      "tail": [
+        "monitoring_speech_policy_host_check: PASS",
+        "monitoring_protocol_host_check: PASS",
+        "monitoring_mode_host_check: PASS",
+        "monitoring_capture_host_check: PASS"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05\\run-wake-capture-host-checks.ps1.log",
+      "exit_code": 0,
+      "sha256": "39e8e6a56c3173c2b5d0cc61ae1639c2d0657bcb8cbda2898ba487c8a1cd2b9f",
+      "tail": [
+        "PASS: eviction detected at head before mixed PCM, no false tail gaps, sequence wrap, DMA gap, ownership; consumer pressure, mono/dual capture, inference stalls and stop"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05\\run-wake-supervisor-host-checks.ps1.log",
+      "exit_code": 0,
+      "sha256": "3e0f23d36127ebf999ae8b338ef736b81a1e8086ebab5a6cdb1126e03c2a9888",
+      "tail": [
+        "PASS: production wake supervisor ignores planned Flash pause and times real readiness loss from its onset"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05\\run-mic-dma-reader-host-checks.ps1.log",
+      "exit_code": 0,
+      "sha256": "677b6404a82ca5cdb7bafa93b8de100442c7ded66eef0b49a073adfe4ca3c9b5",
+      "tail": [
+        "mic DMA reader: old-path skip reproduced; buffered continuity, slots, sizes, timeout and error checks passed"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05\\audio-lifecycle-recheck.log",
+      "exit_code": 0,
+      "sha256": "132bd4bac5a54681e0c8ae7743c8325ff0208988a072f540cce31cb9b6eb5ecf",
+      "tail": [
+        "mirror staging: delayed attach, queue pressure, detached tail, overflow and close timeout PASS",
+        "production UI reconciliation: controller precedence, stale mode kind, pending handoff and UI rebuild PASS",
+        "offline storage recovery gate and archive CRC compatibility: PASS",
+        "offline dispatch and MIC transfer: PASS",
+        "archive commit: clean append and torn-tail truncation PASS"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05\\formal-dispatch.log",
+      "exit_code": 0,
+      "sha256": "c8faf53cca93bd0210cca79f1506685bcb32c1b9328e6e96715d52e3ecd2ede8",
+      "tail": [
+        "offline storage recovery gate and archive CRC compatibility: PASS",
+        "PASS: formal capability requires positive typed v1 archive-only declaration; legacy/malformed replies retain local data gate",
+        "offline dispatch and MIC transfer: PASS",
+        "archive commit: clean append and torn-tail truncation PASS"
+      ]
+    }
+  ],
+  "initial_audio_lifecycle_result": "FAILED: source extraction included prepare_shutdown; extraction fixed, then recheck passed",
+  "teardown_fault_injection": {
+    "exit_code": 1,
+    "status": "INVARIANT_FAILURE",
+    "report": "teardown-report.json"
+  },
+  "firmware_build": "not performed; product sources unchanged"
+}

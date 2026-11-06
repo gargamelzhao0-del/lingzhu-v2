@@ -16,38 +16,44 @@ static int expect_result(const char *name,
 
 static nuwax_ota_power_result_t battery(uint8_t percent)
 {
-    return nuwax_ota_power_evaluate(true, false, true, false, true, false,
-                                    percent, 30U);
+    return nuwax_ota_power_evaluate_admission(true, false, true, true, false,
+                                            percent, 5U);
 }
 
 int main(void)
 {
     int failures = 0;
-    failures += expect_result("29 percent rejected", battery(29U),
+    failures += expect_result("0 percent rejected", battery(0U),
                               NUWAX_OTA_POWER_LOW);
-    failures += expect_result("30 percent accepted", battery(30U),
+    failures += expect_result("4 percent rejected", battery(4U),
+                              NUWAX_OTA_POWER_LOW);
+    failures += expect_result("5 percent accepted", battery(5U),
                               NUWAX_OTA_POWER_ALLOWED);
-    failures += expect_result("31 percent accepted", battery(31U),
+    failures += expect_result("10 percent accepted", battery(10U),
                               NUWAX_OTA_POWER_ALLOWED);
+    failures += expect_result("100 percent accepted", battery(100U),
+                              NUWAX_OTA_POWER_ALLOWED);
+    failures += expect_result("out of range rejected", battery(101U),
+                              NUWAX_OTA_POWER_UNKNOWN);
     failures += expect_result(
         "stale sample rejected",
-        nuwax_ota_power_evaluate(true, true, true, false, true, false, 80U, 30U),
+        nuwax_ota_power_evaluate_admission(true, true, true, true, false, 80U, 5U),
         NUWAX_OTA_POWER_UNKNOWN);
     failures += expect_result(
         "invalid sample rejected",
-        nuwax_ota_power_evaluate(true, false, true, false, false, false, 80U, 30U),
+        nuwax_ota_power_evaluate_admission(true, false, true, false, false, 80U, 5U),
         NUWAX_OTA_POWER_UNKNOWN);
     failures += expect_result(
-        "verified external power accepted",
-        nuwax_ota_power_evaluate(true, false, false, true, false, false, 0U, 30U),
-        NUWAX_OTA_POWER_ALLOWED);
+        "unavailable sample rejected",
+        nuwax_ota_power_evaluate_admission(false, false, true, true, false, 80U, 5U),
+        NUWAX_OTA_POWER_UNKNOWN);
     failures += expect_result(
         "missing battery without external power rejected",
-        nuwax_ota_power_evaluate(true, false, false, false, false, false, 0U, 30U),
+        nuwax_ota_power_evaluate_admission(true, false, false, true, false, 80U, 5U),
         NUWAX_OTA_POWER_UNKNOWN);
     failures += expect_result(
         "hard-low safety state overrides optimistic SOC",
-        nuwax_ota_power_evaluate(true, false, true, false, true, true, 80U, 30U),
+        nuwax_ota_power_evaluate_admission(true, false, true, true, true, 80U, 5U),
         NUWAX_OTA_POWER_LOW);
     if (failures != 0) {
         printf("OTA power policy failures=%d\n", failures);

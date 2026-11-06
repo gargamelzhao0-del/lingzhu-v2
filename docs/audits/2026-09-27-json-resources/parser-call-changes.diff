@@ -1,0 +1,236 @@
+--- before/main/cloud_protocol_compat.c
++++ after/main/cloud_protocol_compat.c
+@@ -6,6 +6,7 @@
+ #include <string.h>
+ 
+ #include "cJSON.h"
++#include "json_resource_budget.h"
+ 
+ static bool json_object_is_complete(const char *payload,
+                                     int len,
+@@ -80,7 +81,7 @@
+     }
+ 
+     const char *parse_end = NULL;
+-    cJSON *root = cJSON_ParseWithLengthOpts(payload, (size_t)len,
++    cJSON *root = nuwax_json_parse_with_length_opts(payload, (size_t)len,
+                                              &parse_end, false);
+     if (root == NULL || !cJSON_IsObject(root) ||
+         !json_object_is_complete(payload, len, parse_end)) {
+--- before/main/device_error_report.c
++++ after/main/device_error_report.c
+@@ -5,6 +5,7 @@
+ #include <string.h>
+ 
+ #include "cJSON.h"
++#include "json_resource_budget.h"
+ #include "esp_heap_caps.h"
+ #include "esp_log.h"
+ #include "esp_rom_crc.h"
+@@ -1108,7 +1109,7 @@
+                                   "device_error_report_ack")) {
+         return false;
+     }
+-    cJSON *root = cJSON_ParseWithLength(payload, (size_t)len);
++    cJSON *root = nuwax_json_parse_with_length(payload, (size_t)len);
+     if (!root) {
+         return false;
+     }
+--- before/main/mcp_server.c
++++ after/main/mcp_server.c
+@@ -5,6 +5,7 @@
+ #include <string.h>
+ 
+ #include "cJSON.h"
++#include "json_resource_budget.h"
+ #include "esp_log.h"
+ 
+ static const char *TAG = "nuwax_mcp";
+@@ -251,7 +252,7 @@
+ 
+     const size_t payload_len = strlen(payload_json);
+     const char *parse_end = NULL;
+-    cJSON *request = cJSON_ParseWithLengthOpts(payload_json,
++    cJSON *request = nuwax_json_parse_with_length_opts(payload_json,
+                                               payload_len,
+                                               &parse_end,
+                                               false);
+--- before/main/offline_audio_spool.c
++++ after/main/offline_audio_spool.c
+@@ -27,6 +27,7 @@
+ #include "esp_random.h"
+ #include "esp_vfs_fat.h"
+ #include "cJSON.h"
++#include "json_resource_budget.h"
+ #include "freertos/FreeRTOS.h"
+ #include "freertos/event_groups.h"
+ #include "freertos/idf_additions.h"
+@@ -415,7 +416,7 @@
+     if (!payload || len <= 0 || epoch == 0U) {
+         return;
+     }
+-    cJSON *root = cJSON_ParseWithLength(payload, (size_t)len);
++    cJSON *root = nuwax_json_parse_with_length(payload, (size_t)len);
+     const bool supported = nuwax_offline_archive_capability(root);
+     atomic_store_explicit(&s_archive_capability_epoch, supported ? epoch : 0U,
+                           memory_order_release);
+@@ -4738,7 +4739,7 @@
+         connection_epoch == 0U) {
+         return false;
+     }
+-    cJSON *root = cJSON_ParseWithLength(payload, len);
++    cJSON *root = nuwax_json_parse_with_length(payload, len);
+     if (!root) {
+         return false;
+     }
+--- before/main/session_protocol.c
++++ after/main/session_protocol.c
+@@ -8,6 +8,7 @@
+ #include "sdkconfig.h"
+ #include "board/audio_board.h"
+ #include "cJSON.h"
++#include "json_resource_budget.h"
+ #include "esp_app_desc.h"
+ #include "esp_log.h"
+ #include "esp_timer.h"
+@@ -720,7 +721,7 @@
+         return false;
+     }
+     const char *parse_end = NULL;
+-    cJSON *root = cJSON_ParseWithLengthOpts(payload,
++    cJSON *root = nuwax_json_parse_with_length_opts(payload,
+                                             (size_t)len,
+                                             &parse_end,
+                                             false);
+@@ -1738,7 +1739,7 @@
+     }
+     ESP_LOGD(TAG, "RX text frame len=%d", len);
+ 
+-    cJSON *root = cJSON_ParseWithLength(payload, len);
++    cJSON *root = nuwax_json_parse_with_length(payload, len);
+     if (!root) {
+         ESP_LOGW(TAG, "Received non-JSON text frame len=%d", len);
+         return;
+--- before/main/nuwax_ota_new/nuwax_firmware_report.c
++++ after/main/nuwax_ota_new/nuwax_firmware_report.c
+@@ -6,6 +6,7 @@
+ #include <string.h>
+ 
+ #include "cJSON.h"
++#include "json_resource_budget.h"
+ #include "esp_app_desc.h"
+ #include "esp_heap_caps.h"
+ #include "esp_log.h"
+@@ -446,7 +447,7 @@
+         return false;
+     }
+     const char *parse_end = NULL;
+-    cJSON *root = cJSON_ParseWithLengthOpts(payload, (size_t)len,
++    cJSON *root = nuwax_json_parse_with_length_opts(payload, (size_t)len,
+                                             &parse_end, false);
+     if (root == NULL || !cJSON_IsObject(root)) {
+         cJSON_Delete(root);
+--- before/main/nuwax_ota_new/nuwax_ota_device.c
++++ after/main/nuwax_ota_new/nuwax_ota_device.c
+@@ -9,6 +9,7 @@
+ #include "board/battery_service.h"
+ #include "board/nuwax_power_ctrl.h"
+ #include "cJSON.h"
++#include "json_resource_budget.h"
+ #include "device_error_report.h"
+ #include "esp_app_desc.h"
+ #include "esp_heap_caps.h"
+@@ -1322,7 +1323,7 @@
+     }
+ 
+     const char *parse_end = NULL;
+-    cJSON *root = cJSON_ParseWithLengthOpts(payload, (size_t)len,
++    cJSON *root = nuwax_json_parse_with_length_opts(payload, (size_t)len,
+                                             &parse_end, false);
+     if (root == NULL || !cJSON_IsObject(root)) {
+         cJSON_Delete(root);
+--- before/main/nuwax_ota_new/nuwax_ota_manifest.c
++++ after/main/nuwax_ota_new/nuwax_ota_manifest.c
+@@ -10,6 +10,7 @@
+ #include <string.h>
+ 
+ #include "cJSON.h"
++#include "json_resource_budget.h"
+ #include "esp_log.h"
+ 
+ static const char *TAG = "nuwax_ota_manifest";
+@@ -207,7 +208,7 @@
+     memset(out, 0, sizeof(*out));
+ 
+     const char *parse_end = NULL;
+-    cJSON *root = cJSON_ParseWithLengthOpts(json, json_len, &parse_end, false);
++    cJSON *root = nuwax_json_parse_with_length_opts(json, json_len, &parse_end, false);
+     if (root == NULL || !cJSON_IsObject(root)) {
+         size_t offset = parse_end != NULL && parse_end >= json
+                             ? (size_t)(parse_end - json)
+--- before/main/nuwax_provision_new/nuwax_provision_main.c
++++ after/main/nuwax_provision_new/nuwax_provision_main.c
+@@ -6,6 +6,7 @@
+ #include <string.h>
+ 
+ #include "cJSON.h"
++#include "json_resource_budget.h"
+ #include "board/nuwax_board.h"
+ #include "esp_app_desc.h"
+ #include "esp_check.h"
+@@ -1096,7 +1097,7 @@
+     if (!inbuf || inlen <= 0 || !outbuf || !outlen) {
+         return ESP_ERR_INVALID_ARG;
+     }
+-    cJSON *request = cJSON_ParseWithLength((const char *)inbuf, (size_t)inlen);
++    cJSON *request = nuwax_json_parse_with_length((const char *)inbuf, (size_t)inlen);
+     if (!cJSON_IsObject(request)) {
+         cJSON_Delete(request);
+         return ESP_ERR_INVALID_ARG;
+@@ -1243,7 +1244,7 @@
+     if (!inbuf || inlen <= 0 || !outbuf || !outlen) {
+         return ESP_ERR_INVALID_ARG;
+     }
+-    cJSON *request = cJSON_ParseWithLength((const char *)inbuf, (size_t)inlen);
++    cJSON *request = nuwax_json_parse_with_length((const char *)inbuf, (size_t)inlen);
+     if (!cJSON_IsObject(request)) {
+         cJSON_Delete(request);
+         return vox_config_response(false, "VOX_CONFIG_INVALID", NULL,
+--- before/main/audio_modes/meeting/meeting_protocol.c
++++ after/main/audio_modes/meeting/meeting_protocol.c
+@@ -4,6 +4,7 @@
+ #include <string.h>
+ 
+ #include "cJSON.h"
++#include "json_resource_budget.h"
+ 
+ static const cJSON *get_unique_object_item(const cJSON *root, const char *name) {
+     const cJSON *match = NULL;
+@@ -111,7 +112,7 @@
+     }
+ 
+     const char *parse_end = NULL;
+-    cJSON *root = cJSON_ParseWithLengthOpts(payload,
++    cJSON *root = nuwax_json_parse_with_length_opts(payload,
+                                            (size_t)len,
+                                            &parse_end,
+                                            false);
+--- before/main/audio_modes/monitoring/monitoring_protocol.c
++++ after/main/audio_modes/monitoring/monitoring_protocol.c
+@@ -4,6 +4,7 @@
+ #include <string.h>
+ 
+ #include "cJSON.h"
++#include "json_resource_budget.h"
+ 
+ static bool json_string_equals(const cJSON *item, const char *value) {
+     return item && cJSON_IsString(item) && item->valuestring && value &&
+@@ -161,7 +162,7 @@
+     }
+ 
+     const char *parse_end = NULL;
+-    cJSON *root = cJSON_ParseWithLengthOpts(payload,
++    cJSON *root = nuwax_json_parse_with_length_opts(payload,
+                                            (size_t)len,
+                                            &parse_end,
+                                            false);

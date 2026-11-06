@@ -71,7 +71,10 @@ typedef struct {
     uint32_t voiced_ms;
     uint32_t elapsed_since_first_speech_ms;
     uint32_t utterance_span_ms;
+    /* Effective non-candidate time, retained for pause learning/diagnostics. */
     uint32_t pause_ms;
+    /* Every frame since this pause began, including unconfirmed candidates. */
+    uint32_t pause_elapsed_ms;
     uint32_t strict_silence_tail_ms;
     uint32_t pending_resumed_pause_ms;
     uint32_t max_resumed_pause_ms;

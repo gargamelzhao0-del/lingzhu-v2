@@ -4,6 +4,10 @@
 #include "ws_close_policy.h"
 
 int main(void) {
+    assert(nuwax_ws_close_policy_admits(
+        NUWAX_WS_CLOSE_CAUSE_WAKE_GREETING_TIMEOUT, true));
+    assert(strcmp(nuwax_ws_close_cause_name(
+        NUWAX_WS_CLOSE_CAUSE_WAKE_GREETING_TIMEOUT), "wake_greeting_timeout") == 0);
     assert(!nuwax_ws_close_policy_admits(
         NUWAX_WS_CLOSE_CAUSE_BUSINESS_RECOVERY, true));
     assert(!nuwax_ws_close_policy_admits(

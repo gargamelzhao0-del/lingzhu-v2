@@ -35,6 +35,10 @@ static const char *TAG = "qmi8658a";
 #define QMI8658A_I2C_HZ         400000
 #define QMI8658A_TIMEOUT_MS     100
 #define QMI8658A_BUS_LOCK_TIMEOUT_MS (QMI8658A_TIMEOUT_MS + 100U)
+/* Runtime samples are optional; initialization/configuration retain their
+ * longer timeout. Never occupy the touch bus for a 100 ms polling retry. */
+#define QMI8658A_SAMPLE_TIMEOUT_MS 10
+#define QMI8658A_SAMPLE_LOCK_TIMEOUT_MS 10U
 
 typedef struct {
     i2c_master_dev_handle_t dev;
@@ -112,14 +116,17 @@ static esp_err_t read_regs(uint8_t reg, uint8_t *data, size_t len)
     }
     s_qmi_tx_scratch[0] = reg;
     memset(s_qmi_rx_scratch, 0, len);
-    esp_err_t err = nuwax_i2c_bus_transaction_begin(
-        QMI8658A_BUS_LOCK_TIMEOUT_MS);
+    /* One bounded scheduler slice breaks phase-locked collisions with touch.
+     * Combined with the 10 ms transfer deadline this fits the 50 ms sampler;
+     * the worker independently rejects any end-to-end stale sample. */
+    esp_err_t err = nuwax_i2c_bus_transaction_begin(QMI8658A_SAMPLE_LOCK_TIMEOUT_MS);
     if (err != ESP_OK) {
-        return err;
+        return err == ESP_ERR_TIMEOUT ? ESP_ERR_NOT_FINISHED : err;
     }
     err = i2c_master_transmit_receive(
         s_qmi.dev, s_qmi_tx_scratch, 1, s_qmi_rx_scratch, len,
-        QMI8658A_TIMEOUT_MS);
+        QMI8658A_SAMPLE_TIMEOUT_MS);
+    nuwax_i2c_bus_sample_transfer_done(err);
     nuwax_i2c_bus_transaction_end();
     if (err == ESP_OK) {
         memcpy(data, s_qmi_rx_scratch, len);
@@ -250,7 +257,12 @@ esp_err_t qmi8658a_read_data(qmi8658a_sensor_data_t *data)
     if (!s_qmi.initialized || !s_qmi.lock || !s_qmi.dev) {
         return ESP_ERR_INVALID_STATE;
     }
-    xSemaphoreTake(s_qmi.lock, portMAX_DELAY);
+    /* Sampling is optional. Configuration owns this mutex too; never queue
+     * the polling worker indefinitely behind a slow control operation. */
+    if (xSemaphoreTake(s_qmi.lock, 0) != pdTRUE) {
+        memset(data, 0, sizeof(*data));
+        return ESP_ERR_NOT_FINISHED;
+    }
     uint8_t raw[12] = {0};
     esp_err_t err = read_regs(QMI8658A_REG_AX_L, raw, sizeof(raw));
     if (err == ESP_OK) {

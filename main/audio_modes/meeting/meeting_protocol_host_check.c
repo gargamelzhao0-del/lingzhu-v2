@@ -7,6 +7,8 @@
 #include "meeting_protocol.h"
 
 static char s_last_text[512];
+int64_t esp_timer_get_time(void) { return 1000000; }
+uint32_t nuwax_ws_connection_epoch(const nuwax_ws_client_t *ws) { return ws ? ws->connection_epoch : 0; }
 
 esp_err_t nuwax_ws_send_text(nuwax_ws_client_t *ws, const char *payload) {
     assert(ws != NULL);
@@ -137,4 +139,22 @@ int main(void) {
 
     puts("meeting_protocol_host_check: PASS");
     return 0;
+}
+
+/* Bounded transport fake: protocol JSON remains the same. */
+esp_err_t nuwax_ws_send_text_until_if_epoch(nuwax_ws_client_t *ws, const char *payload,
+    int64_t deadline_us, uint32_t epoch)
+{
+    if (deadline_us <= 0 || !ws || ws->connection_epoch != epoch) return ESP_ERR_INVALID_STATE;
+    #ifdef nuwax_ws_send_text
+    #undef nuwax_ws_send_text
+    #define SD_RESTORE_SEND_TEXT
+    #endif
+    extern esp_err_t nuwax_ws_send_text(nuwax_ws_client_t *, const char *);
+    esp_err_t result = nuwax_ws_send_text(ws, payload);
+    #ifdef SD_RESTORE_SEND_TEXT
+    #define nuwax_ws_send_text sd_base_send_text
+    #undef SD_RESTORE_SEND_TEXT
+    #endif
+    return result;
 }

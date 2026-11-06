@@ -8,9 +8,11 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $meetingDir = Join-Path $projectRoot "main/audio_modes/meeting"
 $hostStubDir = Join-Path $meetingDir "host_stubs"
 $cjsonDir = Join-Path $projectRoot "managed_components/espressif__cjson/cJSON"
+$deviceErrorHostStub = Join-Path $hostStubDir "device_error_report.c"
 $outputDir = Join-Path $projectRoot "build-host-checks"
 
 New-Item -ItemType Directory -Force $outputDir | Out-Null
+& "$PSScriptRoot/prepare-audio-uplink-producer-host.ps1" -OutputDir $outputDir
 
 & $Gcc -std=c11 -Wall -Wextra -Werror `
     "-I$meetingDir" `
@@ -52,6 +54,7 @@ if ($LASTEXITCODE -ne 0) {
     (Join-Path $meetingDir "meeting_processor.c") `
     (Join-Path $meetingDir "meeting_protocol.c") `
     (Join-Path $cjsonDir "cJSON.c") `
+    $deviceErrorHostStub `
     (Join-Path $meetingDir "meeting_mode_host_check.c") `
     -o (Join-Path $outputDir "meeting_mode_host_check.exe")
 if ($LASTEXITCODE -ne 0) {
@@ -73,7 +76,11 @@ if ($LASTEXITCODE -ne 0) {
     (Join-Path $meetingDir "meeting_processor.c") `
     (Join-Path $meetingDir "meeting_protocol.c") `
     (Join-Path $cjsonDir "cJSON.c") `
+    $deviceErrorHostStub `
     (Join-Path $meetingDir "meeting_capture_transaction_host_check.c") `
+    "-I$outputDir" `
+    (Join-Path $projectRoot 'main/audio_frame.c') `
+    (Join-Path $projectRoot 'main/conversation/audio_uplink_terminal.c') `
     -o (Join-Path $outputDir "meeting_capture_transaction_host_check.exe")
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

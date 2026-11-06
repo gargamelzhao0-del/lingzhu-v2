@@ -105,6 +105,26 @@ nuwax_battery_low_policy_update(
     return result;
 }
 
+/* A broken capacity model must not hide a valid voltage floor. Unknown power
+ * retains the prior alarm; only a fresh valid group may clear it. */
+static inline nuwax_battery_low_policy_result_t nuwax_battery_low_with_validity(
+    nuwax_battery_low_policy_result_t previous, bool power_valid,
+    bool model_valid, const nuwax_battery_low_policy_input_t *input)
+{
+    if (!power_valid || !input) return previous;
+    if (model_valid) return nuwax_battery_low_policy_update(
+        previous.low, previous.reason, input);
+    if (input->voltage_mv <= input->hard_low_enter_mv) {
+        return (nuwax_battery_low_policy_result_t){true, true,
+            NUWAX_BATTERY_LOW_REASON_HARD_VOLTAGE};
+    }
+    if (previous.reason == NUWAX_BATTERY_LOW_REASON_HARD_VOLTAGE &&
+        input->voltage_mv >= input->hard_low_exit_mv) {
+        return (nuwax_battery_low_policy_result_t){0};
+    }
+    return previous;
+}
+
 static inline bool nuwax_battery_charging_latch_update(
     bool previously_charging,
     bool raw_charging,

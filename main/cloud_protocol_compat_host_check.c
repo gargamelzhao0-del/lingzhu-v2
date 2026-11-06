@@ -75,9 +75,9 @@ int main(void)
         "\"command\":\"ota_update\",\"request_id\":\"cmd_1\"}",
         NUWAX_CLOUD_MESSAGE_NONE);
     expect_kind("{\"type\":\"error\",\"error\":\"DEVICE_AUTH_FAILED\"}",
-                NUWAX_CLOUD_MESSAGE_AUTH_REJECTED);
+                NUWAX_CLOUD_MESSAGE_PROVISION_REQUIRED);
     expect_kind("{\"type\":\"error\",\"code\":\"DEVICE_SECRET_INVALID\"}",
-                NUWAX_CLOUD_MESSAGE_AUTH_REJECTED);
+                NUWAX_CLOUD_MESSAGE_PROVISION_REQUIRED);
     expect_kind("{\"type\":\"error\",\"code\":\"DEVICE_NOT_BOUND\"}",
                 NUWAX_CLOUD_MESSAGE_PROVISION_REQUIRED);
     expect_kind(
@@ -85,7 +85,15 @@ int main(void)
         "\"error\":\"invalid device secret\"}",
         NUWAX_CLOUD_MESSAGE_PROVISION_REQUIRED);
     expect_kind("{\"type\":\"error\",\"error\":\"DEVICE_NOT_BOUND\"}",
-                NUWAX_CLOUD_MESSAGE_NONE);
+                NUWAX_CLOUD_MESSAGE_PROVISION_REQUIRED);
+    expect_kind("{\"type\":\"hello\",\"ok\":false,\"code\":\"DEVICE_SECRET_INVALID\"}",
+                NUWAX_CLOUD_MESSAGE_PROVISION_REQUIRED);
+    expect_kind("{\"type\":\"hello\",\"ok\":false,\"error\":\"DEVICE_NOT_BOUND\"}",
+                NUWAX_CLOUD_MESSAGE_PROVISION_REQUIRED);
+    expect_kind("{\"type\":\"error\",\"code\":\"UNAUTHORIZED\"}",
+                NUWAX_CLOUD_MESSAGE_AUTH_REJECTED);
+    expect_kind("{\"type\":\"hello\",\"ok\":false,\"code\":\"DEVICE_NOT_BOUND\",\"code\":\"OTHER\"}",
+                NUWAX_CLOUD_MESSAGE_HELLO_REJECTED);
     expect_kind(
         "{\"type\":\"error\",\"code\":\"DEVICE_NOT_BOUND\","
         "\"code\":\"DEVICE_NOT_BOUND\"}",

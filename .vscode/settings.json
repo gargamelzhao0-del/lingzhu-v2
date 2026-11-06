@@ -1,8 +1,0 @@
-{
-    "idf.currentSetup": "C:\\esp\\v6.0\\esp-idf",
-    "idf.portWin": "COM5",
-    "idf.monitorPort": "COM5",
-    "idf.monitorBaudRate": "115200",
-    "idf.monitorNoReset": true,
-    "idf.buildPath": "${workspaceFolder}\\build-v2-i2cfix-719-s3"
-}

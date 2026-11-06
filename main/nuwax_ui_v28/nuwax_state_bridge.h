@@ -20,6 +20,11 @@ bool nuwax_state_bridge_set_semantic_emotion_name_owned_leased(
     uint32_t owner_revision,
     uint32_t duration_ms,
     bool finite_lease);
+bool nuwax_state_bridge_refresh_semantic_emotion_name_owned_lease(
+    const char *emotion,
+    const char *source,
+    uint32_t owner_revision,
+    uint32_t duration_ms);
 void nuwax_state_bridge_invalidate_semantic_revisions_through(
     uint32_t owner_revision);
 void nuwax_state_bridge_clear_semantic_emotion(void);
@@ -27,6 +32,9 @@ bool nuwax_state_bridge_clear_semantic_emotion_if_owner(
     const char *source,
     uint32_t owner_revision);
 void nuwax_state_bridge_update(nuwax_app_state_t app_state);
+/* Original lifecycle publication order, independent of delayed UI work. */
+bool nuwax_state_bridge_update_owned(nuwax_app_state_t app_state,
+                                     uint32_t publication_seq);
 void nuwax_state_bridge_service(uint32_t now_ms);
 void nuwax_state_bridge_start_waiting_question(void);
 void nuwax_state_bridge_clear_waiting_question(void);

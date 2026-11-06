@@ -1,0 +1,42 @@
+{
+  "date": "2026-09-26",
+  "checks": {
+    "product": {
+      "exitCode": 0,
+      "log": "product.log",
+      "meaning": "completed successfully"
+    },
+    "conversation": {
+      "exitCode": 0,
+      "log": "conversation.log",
+      "meaning": "completed successfully"
+    },
+    "lifecycle": {
+      "exitCode": 0,
+      "log": "lifecycle.log",
+      "meaning": "completed successfully"
+    },
+    "offline": {
+      "exitCode": 0,
+      "log": "offline.log",
+      "meaning": "completed successfully"
+    },
+    "image": {
+      "exitCode": 0,
+      "log": "image.log",
+      "meaning": "completed successfully"
+    },
+    "boundaries": {
+      "exitCode": 0,
+      "log": "boundaries.log",
+      "meaning": "risk reproduction, not remediation"
+    }
+  },
+  "sourceSnapshotEntries": 454,
+  "sourceSnapshotMismatches": [],
+  "productionCodeChanged": false,
+  "newFirmwareBuilt": false,
+  "serialOpened": false,
+  "hardwareValidated": false,
+  "verifiedExistingElfSha256": "6f50ec9c8302dd271c43cbb9534517551dc56a49fbafa5c5017b39a3f5b9e79c"
+}

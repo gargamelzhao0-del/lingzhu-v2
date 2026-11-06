@@ -25,6 +25,8 @@ static char s_sent_messages[HOST_SENT_MESSAGE_CAPACITY][HOST_SENT_MESSAGE_BYTES]
 static size_t s_sent_count;
 static unsigned int s_state_changes;
 static bool s_can_start = true;
+static nuwax_monitoring_mode_t *s_stop_before_publish;
+static nuwax_ws_client_t *s_stop_ws;
 
 QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t item_size) {
     if (length == 0U || item_size == 0U) {
@@ -51,6 +53,11 @@ BaseType_t xQueueSend(QueueHandle_t queue,
     if (!queue || !item || queue->count >= queue->length) {
         return pdFALSE;
     }
+    if (s_stop_before_publish) {
+        nuwax_monitoring_mode_t *mode = s_stop_before_publish;
+        s_stop_before_publish = NULL;
+        assert(nuwax_monitoring_mode_request_ui(mode, s_stop_ws, false) == ESP_OK);
+    }
     const UBaseType_t tail = (queue->head + queue->count) % queue->length;
     memcpy(queue->storage + (size_t)tail * queue->item_size,
            item,
@@ -66,6 +73,13 @@ BaseType_t xQueueOverwrite(QueueHandle_t queue, const void *item) {
     memcpy(queue->storage, item, queue->item_size);
     queue->head = 0U;
     queue->count = 1U;
+    return pdTRUE;
+}
+
+BaseType_t xQueuePeek(QueueHandle_t queue, void *item, TickType_t wait_ticks) {
+    (void)wait_ticks;
+    if (!queue || !item || queue->count == 0U) return pdFALSE;
+    memcpy(item, queue->storage + (size_t)queue->head * queue->item_size, queue->item_size);
     return pdTRUE;
 }
 
@@ -395,6 +409,82 @@ static void test_capture_failure_and_disconnect(nuwax_monitoring_mode_t *mode,
     assert_transient_state_reset(mode);
 }
 
+static void test_resume_identity(nuwax_monitoring_mode_t *mode, nuwax_ws_client_t *ws) {
+    nuwax_audio_mode_identity_clear(&mode->identity);
+    strcpy(mode->audio_session_id, "monitoring_original");
+    mode->state = NUWAX_MONITORING_STATE_ACTIVE;
+    nuwax_monitoring_mode_notify_ws_disconnected(mode);
+    assert(mode->identity.resuming);
+    assert(strcmp(mode->identity.session_id, "monitoring_original") == 0);
+    reset_sent_messages();
+    assert(nuwax_monitoring_mode_request_ui(mode, ws, true) == ESP_OK);
+    assert(sent_message_contains(NULL, "\"audio_session_id\":\"monitoring_original\"", "offline_audio_recovered"));
+    char first[HOST_SENT_MESSAGE_BYTES];
+    strcpy(first, s_sent_messages[0]);
+    assert(nuwax_monitoring_mode_request_ui(mode, ws, true) == ESP_OK);
+    assert(strcmp(first, s_sent_messages[1]) != 0);
+    assert(strstr(s_sent_messages[1], "monitoring_original"));
+    assert(nuwax_monitoring_mode_request_ui(mode, ws, false) == ESP_OK);
+    assert(mode->identity.session_id[0] == '\0');
+    reset_sent_messages();
+    assert(nuwax_monitoring_mode_request_ui(mode, ws, true) == ESP_OK);
+    assert(!sent_message_contains(NULL, "monitoring_original", NULL));
+}
+
+
+static void test_local_stop_fences_received_enable(nuwax_monitoring_mode_t *mode,
+                                                  nuwax_ws_client_t *ws) {
+    const char *enable_format = "{\"type\":\"device_command\",\"command\":\"set_audio_mode\","
+        "\"request_id\":\"%s\",\"mode\":\"monitoring\",\"state\":\"enabled\"}";
+    char request[48], enable[400];
+    for (unsigned race = 0; race < 3; ++race) {
+        snprintf(request, sizeof(request), "stop_race_%u", race);
+        snprintf(enable, sizeof(enable), enable_format, request);
+
+        reset_sent_messages();
+        assert(mode->state == NUWAX_MONITORING_STATE_DISABLED);
+        mode->offline_resume_required = true;
+        mode->identity.resuming = true;
+        strcpy(mode->identity.session_id, "offline_original");
+        if (race == 1) { // RX paused after receiving, before queue publication.
+            s_stop_before_publish = mode;
+            s_stop_ws = ws;
+        }
+        send_protocol(mode, ws, enable);
+        assert(atomic_load(&mode->queued_enable_events) == 1U);
+        if (race != 1) {
+            if (race == 2) ws->connected = false;
+            assert(nuwax_monitoring_mode_request_ui(mode, ws, false) == ESP_OK);
+            ws->connected = true;
+        }
+        assert(!mode->offline_resume_required && !mode->identity.resuming);
+        const unsigned changes = s_state_changes;
+        assert(nuwax_monitoring_mode_run(mode, ws) == ESP_OK);
+        assert(s_state_changes == changes); // Never enters STARTING/capture.
+        assert(sent_message_contains(request, "\"ok\":false", "local_stop_superseded"));
+        assert(atomic_load(&mode->queued_enable_events) == 0U);
+        assert(!nuwax_monitoring_mode_has_pending(mode));
+        assert(!nuwax_monitoring_mode_blocks_ota(mode));
+        // A genuinely new enable remains admissible after the barrier.
+        reset_sent_messages();
+        send_protocol(mode, ws, enable);
+        assert(nuwax_monitoring_mode_run(mode, ws) == ESP_ERR_NOT_SUPPORTED);
+        assert(sent_message_contains(request, "\"ok\":false", "capture_failed"));
+        assert(atomic_load(&mode->queued_enable_events) == 0U);
+    }
+    for(unsigned active=0;active<2;active++) {
+        reset_sent_messages();
+        mode->state = active ? NUWAX_MONITORING_STATE_ACTIVE : NUWAX_MONITORING_STATE_STARTING;
+        send_protocol(mode, ws, enable);
+        assert(nuwax_monitoring_mode_request_ui(mode, ws, false) == ESP_OK);
+        assert(mode->state == NUWAX_MONITORING_STATE_STOPPING);
+        assert(nuwax_monitoring_mode_run(mode, ws) == ESP_OK);
+        assert(mode->state == NUWAX_MONITORING_STATE_DISABLED);
+        assert(sent_message_contains(request, "\"ok\":false", "local_stop_superseded"));
+        assert(atomic_load(&mode->queued_enable_events) == 0U);
+    }
+}
+
 int main(void) {
     nuwax_monitoring_mode_t mode = {0};
     nuwax_ws_client_t ws = {.connected = true, .connection_epoch = 1U};
@@ -411,9 +501,29 @@ int main(void) {
     test_connection_epoch_and_recovery_abort(&mode, &ws);
     test_handoff_stop(&mode, &ws);
     test_capture_failure_and_disconnect(&mode, &ws);
+    test_resume_identity(&mode, &ws);
+    test_local_stop_fences_received_enable(&mode, &ws);
 
     assert(s_state_changes > 0U);
     nuwax_monitoring_mode_deinit(&mode);
     puts("monitoring_mode_host_check: PASS");
     return 0;
+}
+
+/* Bounded transport fake: protocol JSON remains the same. */
+esp_err_t nuwax_ws_send_text_until_if_epoch(nuwax_ws_client_t *ws, const char *payload,
+    int64_t deadline_us, uint32_t epoch)
+{
+    if (deadline_us <= 0 || !ws || ws->connection_epoch != epoch) return ESP_ERR_INVALID_STATE;
+    #ifdef nuwax_ws_send_text
+    #undef nuwax_ws_send_text
+    #define SD_RESTORE_SEND_TEXT
+    #endif
+    extern esp_err_t nuwax_ws_send_text(nuwax_ws_client_t *, const char *);
+    esp_err_t result = nuwax_ws_send_text(ws, payload);
+    #ifdef SD_RESTORE_SEND_TEXT
+    #define nuwax_ws_send_text sd_base_send_text
+    #undef SD_RESTORE_SEND_TEXT
+    #endif
+    return result;
 }

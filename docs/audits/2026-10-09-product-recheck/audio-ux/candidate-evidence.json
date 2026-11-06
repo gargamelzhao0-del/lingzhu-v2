@@ -1,0 +1,19 @@
+{
+  "candidate": "WG-EPOCH-RECOVERY-v1",
+  "productionModified": false,
+  "hardwareValidated": false,
+  "sourceSha256": "0087ce87987ffcc75b0cfbf7d1e4b28767c0bb166873c06f9a0fb9597651162a",
+  "candidatePolicySha256": "6999f913c3838ff2f69579bdaa5286e0944ede3abebb29ba9858c8954bc5abfa",
+  "additionalRealFunctions": {
+    "pause_awake_waiting": "2d672960e929f4ae6608f3fbfe337ea99b041928fba131a75e3847014c892d67",
+    "clear_ws_reconnect_audio_recovery": "5ef6208c6ce8015c77859db1e901b2a381ebfdde1101b6772803df1b28ff8837",
+    "preserve_awake_session_for_ws_reconnect": "c0cd4b44b284e851b7168bd8484768a67d30b17c897da91a40aee511bb879520",
+    "arm_ws_reconnect_audio_recovery": "e8c66973cc4fb6e7f5bf0b9bf9eacb4a44feb15d688801ec44183afecdb87145",
+    "recover_awake_conversation_after_ws_reconnect": "3cf1b8b58d006f1323bcfe489c58656de8fd8daaab8308a3247e0525c65988c0"
+  },
+  "limitations": [
+    "Candidate close flag simulates transport close mailbox; no live socket, physical teardown, authentication or network retry executed.",
+    "Reconnect success is injected after 1000ms to exercise original recovery functions. This is not a latency prediction.",
+    "Lifecycle fence cases exercise candidate policy; they are not full OTA/provisioning/mode integration tests."
+  ]
+}

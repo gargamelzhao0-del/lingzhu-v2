@@ -200,6 +200,7 @@ WebSocket session_id
   "device_id": "NX-XXXX-XXXX-XXXX",
   "device_secret": "<device-secret>",
   "transport": "websocket",
+  "has_sd_card": true,
   "features": {
     "audio_upload": true,
     "audio_playback": true,
@@ -256,6 +257,12 @@ WebSocket session_id
 
 `firmware` 只在启用 OTA 时出现。`audio_params` 是本次连接的实际能力，云端不得根据设备型号猜测，也不得把 ES7210 的物理 TDM slot 数当作云端音频声道数。
 
+`has_sd_card` 为顶层布尔值。`true` 表示最近一次完成的 SD 检测成功；`false` 表示未检测到可识别的卡。设备使用挂载结果检测 SD，没有独立卡座检测信号：插拔不保证即时更新，卡损坏或无法挂载时也可能为 `false`；短暂重挂载期间保留上次检测结果。此字段不表示剩余容量、当前可写性或当前模式已经成功开启。旧固件不带字段时按未知处理，不等同于 `false`。
+
+每次连接首先发送完整 `hello`；会议／监控真正进入 ACTIVE 后，在控制循环的下一次服务中立即补发同格式 `hello`，重新读取 SD 检测结果。在线正常情况下不等待心跳周期；发送繁忙则后续重试，失败后间隔 1 秒重试。离线开启不要求联网，恢复连接时的首次 `hello` 上报最新状态。重复开启命令、监控静音暂停／恢复不重复触发此上报。
+
+云端须允许同一已认证连接重复收到同身份 `hello`，更新 `has_sd_card` 等设备状态即可，**不能关闭连接、重新创建场次、清空当前音频状态或重新触发 OTA／初始化命令**。首次和后续 `hello` 均不要求单独 ACK；云端若返回 `hello`，保持现有成功响应格式和原连接 `session_id`。后续 `hello` 的身份和密钥仍须校验。
+
 ### 5.2 云端 `hello`
 
 正式最小成功响应：
@@ -299,7 +306,7 @@ WebSocket session_id
 }
 ```
 
-重复 `hello`、身份不匹配或错误密钥会被网关拒绝并关闭连接。
+身份不匹配或错误密钥会被网关拒绝并关闭连接。同身份的重复 `hello` 按第 5.1 节更新状态；旧的本地云端模拟器存在 `duplicate_hello` 拒绝逻辑，接入本行为前需同步修改接收端，不能继续沿用“一条连接只允许一次 hello”的限制。
 
 云端删除设备绑定时必须使用结构化错误码：
 

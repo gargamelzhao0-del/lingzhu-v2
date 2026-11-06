@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Nuwax · SD 音频工作台</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+<header><a class="brand" href="/" aria-label="Nuwax 音频工作台首页"><span class="mark">n</span><span>NUWAX <small>音频工作台</small></span></a><div class="connection"><span id="dot" class="dot"></span><span id="connection">正在连接网关</span><span class="local">本地测试</span></div></header>
+<main>
+<section class="heading"><div><p class="eyebrow">SD AUDIO / 本机接收</p><h1>每一场录音，都在这里。</h1><p class="muted">接收设备 SD 音频，按场次查看、试听与下载。</p></div><button id="refresh" class="secondary">刷新数据 ↻</button></section>
+<section class="stats" aria-label="接收概览">
+<div><span>已接收场次</span><strong id="session-count">—</strong><small id="complete-count">等待数据</small></div>
+<div><span>可试听音频</span><strong id="duration">—</strong><small>已确认文件的累计录音时长</small></div>
+<div><span>已接收数据</span><strong id="size">—</strong><small id="file-count">原始 SD 音频文件</small></div>
+<div><span>当前接收速度</span><strong id="speed">—</strong><small>近 2 秒有效写入 · KiB/s</small></div>
+</section>
+<div id="notice" role="status" hidden></div>
+<section id="transfers" class="transfers" hidden><h2>正在接收</h2><div id="transfer-list"></div></section>
+<div class="workspace">
+<section class="library"><div class="section-title"><h2>录音列表</h2><span id="updated">自动刷新</span></div>
+<div class="filters"><div class="tabs" role="group" aria-label="模式筛选"><button class="active" data-mode="all">全部</button><button data-mode="meeting">会议</button><button data-mode="monitoring">监控</button></div><input id="search" type="search" placeholder="搜索设备或场次 ID" aria-label="搜索设备或场次 ID"></div>
+<div id="recordings" class="recordings"><div class="empty">正在读取本机录音…</div></div></section>
+<aside class="detail"><div id="detail-empty" class="detail-empty"><span class="disc">♫</span><h2>选择一场录音</h2><p>查看接收情况，播放已确认的音频。</p></div>
+<div id="detail-content" hidden>
+<div class="section-title"><h2 id="detail-title">会议录音</h2><span id="detail-state" class="badge"></span></div>
+<p id="detail-id" class="mono"></p><p id="detail-device" class="muted"></p>
+<div class="detail-metrics time-metrics"><div><small>场次开始时间</small><strong id="detail-started"></strong></div><div><small>场次持续时间</small><strong id="detail-session-duration"></strong></div></div>
+<div class="detail-metrics"><div><small>实际音频时长</small><strong id="detail-duration"></strong></div><div><small>已确认分片</small><strong id="detail-count"></strong></div></div>
+<div id="detail-types" class="type-line"></div>
+<div class="player"><div class="player-label"><span class="disc small-disc">♫</span><span>场次试听<small>16 kHz · 单声道 · PCM</small></span></div><button id="play" class="primary">准备并播放录音</button><p id="player-status" role="status"></p><audio id="audio" controls preload="metadata" hidden></audio><a id="download" hidden>下载 WAV ↓</a></div>
+<p class="hint">按分片顺序播放当前已收到的音频；未录音或缺失的间隔不补静音。后续收到的新分片，请重新点击播放加载。</p>
+<div class="section-title segments-heading"><h3>分片记录</h3><span id="segment-page"></span></div><div id="segments"></div><div class="pagination"><button id="previous" class="secondary">上一页</button><button id="next" class="secondary">下一页</button></div>
+</div></aside></div>
+<footer><span>接收地址 <code id="endpoint"></code></span><span>会议结束后上传 · 监控实时与历史分别标记</span></footer>
+</main></body></html>

@@ -1,0 +1,17 @@
+{
+  "logSha256": "64e212178ae6267c74e4bfb12dd0506de96aea36939370db328e40fe7a9a0f67",
+  "logLines": 1429,
+  "firstTimestampMs": 1051,
+  "lastTimestampMs": 119375,
+  "uploadCompletions": [
+    "I2S microphone stream upload done frames=194 queued=194 sent=194 dropped=0 queue_full=0 batches=191/191 result=ESP_OK",
+    "I2S microphone stream upload done frames=58 queued=58 sent=58 dropped=0 queue_full=0 batches=55/55 result=ESP_OK"
+  ],
+  "naturalPlaybackCompletions": [
+    "speaker playback complete turn=turn_20260927_76f279a7_559401 playback=pb_20260927_76f279a7_559403 seq=134 generation=1 submitted=1 active=1 claimed=1 committed=1 stop_result=ESP_OK queued=134 played=134 startup_target_ms=800 next_startup_target_ms=800 resume_target_ms=640 startup_wait_ms=247 low_watermark_ms=700 rebuffer_events=0 rebuffer_wait_ms=0 rebuffer_max_wait_ms=0 tail_wait_events=0 tail_wait_ms=0 max_ingress_gap_ms=121 gap_silence=0 write_failures=0 queue_drops=0 queue_waiting=0 reason=playback_end_marker",
+    "speaker playback complete turn=turn_20260927_76f279a7_559422 playback=pb_20260927_76f279a7_559424 seq=94 generation=4 submitted=4 active=4 claimed=1 committed=1 stop_result=ESP_OK queued=94 played=94 startup_target_ms=800 next_startup_target_ms=800 resume_target_ms=640 startup_wait_ms=127 low_watermark_ms=740 rebuffer_events=0 rebuffer_wait_ms=0 rebuffer_max_wait_ms=0 tail_wait_events=0 tail_wait_ms=0 max_ingress_gap_ms=43 gap_silence=0 write_failures=0 queue_drops=0 queue_waiting=0 reason=playback_end_marker",
+    "speaker playback complete turn=turn_20260927_76f279a7_559431 playback=pb_20260927_76f279a7_559433 seq=149 generation=5 submitted=5 active=5 claimed=1 committed=1 stop_result=ESP_OK queued=149 played=149 startup_target_ms=800 next_startup_target_ms=800 resume_target_ms=640 startup_wait_ms=104 low_watermark_ms=660 rebuffer_events=0 rebuffer_wait_ms=0 rebuffer_max_wait_ms=0 tail_wait_events=0 tail_wait_ms=0 max_ingress_gap_ms=75 gap_silence=0 write_failures=0 queue_drops=0 queue_waiting=0 reason=playback_end_marker"
+  ],
+  "au05MarkerPresent": true,
+  "au05ExceptionalPathObserved": false
+}

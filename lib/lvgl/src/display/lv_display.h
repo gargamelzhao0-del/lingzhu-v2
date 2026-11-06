@@ -80,6 +80,8 @@ typedef enum {
 
 typedef void (*lv_display_flush_cb_t)(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map);
 typedef void (*lv_display_flush_wait_cb_t)(lv_display_t * disp);
+/** Optional complete active-screen renderer. False must leave the layer unchanged. */
+typedef bool (*lv_display_scene_render_cb_t)(lv_display_t * disp, lv_layer_t * layer);
 
 /**********************
  * GLOBAL PROTOTYPES
@@ -322,6 +324,13 @@ void lv_display_set_flush_cb(lv_display_t * disp, lv_display_flush_cb_t flush_cb
  *                  If NULL `lv_display_flush_ready()` can be used to signal that flushing is ready.
  */
 void lv_display_set_flush_wait_cb(lv_display_t * disp, lv_display_flush_wait_cb_t wait_cb);
+
+/** Render a cached active screen after buffer ownership is acquired. The callback
+ * must cover the entire clip, preserve layer state, and return true only when it
+ * replaces the active screen including its siblings. Top/sys layers, flushing,
+ * and refresh completion remain owned by LVGL. Not used during screen transitions.
+ * Register/unregister on the LVGL owner. NULL restores normal tree rendering. */
+void lv_display_set_scene_render_cb(lv_display_t * disp, lv_display_scene_render_cb_t cb);
 
 /**
  * Set the color format of the display.

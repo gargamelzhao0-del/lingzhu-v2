@@ -1,0 +1,14 @@
+# Build script supplies persistent PC identity/key and the current-IP hint.
+CONFIG_NUWAX_SD_SESSION_ENABLE=y
+# TEMP_SD_CONTROL_COMPAT: remove after legacy cloud control migration.
+CONFIG_NUWAX_SD_LEGACY_CONTROL_COMPAT=y
+CONFIG_NUWAX_SD_GATEWAY_DISCOVERY_ENABLE=y
+# Meeting recording is streamed to disk; a larger sealed file uses no larger
+# recording buffer. Monitoring also uploads sealed full files and final tails.
+CONFIG_NUWAX_OFFLINE_AUDIO_MAX_SEGMENT_BYTES=4194304
+# Cover the 32-MSS TCP send buffer without adding permanent internal DMA RAM.
+# 130 also lost four-frame batching, so it was not a cache-only A/B test.
+# Keep 131's batch-first allocation/reserve guard with the bounded cache.
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=32
+# Wake inference/capture stay on core 1; networking runs with Wi-Fi on core 0.
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y

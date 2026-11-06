@@ -107,6 +107,23 @@ int main(void)
                 nuwax_emotion_display_policy_cancel_touch(&policy, 120001U) &&
                     !policy.touch_active && !policy.interaction_pinned);
 
+    /* Reproduce the shake round: keep the reply expression while audio plays,
+     * then release on listening without needing another animation timeout. */
+    (void)nuwax_emotion_display_policy_start_interaction(
+        &policy, NUWAX_EMOTION_DIZZINESS, 3000U, 34266U);
+    (void)nuwax_emotion_display_policy_pin_interaction(
+        &policy, NUWAX_EMOTION_DIZZINESS);
+    (void)nuwax_emotion_display_policy_enter_lifecycle(
+        &policy, NUWAX_DIALOG_SPEAKING, 36026U);
+    expect_true("shake reply stays visible through the original three-second deadline",
+                !nuwax_emotion_display_policy_service(&policy, 39000U) &&
+                    policy.touch_active && policy.interaction_pinned &&
+                    policy.interaction_emotion == NUWAX_EMOTION_DIZZINESS);
+    expect_true("shake immediately releases on playback completion listening",
+                nuwax_emotion_display_policy_enter_lifecycle(
+                    &policy, NUWAX_DIALOG_LISTENING, 40056U) &&
+                    !policy.touch_active && !policy.interaction_pinned);
+
     (void)nuwax_emotion_display_policy_apply_cloud(
         &policy, NUWAX_EMOTION_THOUGHT_COMPLETE, 6000U, &generation);
     expect_true("ordinary cloud emotion cannot shorten thought-complete hold",
@@ -172,8 +189,13 @@ int main(void)
                     policy.playback_generation == 12U);
     (void)nuwax_emotion_display_policy_enter_lifecycle(
         &policy, NUWAX_DIALOG_LISTENING, 8200U);
-    expect_true("listening invalidates cloud playback and interaction state",
+    expect_true("listening invalidates cloud playback but preserves local touch",
                 !policy.semantic_valid && !policy.playback_pcm_started &&
+                    policy.touch_active);
+    expect_true("no-speech does not shorten the two-second touch feedback",
+                !nuwax_emotion_display_policy_service(&policy, 10099U) &&
+                    policy.touch_active &&
+                    nuwax_emotion_display_policy_service(&policy, 10100U) &&
                     !policy.touch_active);
     (void)nuwax_emotion_display_policy_service(&policy, 20000U);
     expect_true("stale timer cannot replace listening with happy",
@@ -271,11 +293,26 @@ int main(void)
                     policy.semantic_valid &&
                     policy.semantic_finite_lease &&
                     policy.semantic_deadline_ms == 23000U);
+    const uint32_t initial_sleep_thinking_generation = generation;
+    expect_true("matching sleep lease refresh preserves generation",
+                nuwax_emotion_display_policy_refresh_matching_lease(
+                    &policy, NUWAX_EMOTION_THINKING, 3000U, 22000U,
+                    &generation) &&
+                    generation == initial_sleep_thinking_generation &&
+                    policy.semantic_generation ==
+                        initial_sleep_thinking_generation &&
+                    policy.semantic_deadline_ms == 25000U);
+    expect_true("different sleep emotion does not use refresh path",
+                !nuwax_emotion_display_policy_refresh_matching_lease(
+                    &policy, NUWAX_EMOTION_HAPPY, 3000U, 22000U,
+                    &generation) &&
+                    policy.semantic_emotion == NUWAX_EMOTION_THINKING &&
+                    policy.semantic_deadline_ms == 25000U);
     expect_true("sleep thinking lease remains active before deadline",
-                !nuwax_emotion_display_policy_service(&policy, 22999U) &&
+                !nuwax_emotion_display_policy_service(&policy, 24999U) &&
                     policy.semantic_valid);
     expect_true("sleep thinking lease expires instead of becoming happy",
-                nuwax_emotion_display_policy_service(&policy, 23000U) &&
+                nuwax_emotion_display_policy_service(&policy, 25000U) &&
                     !policy.semantic_valid &&
                     policy.semantic_emotion == NUWAX_EMOTION_NEUTRAL);
 

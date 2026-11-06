@@ -1,0 +1,22 @@
+[
+  {
+    "test": "test-charging-led.py",
+    "exit_code": 0
+  },
+  {
+    "test": "test-battery-history.py",
+    "exit_code": 0
+  },
+  {
+    "test": "test-charge-config-diagnostic.py",
+    "exit_code": 0
+  },
+  {
+    "test": "test-drawer-composition.py",
+    "exit_code": 0
+  },
+  {
+    "test": "test-display-buffer-lease.py",
+    "exit_code": 0
+  }
+]

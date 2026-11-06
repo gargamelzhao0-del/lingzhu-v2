@@ -1,6 +1,7 @@
 #include "board_drivers.h"
 
 #include "board/esp_vocat_v1_0_pins.h"
+#include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -17,6 +18,7 @@ static const char *TAG = "nuwax_led";
 #define LED_RESOLUTION         LEDC_TIMER_8_BIT
 #define LED_PWM_HZ             1000
 #define LED_DUTY_MAX           255u
+#define LED_PWM_PERIOD_TICKS   256u
 #define LED_DEFAULT_BREATH_MS  2000u
 
 typedef struct {
@@ -34,8 +36,17 @@ static led_context_t s_led;
 
 static esp_err_t set_brightness(uint8_t brightness)
 {
-    /* The LED anode is tied to 3V3. GPIO18 sinks current, so PWM is inverted. */
-    uint32_t hardware_duty = LED_DUTY_MAX - brightness;
+    /* GPIO18 sinks current. OFF must be a constant high level: an 8-bit
+     * duty of 255 still has one low tick in every 256 and can visibly glow.
+     * update_duty below re-enables output when leaving either static level. */
+    if (brightness == 0U) {
+        return ledc_stop(LED_MODE, LED_CHANNEL, 1U);
+    }
+    if (brightness == LED_DUTY_MAX) {
+        return ledc_stop(LED_MODE, LED_CHANNEL, 0U);
+    }
+    const uint32_t hardware_duty = LED_PWM_PERIOD_TICKS -
+        ((uint32_t)brightness * LED_PWM_PERIOD_TICKS / LED_DUTY_MAX);
     esp_err_t err = ledc_set_duty(LED_MODE, LED_CHANNEL, hardware_duty);
     if (err != ESP_OK) {
         return err;
@@ -65,7 +76,7 @@ static esp_err_t apply_state(led_state_t state, uint32_t breath_ms, uint32_t now
         const uint32_t linear = phase <= half
                                     ? (phase * 255u) / half
                                     : ((period - phase) * 255u) / half;
-        const uint8_t gamma = (uint8_t)((linear * linear + 255u) / 255u);
+        const uint8_t gamma = (uint8_t)((linear * linear + 127u) / 255u);
         return set_brightness(gamma);
     }
     default:
@@ -77,6 +88,9 @@ static void led_task(void *arg)
 {
     (void)arg;
     bool resource_logged = false;
+    bool output_logged = false;
+    led_state_t last_logged_state = LED_STATE_OFF;
+    uint32_t last_output_log_ms = 0;
     while (true) {
         xSemaphoreTake(s_led.lock, portMAX_DELAY);
         const bool stop = s_led.stop_requested;
@@ -108,6 +122,25 @@ static void led_task(void *arg)
             ESP_LOGE(TAG, "PWM update failed: %s", esp_err_to_name(err));
         }
         s_led.last_hw_error = err;
+        if (!output_logged || last_logged_state != s_led.state ||
+            (uint32_t)(now_ms - last_output_log_ms) >= 30000U) {
+            /* Input sensing is enabled without changing the LEDC output mux.
+             * Duty register alone does not describe a stopped channel. Read
+             * the pad to distinguish logical OFF from a physical low level.
+             * An instantaneous read during PWM is not a brightness measure. */
+            const int expected_static = s_led.state == LED_STATE_OFF ? 1 :
+                                        s_led.state == LED_STATE_ON ? 0 : -1;
+            ESP_LOGI(TAG,
+                     "output check state=%d gpio=%d level=%d expected_static=%d duty_reg=%lu freq_hz=%lu err=%s",
+                     (int)s_led.state, NUWAX_VOCAT_LED_G_GPIO,
+                     gpio_get_level(NUWAX_VOCAT_LED_G_GPIO), expected_static,
+                     (unsigned long)ledc_get_duty(LED_MODE, LED_CHANNEL),
+                     (unsigned long)ledc_get_freq(LED_MODE, LED_TIMER),
+                     esp_err_to_name(err));
+            last_logged_state = s_led.state;
+            last_output_log_ms = now_ms;
+            output_logged = true;
+        }
         xSemaphoreGive(s_led.lock);
         if (!resource_logged) {
             resource_logged = true;
@@ -163,6 +196,10 @@ esp_err_t nuwax_led_init(void)
     };
     err = ledc_channel_config(&channel);
     if (err != ESP_OK) goto fail;
+    err = set_brightness(0);
+    if (err != ESP_OK) goto fail;
+    err = gpio_input_enable(NUWAX_VOCAT_LED_G_GPIO);
+    if (err != ESP_OK) goto fail;
 
     s_led.state = LED_STATE_OFF;
     s_led.breath_period_ms = LED_DEFAULT_BREATH_MS;
@@ -176,7 +213,7 @@ esp_err_t nuwax_led_init(void)
         err = ESP_ERR_NO_MEM;
         goto fail;
     }
-    ESP_LOGI(TAG, "ready gpio=%d active_low=1 task_stack=psram bytes=2048",
+    ESP_LOGI(TAG, "ready gpio=%d active_low=1 task_stack=psram bytes=2048 revision=static-level-v1 off=high on=low",
              NUWAX_VOCAT_LED_G_GPIO);
     return ESP_OK;
 

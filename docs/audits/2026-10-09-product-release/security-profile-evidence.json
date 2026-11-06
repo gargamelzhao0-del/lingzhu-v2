@@ -1,0 +1,18 @@
+{
+  "config_source": "C:\\tmp\\nuwax-sd-formal-build-20260921\\config\\sdkconfig.h",
+  "config_sha256": "ef4e8b2c2bbb460769fc91bbf526ab2aef7cba7b0503b933fec34133fe64c2d6",
+  "binary_sha256": "69233b6aad50e7688525b1b43b6b3ee2cd10715eb7e206f88759e70ccf88ecae",
+  "options": {
+    "CONFIG_NUWAX_PROVISION_SEC2_DEV_MODE": "1",
+    "CONFIG_NUWAX_CLOUD_CONFIG_ALLOW_INSECURE_WS": "1",
+    "CONFIG_NUWAX_PROVISION_USB_CONTROL_ENABLE": "1",
+    "CONFIG_SECURE_BOOT": "not defined",
+    "CONFIG_SECURE_FLASH_ENC_ENABLED": "not defined",
+    "CONFIG_NVS_ENCRYPTION": "not defined",
+    "CONFIG_NUWAX_PRODUCTION_SECURITY_REQUIRED": "not defined",
+    "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE": "1"
+  },
+  "configured_shared_development_pop_present_in_binary": true,
+  "secret_value_disclosed": false,
+  "scope": "Compile configuration and packaged binary only; device eFuse, active NVS endpoint and account access not read."
+}

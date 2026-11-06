@@ -32,6 +32,11 @@ typedef struct {
 static nuwax_command_ledger_entry_t
     s_command_ledger[NUWAX_COMMAND_LEDGER_CAPACITY];
 static uint32_t s_command_ledger_next;
+static nuwax_session_dispatch_ack_sender_t s_ack_sender;
+
+void nuwax_session_dispatch_set_ack_sender(nuwax_session_dispatch_ack_sender_t sender) {
+    s_ack_sender = sender;
+}
 
 static uint32_t command_payload_fingerprint(
     const nuwax_session_command_t *command) {
@@ -88,6 +93,9 @@ static esp_err_t send_command_ack_raw(nuwax_ws_client_t *ws,
                                       bool ok,
                                       const char *message) {
     const uint32_t ws_epoch = nuwax_ws_connection_epoch(ws);
+    if (s_ack_sender) {
+        return s_ack_sender(ws, command, ok, message, ws_epoch);
+    }
     return nuwax_session_send_command_ack_until_if_epoch(
         ws,
         command->request_id,
@@ -380,6 +388,51 @@ void nuwax_session_dispatch_command(nuwax_ws_client_t *ws,
             }
         }
         send_command_ack(ws, command, ok, message);
+        return;
+    }
+
+    if (strcmp(command->command, "play_music") == 0) {
+#if defined(CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE) && \
+    CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE
+        if (!callbacks || !callbacks->start_music) {
+            send_command_ack(ws, command, false,
+                             "music playback unavailable");
+            return;
+        }
+        const bool accepted = callbacks->start_music(callbacks->ctx,
+                                                      ws,
+                                                      command->request_id,
+                                                      command->url,
+                                                      command->format);
+        send_command_ack(ws,
+                         command,
+                         accepted,
+                         accepted ? "accepted" : "music playback busy");
+#else
+        send_command_ack(ws, command, false, "music playback disabled");
+#endif
+        return;
+    }
+
+    if (strcmp(command->command, "stop_music") == 0) {
+#if defined(CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE) && \
+    CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE
+        if (!callbacks || !callbacks->stop_music) {
+            send_command_ack(ws, command, false,
+                             "music playback unavailable");
+            return;
+        }
+        /* The compact wire protocol's request_id identifies this stop
+         * command, not the active music transaction.  The callback therefore
+         * receives NULL and stops the current music owner only. */
+        const bool accepted = callbacks->stop_music(callbacks->ctx, NULL);
+        send_command_ack(ws,
+                         command,
+                         accepted,
+                         accepted ? "stopping" : "no active music");
+#else
+        send_command_ack(ws, command, false, "music playback disabled");
+#endif
         return;
     }
 

@@ -1,0 +1,25 @@
+{
+  "tested_at_utc": "2026-10-09T09:56:30.831304+00:00",
+  "evidence_level": "production function extracted and executed with host stubs; not a hardware or cloud test",
+  "condition": "both mode controllers disabled; no capture; no pending handoff; retained offline mode lease",
+  "source_sha256": {
+    "main\\nuwax_ai_partner_main.c": "0087ce87987ffcc75b0cfbf7d1e4b28767c0bb166873c06f9a0fb9597651162a",
+    "main\\audio_mode_ui_lifecycle_host_check.c": "931c8c3b8eba7fd516da2af07d6cbfba6701bda9ee56d42d7d8550d4dc1bc4c1",
+    "main\\offline_audio_spool.c": "e34db61ba5f9a4a5be2530e8eb883a74712a2c51b879bc2bb62a87dae9d70308"
+  },
+  "compile_command": [
+    "gcc",
+    "-std=c11",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-IC:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\audio_modes\\meeting\\host_stubs",
+    "-IC:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\docs\\audits\\2026-10-09-product-release\\data-network",
+    "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\docs\\audits\\2026-10-09-product-release\\data-network\\false_recording_state.c",
+    "-o",
+    "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\docs\\audits\\2026-10-09-product-release\\data-network\\false_recording_state.exe"
+  ],
+  "build_exit_code": 0,
+  "run_exit_code": 0,
+  "production_source_modified": false
+}

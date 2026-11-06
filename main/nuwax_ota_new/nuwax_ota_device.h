@@ -29,6 +29,10 @@ typedef struct {
      * Any other error is a deterministic local-health failure. */
     esp_err_t (*check_boot_health)(void *ctx, char *detail,
                                    size_t detail_size);
+    /* Persist the existing rebind/Wi-Fi recovery record before rolling back a
+     * pending image whose cloud binding was explicitly rejected. Controller
+     * context only; failure must leave the old boot deadline intact. */
+    esp_err_t (*prepare_reprovision_boot)(void *ctx);
 } nuwax_ota_device_callbacks_t;
 
 esp_err_t nuwax_ota_device_init(const nuwax_ota_device_callbacks_t *callbacks);
@@ -48,6 +52,10 @@ bool nuwax_ota_device_handle_text(const char *payload, int len,
 /* Ordinary capture/playback paths must remain stopped while this is true. */
 bool nuwax_ota_device_blocks_audio(void);
 bool nuwax_ota_device_is_active(void);
+/* Owner-side call only after an authoritative binding rejection. Returns true
+ * while the pending image is handed to the controller for durable recovery.
+ * Ordinary disconnects must not call this. No NVS/reboot work in this API. */
+bool nuwax_ota_device_request_binding_recovery(void);
 bool nuwax_ota_device_worker_idle(void);
 bool nuwax_ota_device_terminal_complete(void);
 

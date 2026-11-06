@@ -1,0 +1,18 @@
+{
+  "scope": "Current local reference receiver and synthetic handoff fixtures; not production cloud acceptance.",
+  "checked_at": "2026-10-14T10:23:39.627Z",
+  "passed": true,
+  "checks": [
+    "Python fixture decoded and CRC-checked by current Node receiver",
+    "v1 exact transcript, byte equality, receiver restart and commit/end ACK-loss retries",
+    "v2 exact transcript, byte equality, receiver restart and commit/end ACK-loss retries",
+    "compact negotiation with v1 fallback, exact duplicate and unaligned 8081-byte durable resume",
+    "unconfirmed v2 RAM window is not advertised after restart",
+    "CRC failure and offset hole are rejected, corrupt temporary data can restart",
+    "partial scene accepts valid audio and records missing index instead of waiting forever",
+    "expired realtime monitor uses history processing while preserving realtime ACK type",
+    "zero-file monitoring scene finishes without audio"
+  ],
+  "json_examples_checked": 14,
+  "relative_links_checked": 7
+}

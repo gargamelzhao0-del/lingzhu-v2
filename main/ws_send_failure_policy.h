@@ -82,12 +82,19 @@ static inline bool nuwax_ws_keepalive_timeout_is_transient(
     return timed_out && connected && epoch_matches && heartbeat_healthy;
 }
 
+/* Heartbeat health is an admission signal, not permission to extend a
+ * realtime frame's hard deadline.  A zero or stale heartbeat keeps the
+ * configured bound; a fresher heartbeat may shorten it, never lengthen it. */
 static inline uint32_t nuwax_ws_inflight_drain_budget_ms(
-    uint32_t minimum_drain_ms,
+    uint32_t maximum_drain_ms,
     uint32_t heartbeat_remaining_ms) {
-    return heartbeat_remaining_ms > minimum_drain_ms
+    if (maximum_drain_ms == 0U) {
+        return 0U;
+    }
+    return heartbeat_remaining_ms > 0U &&
+                   heartbeat_remaining_ms < maximum_drain_ms
                ? heartbeat_remaining_ms
-               : minimum_drain_ms;
+               : maximum_drain_ms;
 }
 
 /* A readiness probe never owns frame bytes. No readiness, an interrupted

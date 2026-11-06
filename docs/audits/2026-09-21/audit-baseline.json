@@ -1,0 +1,74 @@
+{
+  "date": "2026-09-21",
+  "gitHead": "6c8376dee47bfebfff16837fc177aba6b02663c2",
+  "dirtyWorkingTree": true,
+  "firmwareElfSha256": "3a9694ad0bec648390e1ba79fa057ce12dfeae0ed87760cf2e7e407a008c7659",
+  "hardwareTested": false,
+  "businessCodeChangedByAudit": false,
+  "files": [
+    {
+      "path": "main/nuwax_ai_partner_main.c",
+      "sha256": "c46c64f25645fc09028ab4bb037d1255c64b90c396a6cf02b0e7c3c45e18b5c6"
+    },
+    {
+      "path": "main/device_error_report.c",
+      "sha256": "8ae87d2524113a09258e70c8eed609d4eab6f4032633b204e8aa5f93575a696b"
+    },
+    {
+      "path": "main/device_error_report.h",
+      "sha256": "d83ea22d3f4345b4faa9cea84f34bf98e49ad7a3d31c84b0e4396a2d04cc4f4e"
+    },
+    {
+      "path": "main/session_protocol.c",
+      "sha256": "ff5274d11686217da7c9800765ff69e57ced699ea4abdc13fe727d685863d7fc"
+    },
+    {
+      "path": "main/ws_transport.c",
+      "sha256": "b15ef75658e525c6cce1d3b0387c19f621a7ee966db007e8b5eb0f4ed9d4fb18"
+    },
+    {
+      "path": "main/offline_audio_spool.c",
+      "sha256": "0e39b27e5c6159f2d1ea49f920d5998bef12fb673504c1a6d52692dbdf3d953c"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_provision_main.c",
+      "sha256": "81a8e4ae51b7b4c5410d30b74fa5feebe1f01cea627f0cb67a62a30f5cbfd87e"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_cloud_config.c",
+      "sha256": "752d68c774f3dbee10ff74dd58b3419fb313f1057840759a3bb8600909f974e7"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_provision_usb_control.c",
+      "sha256": "126204d40b483902bf808a257c5496923b4f49cf8a179d70906892060ad199d1"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_manifest.c",
+      "sha256": "b4a45503517b9b28c1324944b4d265389c5d723c51cd532152a2f9aa7d32c018"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_transport.c",
+      "sha256": "d17c8f9777ae5eb3efa41e4d01abd4e720aa28ac0f1cbefe3d341f8d4552f863"
+    },
+    {
+      "path": "main/nuwax_lvgl_port.c",
+      "sha256": "1953bb11febb53d81b4555672cd126e43123511cc97fe377c5b9ff87eac57a3e"
+    },
+    {
+      "path": "tools/check-device-longrun-gate.ps1",
+      "sha256": "748426b8cd176a0ae1f66bc7a3f1bcb651be091bc6483e3ba09858fae6dcf4cf"
+    },
+    {
+      "path": "tools/run-provisioning-host-checks.ps1",
+      "sha256": "9a2a9f9fd21c980e6b24f503e13e961d4e829dd762e35ea5c4543e5b2d88b4dd"
+    },
+    {
+      "path": "CMakeLists.txt",
+      "sha256": "a05895349dd12947e2e9118cefd10e3d7cf892a1ec9c05e1d72aedff1fcea092"
+    },
+    {
+      "path": "partitions.customwake.csv",
+      "sha256": "a5e19490f219bd677eb5b6f33cd119d034fd97af25b5ae856c4561ed6ac2a064"
+    }
+  ]
+}

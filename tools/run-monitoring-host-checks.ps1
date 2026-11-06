@@ -8,9 +8,11 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $monitoringDir = Join-Path $projectRoot "main/audio_modes/monitoring"
 $hostStubDir = Join-Path $projectRoot "main/audio_modes/meeting/host_stubs"
 $cjsonDir = Join-Path $projectRoot "managed_components/espressif__cjson/cJSON"
+$deviceErrorHostStub = Join-Path $hostStubDir "device_error_report.c"
 $outputDir = Join-Path $projectRoot "build-host-checks"
 
 New-Item -ItemType Directory -Force $outputDir | Out-Null
+& "$PSScriptRoot/prepare-audio-uplink-producer-host.ps1" -OutputDir $outputDir
 
 & $Gcc -std=c11 -Wall -Wextra -Werror `
     "-I$monitoringDir" `
@@ -50,6 +52,7 @@ if ($LASTEXITCODE -ne 0) {
     (Join-Path $monitoringDir "monitoring_mode.c") `
     (Join-Path $monitoringDir "monitoring_protocol.c") `
     (Join-Path $cjsonDir "cJSON.c") `
+    $deviceErrorHostStub `
     (Join-Path $monitoringDir "monitoring_mode_host_check.c") `
     -o (Join-Path $outputDir "monitoring_mode_host_check.exe")
 if ($LASTEXITCODE -ne 0) {
@@ -70,7 +73,11 @@ if ($LASTEXITCODE -ne 0) {
     (Join-Path $monitoringDir "monitoring_mode.c") `
     (Join-Path $monitoringDir "monitoring_protocol.c") `
     (Join-Path $cjsonDir "cJSON.c") `
+    $deviceErrorHostStub `
     (Join-Path $monitoringDir "monitoring_capture_host_check.c") `
+    "-I$outputDir" `
+    (Join-Path $projectRoot 'main/audio_frame.c') `
+    (Join-Path $projectRoot 'main/conversation/audio_uplink_terminal.c') `
     -o (Join-Path $outputDir "monitoring_capture_host_check.exe")
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

@@ -1,0 +1,124 @@
+安全专项二轮反证与量产迁移建议（2026-10-09）
+
+审查对象与结论
+
+正式版本 7.0.113，实际 source_build 为 C:/tmp/nuwax-sd-formal-build-20260921；以其 config/sdkconfig.h 及仓库 tmp/sdkconfig.sd-replay-formal 为准。生产源只读，未改设备、NVS、eFuse、正式配置或生产源。本文不是前轮缺陷的扩大版：R4、R5需明确攻击前提；R6是切入逐台工厂凭据时必须解决的量产前置条件；未证实新的 OTA 下载/健康回滚/连续升级 P1。
+
+正式宏确认：DEV_MODE=1、ALLOW_INSECURE_WS=1、USB_CONTROL_ENABLE=1；rollback 开启；硬件 Secure Boot、Flash Encryption、软件 signed-app OTA 验证、NVS encryption 未开启。正式 BIN 中存在配置的共享开发 PoP（仅记录存在性，不记录凭据）。源配置不是设备 eFuse 读回；本轮未读取任何实机 eFuse，不能由源码断言每台设备物理熔丝状态。
+
+量产判断：当前正式包不建议直接零售放行。R4 的逐台凭据/合法绑定边界、R5 的可信 WSS 端点迁移与固件发布授权、以及主审 R3 的旧音频归属隔离应形成可验收方案。R6不能作为“当前每次重启都会丢 factory 凭据”的依据；在启用非 DEV 制程前必须修复。仅缺少某一可选硬化机制不自动等于 P0。
+
+一、R4：共享开发 PoP 仍成立，但安全会话与唯一用户名确实限制攻击
+
+触发条件：设备已进入可接受 APP 的配网窗口，攻击客户端知道目标设备 username/UID，并取得所有此开发配置设备共用的 PoP。不是任意远程人随时可接管，不是无需 PoP 的 BLE 漏洞。USB 入口要求物理 USB 串口接触，未提升为独立远程攻击面。
+
+已确认的防护：每台 UID、Security 2 的 SRP proof、随机 salt、AES-GCM 安全会话、当前 BLE session/app-owner、候选 Wi-Fi generation 和实际 SSID 一致性检查均存在。盐由设备在 SRP 握手发送；拥有正确 username+PoP 的客户端能对新盐合法生成 proof，所以随机盐不抵消共用密码的风险。username 是身份标识；即使不把它视作秘密，也不能跳过“需知道目标 UID”的攻击前提。app-owner 表示当前被接纳的 BLE 会话/状态所有权，不是云账号所有权。
+
+代码链及影响：
+• C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/nuwax_provision_new/nuwax_provision_main.c:1465 使用设备 UID；1466 进入 DEV 分支；1479 生成 SRP salt/verifier。C:/esp/v6.0/esp-idf/components/protocomm/src/security/security2.c:182 发 salt，232 验客户端 proof。
+• 同 provisioning 文件 :982 限定配网可接入态，:993–998 建立 APP 会话归属，:1061–1066 仅有效会话的 Security 2 成功事件能置 secured。:1269 比较目标 UID，:1275–1278 检查 secured/app owner，:1293 stage 云配置。
+• 同文件 :2174 的 finalize_new_provisioning 在 Wi-Fi 已连接且 pending 存在时执行；:2185 检查候选代际，:2192 检查连接 SSID，:2215–2218 commit_pending。这里尚未等待云端验证新 gateway/deviceSecret/account claim。
+• C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/nuwax_provision_new/nuwax_cloud_config.c:100–108 只验证 schema、目标 UID、URL 格式、token 格式，:246 写 active，:252 提交，:259 替换内存配置。不存在 gateway host 白名单或云账号证明验证。独立 actual-source C 模拟证实“任意合法 wss host+未被云验证的合成 secret”可本地提交。
+• C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/nuwax_ai_partner_main.c:34350 读取新配置，:34364–34365 新 URL/token 建链，:34446 发送新 secret 的 hello。
+
+因此官方云拒绝错误 secret 能阻止错误凭据访问官方云，却不能阻止持有共享 PoP 的客户端把设备配置成其自行控制且具有有效证书的 gateway。该操作者需要实现设备协议，不能把“配置已提交”直接写成“官方云账户已被夺取”。实际 APP、量产标签及官方云 claim 规则不在本轮源码证据内。
+
+落地修复：新设备使用每台独立的高熵随机 PoP，例如 CSPRNG 生成至少128位随机值，再编码为适合扫描/人工备用输入的表示；以实际 IDF Security 2 参数生成唯一 salt/verifier。设备保存 verifier/salt，不在公共固件写入共用 PoP；打印逐台关联 UID 的安全标签。当前 nonDEV 屏幕二维码故意不含 p，见 provisioning :302–307；现有二维码 n/u/p 协议可复用，但需已发布 APP 真机验证它读取标签 p 而非内置开发值。仓库模拟 APP 不等于正式 APP 已兼容。缺工厂凭据时进入可诊断售后状态，不回退共享开发 PoP。
+
+对已有设备：不能仅 OTA 关闭 DEV（无 factory blob 会拒绝配网）；先清点逐台凭据来源。具备可信云链路的设备可以设计受认证、幂等、可断电恢复的凭据安装流程，并配套用户取得新标签/恢复码的方式；没有可信绑定或可交付逐台 PoP 的设备走受控制造/售后工装，不能从当前明文网络临时取新 PoP 就宣称建立可信根。保留普通换 Wi-Fi 的低摩擦操作；换主 claim 另有云验证/设备物理意图确认，不把每次密码更新都视为换主。
+
+二、R5：ws 部署存在可信控制面缺口；WSS、HTTPS 和 OTA 完整性检查均有效
+
+触发条件：实际存储的 gateway URL 是 ws://，且攻击者可观察/篡改该网络路径。正式包允许 ws，不等于每台已部署设备正在用 ws；实机配置/正式 APP 下发 URL 的清点是放行证据。已存 wss 的设备不适用这个明文 MITM 前提。
+
+代码链及影响：
+• C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/ws_transport.c:365 明文模式，:2464–2470 按 scheme 选 TLS/TCP；:1258 在握手带 X-Bridge-Token。C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/session_protocol.c:868 hello 携带原 device_secret；这些路径没有独立 HMAC/challenge 对远端再认证。
+• WebSocket 的 101/Upgrade/Connection/Sec-WebSocket-Accept 验证确实存在，但 accept 基于公开握手 nonce，是协议握手校验。C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/nuwax_ai_partner_main.c:12171 把完成该握手的当前 epoch 标为 authenticated；:12176 告知 OTA；OTA device :1432–1436 要求该 epoch。明文攻击者能伪装握手/后续应用消息；在该前提下这不是独立密码学认证。
+• C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/nuwax_ota_new/nuwax_ota_manifest.c:284 限 HTTPS；:290–300 做 URL 结构检查，没有域名白名单；:302 检 SHA 格式。攻击者可给自己有有效证书的 HTTPS 下载地址及配套哈希。
+• C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/nuwax_ota_new/nuwax_ota_transport.c:664 整包 SHA 对比、:677 esp_ota_end、:690 项目名、:697 版本一致、:708 全部通过才设置启动槽。当前实际 SDK 关闭 signed-app verification；SHA 来自同一失去认证的命令，不能独立证明固件发布者。攻击链仍需 ESP32-S3 可启动、相同项目名、合法更高版本、正确大小/哈希的包，普通损坏文件过不了这些检查。
+
+明确的反证：WSS 在 ws_transport.c:1158 配置 CA bundle，:1165 对特定测试域用限定 CA，:1185 把目标 host 交给 TLS；没有启用跳过校验。OTA transport :318 禁重定向、:322 skip_cert_common_name_check=false、:323 证书 bundle，且固定 HTTPS。不能写成“全部 WSS 可中间人”“HTTPS 无验证”“下载到文件即启动”。应用 hello 会验证云回应语义，但在 ws 可被伪造的前提下不能替代服务器身份信任。全量 WSS 且 endpoint 可信时，网络 MITM 主链被阻断；软件签名是进一步独立发布授权，不能仅凭硬件 Secure Boot 未开就断言远程任意执行。
+
+三、已证实的修复迁移陷阱：直接关闭 ws 会删旧绑定
+
+C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/nuwax_provision_new/nuwax_cloud_config.c:45–47 由编译开关控制是否接受 ws；:128–130 启动时复用 validate_config；:136–144 将不再符合策略的原 active 当作可恢复旧配置删除。当前 flag=1 不触发这个问题。它是 naive remediation 风险，不另计当前 P1。
+
+独立模拟直接 include 此生产 .c，仅用内存 NVS/合成 UID 替身。模式0/1 × 旧ws/现有wss 共4进程、12项断言均通过：strict 读旧ws 后 active_retained=0、erased_active=1；strict 读现有wss及compat两者保留。另证 UID 不符被拒绝、合法未列名 wss+未验证secret 可以提交。见 cloud-config-recheck.log。此测试不接触实机/生产凭据、不证明真实 APP/云行为。
+
+可行的 WSS 过渡顺序（固件/云/APP 协同）：
+1. 云先部署持有效证书、支持现有路径/协议/凭据映射的 WSS 服务，清点 legacy host/port/path；不能盲目把字符串 ws 改成 wss，80/443、反向代理路径和认证方式可能不同。固件只接受产品授权端点或受签名/可信 WSS 保护的端点迁移描述；当前 ws 上收到的未认证重定向不足以建立这个信任。
+2. 过渡固件将“读取旧记录”与“允许新建/连接不安全配置”分开：能解析保留 legacy active，但新配网只接纳允许的 WSS。为旧配置建立迁移 journal（原绑定、候选 endpoint、事务状态、代际）；不要走 recoverable error 自动删 active。先在没有写坏旧记录的情况下验证候选 TLS+应用鉴权+owner scope 一致，再原子提交。网络或证书失败显示可重试迁移状态，不把失败伪装成未配网。
+3. 成功切换后记录不可静默降级的状态，轮换可能经 ws 暴露的 deviceSecret。不能在切 WSS 后继续信任旧泄露 token 永久有效。根据风险/产品策略停止旧明文重连，失败时给明确恢复/换网入口；保留旧记录只用于审计与受控恢复，不在未知服务器上发送敏感数据。为离线旧设备设定明确兼容期限和售后入口。
+4. 最后才强制发布 strict 策略，并以启动读迁移、断电重入、降级/rollback 到过渡版的真实兼容测试证明现有绑定不丢。当前 OTA 还是旧明文信任根时，第一份迁移固件本身如何可信交付必须单列：可信物理工装、既有可信链路，或事先具备的独立验证根；不能用尚未可信的更新来证明自己的可信性。
+
+WSS RAM/延迟预算：正式 tmp/sdkconfig.sd-replay-formal:3894 选 mbedTLS external allocation，:3900 入内容缓冲16 KiB，:3902 出4 KiB，:3904 动态缓冲关闭。C:/esp/v6.0/esp-idf/components/mbedtls/port/esp_mem.c:18–19 此模式主要 TLS 分配到 PSRAM。这是每连接内容缓冲容量约20 KiB的预算基线，不是总内存或测量峰值。WSS 控制与 OTA HTTPS 并行有两套 TLS、约40 KiB内容容量，加证书链、握手临时对象、TLS上下文、socket/驱动内部内存。不得承诺“只增20 KiB”或“PSRAM够就一定安全”。使用已有 internal free/largest + PSRAM 日志，补充握手阶段 heap trace/high-water；覆盖冷连、重连、完整证书链、OTA并行、离线回传/音频压力，记录 min internal free、largest block、PSRAM min、握手延迟和错误率。现有 WSS deadline15秒、pending OTA健康窗口120秒，需在实际网络下验证；未经板测不给固定体验时间，也不先盲目降低 TLS buffer。
+
+四、R6：factory namespace 与用户 NVS 是同一物理分区；只在明确错误前提下会被整区擦除
+
+触发：使用 nonDEV 逐台 salt/verifier 存在默认 nvs 的 nuwax_factory namespace，启动 nvs_flash_init 返回 NO_FREE_PAGES 或 NEW_VERSION_FOUND，进入当前通用恢复分支。
+
+代码证据：
+• C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/nuwax_provision_new/nuwax_provision_main.c:1496 是 nvs_open("nuwax_factory",...)，:1502–1504 读 salt/verifier，:1508–1510 缺失即失败。
+• C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/nuwax_ai_partner_main.c:33168–33176 在两错误上调用 nvs_flash_erase 再 init。
+• C:/esp/v6.0/esp-idf/components/nvs_flash/src/nvs_api.cpp:320–322 nvs_open 指向默认 partition，:261–263 nvs_flash_erase 指向默认 partition，:250 erase_range(0,part->get_size())；include/nvs.h:57 默认名 nvs。namespace 是键空间，不是独立分区。
+• C:/esp/v6.0/esp-idf/components/nvs_flash/src/nvs_pagemanager.cpp:95–127 先恢复 FREEING 页，:130–132 无空闲页才返回 NO_FREE_PAGES。nvs_page.cpp:72–73 不兼容页格式返回 NEW_VERSION_FOUND。不能说正常每次断电/一般写满就会触发；普通写入容量错误与 init 无可用页不是同一条件。
+
+影响与范围：默认分区整区擦除会抹掉该命名空间工厂记录，nonDEV 后续准备 SRP 失败，设备可能无法再用 APP 正常配网。当前正式 DEV 分支不依赖这两 factory blob，所以并非已经证明现有 DEV 产品因该原因丢逐台 PoP。官方 NVS 文档也将分区缩短等列为 NO_FREE_PAGES 的可能条件：https://docs.espressif.com/projects/esp-idf/en/release-v6.0/esp32s3/api-reference/storage/nvs_flash.html
+
+可落地制程：新生产分区表增加真正独立 factory_nvs，使用 nvs_flash_init_partition("factory_nvs") + nvs_open_from_partition；将格式/UID/salt/verifier/校验和/制造版本作为不可随用户reset清除的记录验证。用户 NVS 恢复只作用用户分区；factory 分区异常 fail closed 并输出无秘密诊断，不自动 erase/reseed/回退共享凭据。只改 namespace 名不能隔离，独立分区本身也不自动加密。
+
+现有 partitions.customwake.csv 的 nvs 为0x9000/0x6000，PHY结束0x12000、model开始0x20000，中间56 KiB可供新板布局评估；但这不是已验证分区方案，启用硬件安全后 bootloader 体积/分区表偏移还需重新核算。当前 OTA transport 写下一 app 槽，并不更新分区表。给 CSV 添加 factory_nvs 然后推普通 app OTA，旧板仍没有该分区。现有板过渡可先保留原布局并移除“含工厂数据分区错误即自动擦除”的行为，改成明确售后恢复；这只是防误删，不是物理分区隔离。真正迁移需受控全量烧录/制造返工，或另立经断电验证的分区表迁移专项；不能在 NVS 已初始化失败后假定还能安全先备份其工厂数据。
+
+五、OTA 签名、硬件 Secure Boot 和连续升级：明确边界
+
+近期远程加固可以采用 ESP-IDF 已支持的“无硬件 Secure Boot 的 signed-app OTA 验证”，但它不是打开普通 app 的 Secure Boot 开关那么简单。C:/esp/v6.0/esp-idf/docs/en/security/secure-boot-v2.rst:895–905 及 secure_boot_signatures_app.c:160/232：更新验签信任当前运行 app 的首个签名块公钥；最初 app 必须已正确签名。此模式不能抵御有 flash 写能力的攻击者，也不能把旧无签名运行镜像当作已经建立的可信根。官方说明：https://docs.espressif.com/projects/esp-idf/en/release-v6.0/esp32s3/security/secure-boot-v2.html#signed-app-verification-without-hardware-secure-boot
+
+过渡方案要有第一份签名桥接固件的可信交付、完整包（含padding/signature）大小与哈希、目前 controller 的 pending-image full hash一致性、随后第二次正确签名升级、错签/无签升级拒绝、rollback 到旧无签镜像会重新开放边界的处置。不得未经实机两次升级试验宣称一键启用完成。软件验签可以保护远程更新发布授权；全硬件安全另走新制造批次：签名 bootloader/app、预定公钥摘要/eFuse策略、Flash Encryption密钥保护、下载调试口策略及恢复工艺，经稳定供电工位执行与读回验收。当前普通 app OTA 路径不写 bootloader/partition table/eFuse，不能用该路径直接承诺开启硬件 Secure Boot 或安全烧 fuse。本轮没有烧写任何 eFuse。
+
+签名私钥留在受控签名系统；设备只拿验证公钥/摘要。新版本同时验证生成的完整 signed BIN 小于当前4 MiB manifest上限和0x420000 OTA槽。正式 unsigned BIN 当前约3.85 MB，余量不是后续增功能/加签后仍可直接通过的保证。端点白名单可减小暴露面，不能替代发布签名；签名验证也不能替代 WSS 对 deviceSecret/音频的保护。
+
+未成立的新 P1：
+• 下载已有 HTTPS/hostname/CA、禁止redirect、精确长度/SHA、项目名/版本、非运行槽、最后set_boot。失败路径 abort/close，不先切启动槽。
+• 健康门并非只看 hello。C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/nuwax_ai_partner_main.c:15450–15559 检 speaker codec/I2S、mic、AEC、display、touch producer、LVGL/UI、任务、有效电源。OTA controller 有绝对120秒窗口，哈希/ACK后重查 deadline，再confirm；云中断可能导致本来健康固件回滚，是策略取舍和需要板测的可用性场景，不据此直接追加缺陷。
+• C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2/main/nuwax_ota_new/nuwax_ota_main.c:458–462 的 current+1 明确是事务代际，不是强制下一固件版本只加1；:709 校验已接受floor，:1173–1178 成功后提交运行固件编译版本代际。:1163–1168 先mark-valid且保留pending，:738–770 下次启动恢复 accepted，避免中途掉电误进旧floor。不能只看到+1就报告跨版本/第二次更新失败。实际多版本反复升级仍需硬件矩阵；本轮没有执行真实 OTA。
+
+六、与存储审查对齐的绑定代际/隐私边界
+
+cloud_config v1 只有 version、device_id、cloud_url、device_secret。以上新 secret 提交链确实改变了随后连接身份，却没有同步给旧 SD archive 写入可证明的 owner。存储专项证据：offline_audio_spool.c:191–205 header 无 owner，:3659–3666 begin 只有片段信息，:3684–3691 必须通过服务器 begin ACK 才可进入 :3718 的payload发送；:4278–4321 用当前epoch/hello启动。结论是“新绑定连接会提出旧档回传，服务器接受后会发送；B最终可见性取决云端”，不写成已抓到 B 看见数据。
+
+设备本地随机 binding_generation 只能覆盖设备实际看见的换主事件；deviceId固定、deviceSecret可能不变；secret hash 会把普通轮换误当换主。云不通知的 silent换主，纯设备无法推断。云应通过可信 WSS/authenticated hello 提供稳定 owner_scope_id+ownership_epoch：同一主人换网/旋转凭据保持scope，换主递增epoch；begin/ACK也绑定此scope。设备把该scope与归档、回传任务和解绑事务绑定，切换时停旧writer/replay并持久化边界。没有scope的旧档绝不默认归当前新主人：原owner证据+受控迁移才能准入，否则隔离。若近期不能改协议，只能做“已观察到显式解绑/重新claim/身份配置变化时保守隔离旧档”；会牺牲一部分合法积压同步体验，且不能宣称覆盖silent换绑。
+
+用户恢复出厂应是明确契约：清用户 Wi-Fi/云凭据/绑定scope及用户归档（或密钥销毁并满足真实安全擦除目标），保留制造身份；离线状态先完成本机隔离，云解绑回执后再完成账号层状态。普通换Wi-Fi不能等同恢复出厂。本轮未取得已发布 APP/云/设备全链路 reset+解绑验收，因此只作为必须验证的交付项，不根据函数名称缺失另造P1。
+
+七、分阶段交付、体验变化与验收
+
+阶段A：发布前清点/锁住风险
+固件负责人将实际正式宏、云域名映射、生产凭据来源纳入 mandatory release gate（现有可选脚本不等于默认强制）。APP/云负责人交付已发布APP QR/secret下发行为、WSS真实端点及owner claim语义。对未验证绑定归属的旧档先阻断自动回传，保留可恢复数据。出货前逐台凭据与制造校验必须完成；旧板不假装已满足新表/eFuse流程。
+
+阶段B：兼容桥接
+先上可信 WSS/owner握手能力，再发布可读旧配置且有journal的迁移固件；完成端点、账号、owner一致性预检后切换并轮换secret。保持旧固件回滚恢复途径但明确其安全限制，不默默回退ws。APP可用原QR协议携带逐台PoP，实测旧/新APP兼容后设最低支持版本。旧档无法证明归属时APP解释“旧录音待原账号确认/本地隔离”，而不是悄悄上传或直接清空。
+
+阶段C：新生产安全根
+工装烧录经验证的新分区表、factory_nvs、签名镜像与硬件安全配置；逐台验证UID/label/verifier一致、factory不被用户reset擦除、固件验签与恢复行为。旧设备普通app OTA仅获得可行的软件保护；需硬件安全根/独立工厂分区的旧板列为另行受控升级工艺。
+
+用户体验对照：
+首次配网：此前DEV共享口令由二维码/APP流程使用；修复后每台独立标签/恢复码，仍扫码一次，但首次建立官方账号绑定要等可信云确认；缺标签有明确售后恢复，不能共享万能码。
+普通换网：此前Wi-Fi成功即提交新云字段，云失败可能后续再配；修复后同owner保留录音与账户，云预检失败可重试/保留旧事务，不误提示绑定完成。
+WSS迁移：此前ws使用者无额外操作；修复后多数可自动迁移，首次TLS握手可能增加延迟，实际数值板测；无法认证的新端点显示明确原因，不删除原绑定。不能承诺用户完全无感。
+换主/解绑：此前本机旧档可能由新连接提出回传；修复后旧档隔离，新主人只可访问新scope；原主恢复/删除有明示流程。
+OTA：此前有完整性/健康回滚但命令信任随控制链路；修复后wrong-key/unsigned包在写入验证阶段拒绝，正常版本仍保留回滚；首个桥接与连续升级需额外灰度验收。
+用户恢复出厂/NVS异常：修复后用户reset清个人状态且保留出厂凭据；factory异常进入明确恢复模式，用户可能需要售后，避免静默擦掉后永久无法配网。
+
+必须执行的验收用例（未做的不要标为PASS）：
+1. 新旧APP分别扫描两台逐台标签；A凭据不能配B；错username/PoP、过期窗口、旧BLE session、切换连接重放均拒绝；正确session正常配网。证明标签p来源及不使用硬编码DEV值。
+2. 正确Wi-Fi但云secret错误、未列名WSS、证书过期/错host/不可信根/重定向：不得提交已成功绑定、不得向未认证端点发敏感数据；原有效绑定/事务可恢复。官方cloud claim拒绝要设备可见。
+3. 存有旧ws配置分别升级桥接/strict；旧wss配置也走同矩阵；在stage/预检/commit/secret轮换每个边界断电，恢复后最多一个有效事务且绑定不被错误擦除；已成功WSS后禁止静默回ws。主机12PASS只是目前陷阱证据，不是迁移修复PASS。
+4. 抓包验证成功WSS不暴露token/hello secret；能篡改旧ws网络的代理不能通过新TLS；可信endpoint预检含owner一致性，不以任意101/pong代替claim。APP/云最低版本与离线旧机升级路径明确。
+5. WSS冷连/重连/长证书链与OTA HTTPS并行，叠加真实音频/回传压力；记录内外堆及largest block低点、TLS失败率、握手延迟、120秒健康窗口内成功率；不得因低内存静默降级明文。
+6. 正确签名连续两次升级+跨多个版本升级；错签/无签/破坏包/错size/SHA/project/version均拒绝；signature含padding包的manifest hash与新机pending hash一致；回滚到旧unsigned版本的边界有可执行处置。
+7. OTA在下载中、esp_ota_end前后、set_boot后、mark-valid前后、accepted写入前后、pending清除前后掉电；应启动已验证旧版或恢复一致的新版本，不接受未确认身份或错误版本floor；关键硬件health失败/服务离线要按既定窗口回滚。
+8. 制造模拟NVS NO_FREE_PAGES/NEW_VERSION_FOUND与普通NOT_ENOUGH_SPACE分别验证；用户分区恢复不触及独立factory；factory缺失/损坏/标签不匹配不得回退DEV。旧分区表设备不得因app升级误认为已有factory_nvs。
+9. A录音→离线→显式解绑→B绑定；不允许A旧档payload进入Bscope；server拒begin时本机不发chunk。再测只换Wi-Fi、同owner secret轮换、云端silent换主、旧无scope档；前二者保留合法体验，后两者受真实协议约束/隔离。
+10. 在线/离线恢复出厂、取消配网、断电重启：个人状态/旧录音清理或隔离遵循产品承诺，制造身份与后续正常配网保留；相关日志不打印PoP/secret。
+
+证据缺口：正式APP源码/安装包行为、实际生产gateway分布、真实云claim与owner规则、每台eFuse读回、制造工装/标签数据库与安全流程、TLS实机峰值、真实断电及连续OTA矩阵均未在本专项实测。独立测试仅四次实际cloud_config源的内存模型执行，详见 commands-and-scope.txt。未运行 full product suite，未进行网络攻击或实机烧写。

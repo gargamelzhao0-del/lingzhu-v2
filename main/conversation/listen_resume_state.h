@@ -21,6 +21,11 @@ typedef struct {
     bool idle_expiry_pending;
     uint32_t post_end_asr_deadline_ms;
     uint32_t ws_connection_epoch;
+    uint32_t post_end_total_deadline_ms;
+    uint32_t progress_frames;
+    uint32_t progress_text_hash;
+    uint8_t progress_asr_phase;
+    bool post_end_total_bounded;
 } nuwax_listen_resume_state_t;
 
 void nuwax_listen_resume_state_clear(nuwax_listen_resume_state_t *state);
@@ -46,6 +51,14 @@ bool nuwax_listen_resume_state_arm_post_end_asr(
     nuwax_listen_resume_state_t *state,
     uint32_t ws_connection_epoch,
     uint32_t deadline_ms);
+bool nuwax_listen_resume_state_arm_post_end_asr_bounded(
+    nuwax_listen_resume_state_t *state, uint32_t ws_connection_epoch,
+    uint32_t now_ms, uint32_t idle_timeout_ms, uint32_t total_timeout_ms);
+/* Phase 0: received audio frames; 1: partial text; 2: final text.
+ * Duplicate counters/text cannot extend the post-END response watchdog. */
+bool nuwax_listen_resume_state_note_progress(
+    nuwax_listen_resume_state_t *state, int frames,
+    const char *text, uint8_t phase);
 void nuwax_listen_resume_state_refresh_post_end_asr(
     nuwax_listen_resume_state_t *state,
     uint32_t deadline_ms);

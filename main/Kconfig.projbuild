@@ -31,7 +31,7 @@ menu "Nuwax AI Partner Cloud Voice"
         config NUWAX_BATTERY_SERVICE_ENABLE
             bool "Enable BQ27220 battery service and UI status"
             default y if NUWAX_BOARD_ESP_VOCAT_V1_0
-            default n
+            default y
             help
                 Poll the BQ27220 fuel gauge and publish state-of-charge,
                 voltage, current, charging and low-battery state to the UI.
@@ -89,7 +89,10 @@ menu "Nuwax AI Partner Cloud Voice"
         config NUWAX_BATTERY_DESIGN_CAPACITY_MAH
             int "Battery design capacity in mAh"
             default 1200
-            range 100 20000
+            range 1200 1200
+            help
+                This board is qualified with the fixed 1200mAh CEDV cell
+                profile. Supporting another cell requires a new full profile.
             depends on NUWAX_BATTERY_SERVICE_ENABLE
 
     endmenu
@@ -108,14 +111,15 @@ menu "Nuwax AI Partner Cloud Voice"
 
         config NUWAX_OTA_MIN_BATTERY_PERCENT
             int "Minimum battery percentage to start OTA"
-            default 30
-            range 10 90
+            default 5
+            range 5 90
             depends on NUWAX_OTA_ENABLE
             help
                 OTA admission uses a fresh, valid battery percentage regardless
                 of whether the gauge's cell profile has been authenticated.
-                Thirty percent is inclusive. Verified external power remains
-                valid for batteryless hardware variants.
+                The threshold is inclusive: five percent is allowed.
+                A present battery and safe physical voltage are
+                required; the UI low-battery warning does not block OTA.
 
         config NUWAX_OTA_AUDIO_QUIESCE_MS
             int "Audio fade and quiesce time before flash writes"
@@ -228,6 +232,17 @@ menu "Nuwax AI Partner Cloud Voice"
                 provisioning and restores the durable previous Wi-Fi/cloud
                 pair. This does not change the APP provisioning protocol.
 
+        config NUWAX_PROVISION_RUNTIME_REBOOT_ENABLE
+            bool "Reboot before runtime BLE reprovisioning"
+            default y
+            help
+                Persist the verified Wi-Fi/cloud rollback record, then reboot
+                into the clean boot provisioning profile before starting BLE.
+                This avoids reinitializing the NimBLE controller after normal
+                audio, UI and WebSocket operation. Disable only for controlled
+                in-process lifecycle diagnostics; production should keep this
+                enabled for deterministic recovery.
+
         config NUWAX_PROVISION_OLD_WIFI_ATTEMPT_MS
             int "Saved Wi-Fi recovery attempt window (ms)"
             default 20000
@@ -338,6 +353,288 @@ menu "Nuwax AI Partner Cloud Voice"
                 after confirming that a supported 4G module is installed.
 
     endmenu
+
+    menu "SD card boot self-test"
+        depends on NUWAX_BOARD_ESP_VOCAT_V1_0
+
+        config NUWAX_SD_CARD_HIGHSPEED_ENABLE
+            bool "Try validated 40 MHz SD mode with ordered 20 MHz fallback"
+            default n
+            help
+                Test profile: negotiate high speed and verify a temporary 64 KiB
+                file before admitting storage users. On failure, use 20 MHz for
+                the rest of this boot. Runtime recovery waits for all FILE users
+                to exit. Never formats the card. Requires board/card validation.
+
+        config NUWAX_SD_CARD_BOOT_SELFTEST_ENABLE
+            bool "Run one-shot SD card read/write/delete self-test at boot"
+            default n
+            help
+                Test an operator-confirmed FAT-formatted TF card once during
+                boot, then unmount it before product services start. This is
+                a temporary validation profile and does not enable runtime SD
+                storage. Runtime storage uses an ordered, task-context media
+                probe/remount at idle mode boundaries; no hot-plug ISR is
+                assumed.
+
+    endmenu
+
+    menu "Developer test panel"
+        config NUWAX_TEST_PANEL_ENABLE
+            bool "Enable developer test page and test controls"
+            default n
+            help
+                Master gate for the third control-center page and its effects.
+                Keep disabled for production. Runtime test state is not persisted.
+
+        config NUWAX_TEST_NETWORK_ENABLE
+            bool "Allow simulated cloud disconnection"
+            depends on NUWAX_TEST_PANEL_ENABLE
+            default y
+            help
+                Keeps physical Wi-Fi/LAN available while simulating cloud loss.
+                Disabling the master gate also disables the execution API.
+    endmenu
+
+    # OFFLINE_AUDIO_ROUND_20260825_BEGIN
+    menu "Offline meeting/monitoring audio archive"
+        depends on NUWAX_BOARD_ESP_VOCAT_V1_0
+
+        config NUWAX_SD_SESSION_ENABLE
+            bool "SD meeting sessions and live/history monitoring files"
+            default n
+            depends on NUWAX_OFFLINE_AUDIO_ENABLE
+            help
+                Record card-backed meetings locally until stopped. Monitoring
+                uploads sealed live files before historical backlog. Requires
+                the matching receiver protocol; no capability hello is sent.
+
+        config NUWAX_SD_DIRECTORY_GUARD_ENABLE
+            bool "Check recording directory structure before storage admission"
+            default y
+            depends on NUWAX_SD_SESSION_ENABLE
+            help
+                Read and validate existing FAT directory dot entries before
+                qualification writes and archive creation. No repair or format.
+                Keep damaged media distinct from a device without a card.
+
+        config NUWAX_SD_COMMAND_HISTORY_ENABLE
+            bool "Retain bounded SD command history for the first recording fault"
+            default y
+            depends on NUWAX_SD_INTEGRITY_DIAGNOSTICS
+            help
+                Keep native write and independent read command arguments, CRCs
+                and CMD13 results in PSRAM. Dump a bounded subset on a fault.
+                No added card commands or changes to SDK return values.
+
+        config NUWAX_SD_WRITE_VERIFY_ENABLE
+            bool "Verify SD writes before accepting them"
+            default y
+            depends on NUWAX_SD_SESSION_ENABLE
+            help
+                Read back SDK writes through a private internal DMA buffer.
+                A successful write with different bytes is retried once with
+                the original source. Persistent mismatches remain errors.
+                Upload reads and the cloud audio protocol are unchanged.
+
+        config NUWAX_SD_INTEGRITY_DIAGNOSTICS
+            bool "Retain layered SD recording integrity evidence"
+            default y
+            depends on NUWAX_SD_SESSION_ENABLE
+            help
+                Optional bounded PSRAM snapshots and per-sector CRC witnesses.
+                Preserve original recording CRC checks and cloud protocol.
+                Export at most four local evidence files only after recording
+                and replay are idle and ordered media recovery has succeeded.
+
+        config NUWAX_SD_BATCH_REPAIR_ENABLE
+            bool "Recover one verified RAM batch after delayed SD corruption"
+            default y
+            depends on NUWAX_SD_SESSION_ENABLE && NUWAX_SD_INTEGRITY_DIAGNOSTICS && NUWAX_SD_WRITE_VERIFY_ENABLE
+            help
+                Rewrite only the current unsealed range from its CRC-matching
+                retained RAM copy, at most once per batch. Check the complete
+                recorded file prefix independently before continuing, and again
+                before sealing a repaired file. Persistent errors stop capture.
+                No scene, file format or cloud protocol changes are made.
+
+        config NUWAX_SD_LEGACY_CONTROL_COMPAT
+            bool
+            default y
+            depends on NUWAX_SD_SESSION_ENABLE
+            help
+                Deprecated configuration retained for existing profiles.
+                Meeting/monitoring controls always assign desired state and
+                accept optional control session IDs. Recording identities are
+                generated or checked independently of this legacy option.
+
+        config NUWAX_OFFLINE_AUDIO_ENABLE
+            bool "Persist meeting/monitoring audio to SD while offline"
+            default y
+            help
+                Enables bounded SD-backed meeting/monitoring capture while
+                the WebSocket is offline. A missing or failed card remains a
+                non-fatal condition; the online modes continue to work.
+
+        config NUWAX_OFFLINE_AUDIO_MAX_SEGMENT_BYTES
+            int "Offline archive segment size"
+            range 65536 4194304
+            default 1048576
+            depends on NUWAX_OFFLINE_AUDIO_ENABLE
+            help
+                Maximum size of one local archive segment. Segments are
+                closed atomically and can be uploaded independently.
+
+        config NUWAX_OFFLINE_AUDIO_MAX_BYTES
+            int "Offline archive quota"
+            range 1048576 2147483647
+            default 1610612736
+            depends on NUWAX_OFFLINE_AUDIO_ENABLE
+            help
+                Maximum bytes reserved for unacknowledged local audio. The
+                legacy/meeting writer stops before this limit is exceeded.
+                Card-session monitoring instead uses actual free card space
+                with a reserve and recycles its oldest eligible monitor files.
+
+        config NUWAX_MEETING_OFFLINE_MAX_HOURS
+            int "Maximum offline meeting duration (hours)"
+            range 1 24
+            default 8
+            depends on NUWAX_OFFLINE_AUDIO_ENABLE
+            help
+                Bounds disconnected meeting capture. When the limit is
+                reached the meeting is finalized and the device returns to
+                its normal sleep policy.
+
+        config NUWAX_SD_TLS_SCOPED_AES
+            bool "Use hardware AES only for formal SD TLS upload"
+            default y
+            depends on NUWAX_SD_SESSION_ENABLE && SOC_AES_GDMA
+            depends on !MBEDTLS_HARDWARE_AES && !MBEDTLS_HARDWARE_SHA
+            help
+                Uses the SDK AES-GCM port only inside an SD Binary TLS write,
+                after a known-answer and software equivalence check. Allocation
+                or driver failure falls back to software without modifying the
+                caller's plaintext. Pairing and all other TLS use software.
+
+        config NUWAX_SD_READ_UNLOCK_VALIDATE
+            bool "Release SD read admission before validating owned PSRAM bytes"
+            default y
+            depends on NUWAX_SD_SESSION_ENABLE
+            help
+                Copies an unpublished read slice to its existing PSRAM slot,
+                releases its DMA loan and storage lock, then validates CRC.
+                A suspect slice reacquires storage for independent rereading.
+                Disable only for a controlled comparison of the old lock scope.
+
+        config NUWAX_SD_MEETING_MAX_HOURS
+            int "Maximum complete card meeting duration (hours)"
+            range 1 24
+            default 8
+            depends on NUWAX_SD_SESSION_ENABLE
+            help
+                Finalizes a card meeting after this total elapsed duration,
+                including online and offline time. Reconnection does not reset
+                the session clock. Card monitoring is not limited by this value.
+
+        config NUWAX_MONITORING_OFFLINE_MAX_HOURS
+            int "Maximum offline monitoring duration (hours)"
+            range 1 24
+            default 8
+            depends on NUWAX_OFFLINE_AUDIO_ENABLE
+            help
+                Bounds legacy disconnected monitoring capture independently
+                from meeting capture. Card-session monitoring has no offline
+                duration timeout and keeps its existing voice/silence policy.
+
+        config NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+            bool "Replay offline archives to a separate test gateway"
+            default n
+            depends on NUWAX_OFFLINE_AUDIO_ENABLE
+            help
+                Test-only mode. Keep the primary cloud WebSocket for normal
+                conversation, meeting, and monitoring traffic, while opening
+                a separate low-priority WebSocket for offline archive replay.
+                Leave disabled in production builds.
+
+        config NUWAX_SD_REPLAY_EARLY_TCP_WRITABLE
+            bool "Notify TCP writers after two MSS of space is available"
+            default y
+            depends on NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE || NUWAX_OFFLINE_AUDIO_REPLAY_FORMAL_ENABLE
+            help
+                The default readiness threshold grows to half the TCP send
+                buffer. Use two MSS plus one byte in SD replay builds to
+                wake nonblocking writers sooner without increasing memory.
+                This is an lwIP-wide readiness setting, including the cloud
+                socket in formal and test builds; TLS framing and WANT_READ/
+                WANT_WRITE handling remain unchanged. Disable for an A/B test.
+
+        config NUWAX_OFFLINE_AUDIO_REPLAY_FORMAL_ENABLE
+            bool "Replay offline archives through the formal cloud"
+            default y
+            depends on NUWAX_OFFLINE_AUDIO_ENABLE && !NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+            help
+                Send offline_audio_begin/chunk/commit messages over the
+                authenticated production WebSocket. The replay runs on a
+                low-priority worker and retains .ready archives unless a
+                matching commit ACK is received. Disable this only for a
+                product build whose formal cloud receiver is unavailable.
+
+        config NUWAX_OFFLINE_AUDIO_REPLAY_LANE_PROBE
+            bool "Serialize one replay window to measure SD and TX lanes"
+            default n
+            depends on NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+            help
+                Diagnostic only. The first eligible 128 KiB window is read
+                completely before transmission, and the next read waits for
+                its ACK. Leave disabled for end-to-end throughput acceptance
+                so normal SD/TX overlap is preserved. UART panic diagnostics
+                and ordinary replay metrics do not require this probe.
+
+        config NUWAX_OFFLINE_AUDIO_REPLAY_TEST_URL
+            string "Offline replay test gateway WebSocket URL"
+            default "ws://192.168.31.180:8810/api/device/ws"
+            depends on NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+            help
+                LAN-only test receiver for offline_audio_begin/chunk/commit.
+                This URL is never used for the primary cloud connection.
+
+        config NUWAX_OFFLINE_AUDIO_REPLAY_TEST_TOKEN
+            string "Offline replay test gateway token"
+            default "offline-replay-test"
+            depends on NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+            help
+                Test-only WebSocket handshake token. Do not use a production
+                credential here; the local replay gateway is not a cloud
+                authentication service.
+
+        config NUWAX_SD_GATEWAY_DISCOVERY_ENABLE
+            bool "Discover the paired PC SD test gateway on the LAN"
+            default n
+            depends on NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+            help
+                Resolve the PC with bounded authenticated UDP discovery before
+                each replay connection. Wi-Fi/hotspot address changes do not
+                require rebuilding. Normal cloud traffic is not redirected.
+
+        config NUWAX_SD_GATEWAY_ID
+            string "Paired PC test gateway identity (32 lowercase hex digits)"
+            default ""
+            depends on NUWAX_SD_GATEWAY_DISCOVERY_ENABLE
+
+        config NUWAX_SD_GATEWAY_DISCOVERY_KEY
+            string "Test gateway discovery key (64 lowercase hex digits)"
+            default ""
+            depends on NUWAX_SD_GATEWAY_DISCOVERY_ENABLE
+
+        config NUWAX_SD_GATEWAY_DISCOVERY_PORT
+            int "Test gateway discovery UDP port"
+            range 1024 65535
+            default 8811
+            depends on NUWAX_SD_GATEWAY_DISCOVERY_ENABLE
+
+    endmenu
+    # OFFLINE_AUDIO_ROUND_20260825_END
 
     menu "P2 audio diagnostics"
         depends on NUWAX_BOARD_ESP_VOCAT_V1_0
@@ -1562,14 +1859,15 @@ menu "Nuwax AI Partner Cloud Voice"
         endchoice
 
         config NUWAX_POWER_KEY_ENABLE
-            bool "Enable SW3 single-click shutdown and wake"
+            bool "Enable SW3 short-sleep and long power control"
             default y
             depends on NUWAX_POWER_CTRL_HOLD_HIGH
             help
-                PG1 is sampled by an independent debounced task. The startup
-                press must first be released, then a subsequent stable press
-                and release turns off PA/backlight, releases PG2 and enters
-                deep sleep if USB keeps the MCU powered.
+                PG1 is sampled by an independent debounced task. In an active
+                conversation a short press requests software sleep. A stable
+                long press requests the application-owned shutdown path; the
+                bootloader latches the rail on a tap and does not wait for a
+                long hold before allowing a hardware-off boot.
 
         config NUWAX_POWER_KEY_GPIO
             int "SW3 PG1 input GPIO"
@@ -1596,6 +1894,18 @@ menu "Nuwax AI Partner Cloud Voice"
             default 60
             range 20 500
             depends on NUWAX_POWER_KEY_ENABLE
+
+        config NUWAX_POWER_KEY_LONG_PRESS_MS
+            int "SW3 long-press threshold in milliseconds"
+            default 3000
+            range 1000 10000
+            depends on NUWAX_POWER_KEY_ENABLE
+            help
+                A stable press reaching this threshold requests the normal
+                application-owned shutdown. Startup is tap based and is
+                handled by the bootloader power latch; this threshold is only
+                used after the application has started. The existing emergency
+                force-off hold remains a separate, longer safety fallback.
 
         config NUWAX_POWER_KEY_FORCE_OFF_HOLD_MS
             int "SW3 emergency force-off hold in milliseconds"
@@ -1905,8 +2215,8 @@ menu "Nuwax AI Partner Cloud Voice"
 
     config NUWAX_VOICE_UPLINK_QUEUE_DEPTH
         int "Realtime microphone uplink queue depth in packet slots"
-        default 16
-        range 4 64
+        default 64
+        range 8 64
         help
             Bounds unsent normal-conversation WebSocket packets in PSRAM. A
             packet can contain one, two, or four 20 ms frames under adaptive
@@ -1915,13 +2225,14 @@ menu "Nuwax AI Partner Cloud Voice"
 
     config NUWAX_VOICE_UPLINK_REALTIME_MAX_AGE_MS
         int "Maximum realtime uplink packet age in milliseconds"
-        default 160
+        default 1000
         range 40 1000
         help
-            A normal-conversation packet that reaches this budget is not sent.
-            The current listen stream stops and the awake session can restart
-            with a fresh audio_session_id. Reliable meeting and monitoring
-            streams are intentionally unaffected.
+            A normal-conversation packet that reaches this soft budget is not
+            discarded immediately. When the connection is heartbeat-healthy,
+            the bounded recovery budget (1200 ms) permits a short congestion
+            drain before an unsent frame is dropped. Reliable meeting and
+            monitoring streams are intentionally unaffected.
 
     config NUWAX_VOICE_SYNTHETIC_FRAMES_PER_BURST
         int "Synthetic test frames per burst"
@@ -2811,14 +3122,14 @@ menu "Nuwax AI Partner Cloud Voice"
 
         config NUWAX_CUSTOM_WAKE_WORD_THRESHOLD_PERCENT
             int "Custom wake threshold percent"
-            default 8
+            default 9
             range 1 99
             depends on NUWAX_WAKE_WORD_BACKEND_MULTINET
             help
                 Detection threshold passed to MultiNet, scaled as percent.
-                The product default lowers candidate admission to 8 percent.
-                Candidates below the 10 percent strong threshold must also
-                pass device-side voice-span, SNR and clipping confirmation.
+                The product default admits candidates at 9 percent.
+                All candidates, including strong scores, must also pass
+                device-side recent-voice, SNR and clipping confirmation.
 
         config NUWAX_WAKE_WORD_INTERRUPT_ENABLE
             bool "Allow the wake word to interrupt TTS playback"
@@ -2867,6 +3178,17 @@ menu "Nuwax AI Partner Cloud Voice"
             range 50 1000
             depends on NUWAX_WAKE_WORD_INTERRUPT_ENABLE
 
+        config NUWAX_WAKE_WORD_HEAP_CHECKS
+            bool "Check heap at stopped MultiNet lifecycle boundaries"
+            depends on NUWAX_WAKE_WORD_BACKEND_MULTINET
+            default n
+            help
+                Diagnostic only. Check heap structure before/after model creation,
+                destruction and stopped-task rearm. Never scan on each inference
+                or upload chunk. Corruption aborts with the boundary name instead
+                of continuing into the opaque decoder. This does not detect all
+                object overruns; it does not enable global heap poisoning.
+
         config NUWAX_WAKE_WORD_TASK_STACK_BYTES
             int "Wake word task stack bytes"
             default 8192
@@ -2883,27 +3205,27 @@ menu "Nuwax AI Partner Cloud Voice"
                 work so a valid wake phrase is not split by scheduler stalls.
 
         config NUWAX_WAKE_CAPTURE_TASK_STACK_BYTES
-            int "Playback wake capture task stack bytes"
+            int "Wake capture task stack bytes"
             default 6144
             range 4096 16384
-            depends on NUWAX_WAKE_WORD_INTERRUPT_ENABLE
+            depends on NUWAX_WAKE_WORD_ENABLE
 
         config NUWAX_WAKE_CAPTURE_TASK_PRIORITY
-            int "Playback wake capture task priority"
+            int "Wake capture task priority"
             default 11
             range 9 20
-            depends on NUWAX_WAKE_WORD_INTERRUPT_ENABLE
+            depends on NUWAX_WAKE_WORD_ENABLE
             help
                 This short I2S reader must run above speaker playback and
                 MultiNet inference so RX DMA is drained continuously.
 
         config NUWAX_WAKE_CAPTURE_QUEUE_DEPTH
-            int "Playback wake capture queue depth"
+            int "Wake capture queue depth"
             default 12
             range 8 32
-            depends on NUWAX_WAKE_WORD_INTERRUPT_ENABLE
+            depends on NUWAX_WAKE_WORD_ENABLE
             help
-                Number of 15 ms dual-microphone chunks held in PSRAM between
+                Number of 15 ms microphone chunks held in PSRAM between
                 the high-priority I2S reader and wake-word inference.
 
         config NUWAX_WAKE_WORD_IDLE_POLL_MS
@@ -3159,10 +3481,10 @@ menu "Nuwax AI Partner Cloud Voice"
             range 5 250
             help
                 Maximum retry cadence while the PCM ring is full. Normal builds
-                bound the complete admission wait to one 20 ms audio frame so
-                speaker congestion cannot delay WebSocket control frames. If
-                the roughly 11-second PSRAM ring remains full, the current
-                 playback generation is aborted while the WebSocket is retained.
+                bound the complete admission wait to two 20 ms audio frames so
+                a short consumer scheduling gap does not abort a healthy
+                playback generation. If the PSRAM ring remains full, the
+                current generation is still aborted while the WebSocket is retained.
 
         config NUWAX_SPEAKER_STREAM_STALL_WARN_MS
             int "Speaker recoverable downlink PCM stall warning in milliseconds"
@@ -3184,6 +3506,104 @@ menu "Nuwax AI Partner Cloud Voice"
                 On expiry the current generation is aborted and the existing
                 terminal/reconnect recovery path is used. Keep this greater
                 than NUWAX_SPEAKER_STREAM_STALL_WARN_MS.
+
+        config NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS
+            int "Maximum silent playback rebuffer interval in milliseconds"
+            default 15000
+            range 5000 60000
+            depends on NUWAX_SPEAKER_ENABLE
+            help
+                Bounds a mid-stream empty playback queue. Five seconds is
+                reported as a recoverable cloud stall; the generation remains
+                active so a paused long TTS stream can resume. If no PCM or
+                END arrives by this hard interval, generation-safe recovery is
+                used. This does not apply before the first START watermark or
+                after an accepted END.
+    endmenu
+
+    menu "Development music URL test"
+
+        config NUWAX_MUSIC_URL_TEST_ENABLE
+            bool "Play a one-shot PCM URL after cloud-ready delay"
+            default n
+            depends on NUWAX_SPEAKER_ENABLE
+            help
+                Development-only LAN integration test. After authenticated
+                cloud service has remained ready for the configured delay,
+                the device downloads and plays one PCM16/16 kHz/mono file if
+                the normal product state is idle sleeping. Keep disabled in
+                production builds.
+
+        config NUWAX_MUSIC_URL_TEST_URL
+            string "PCM URL"
+            default "http://192.168.31.100:8798/music.pcm"
+            depends on NUWAX_MUSIC_URL_TEST_ENABLE
+
+        config NUWAX_MUSIC_URL_TEST_STABLE_DELAY_MS
+            int "Cloud-ready delay before the one-shot test (ms)"
+            default 10000
+            range 1000 120000
+            depends on NUWAX_MUSIC_URL_TEST_ENABLE
+
+        config NUWAX_MUSIC_URL_TEST_HTTP_TIMEOUT_MS
+            int "HTTP read timeout (ms)"
+            default 10000
+            range 1000 60000
+            depends on NUWAX_MUSIC_URL_TEST_ENABLE
+
+        config NUWAX_MUSIC_URL_TEST_MAX_BYTES
+            int "Maximum PCM source size"
+            default 19200000
+            range 32000 32000000
+            depends on NUWAX_MUSIC_URL_TEST_ENABLE
+            help
+                Default is ten minutes of PCM16/16 kHz/mono. The file is
+                streamed and is not retained in device memory.
+
+    endmenu
+
+    menu "Formal music playback"
+
+        config NUWAX_MUSIC_PLAYBACK_ENABLE
+            bool "Enable cloud URL music playback"
+            default n
+            depends on NUWAX_SPEAKER_ENABLE
+            select NUWAX_MUSIC_MP3_ENABLE
+            help
+                Product music playback is deliberately disabled by default.
+                Enabling it requires a licensed audio source and activates the
+                separately guarded cloud URL playback path.
+
+        config NUWAX_MUSIC_MP3_ENABLE
+            bool
+            default n
+            help
+                Decode MP3 at its native sample rate for the mono speaker. Keep this
+                disabled unless the MP3 decoder component and source license
+                have been reviewed.
+
+        config NUWAX_MUSIC_MAX_BYTES
+            int "Maximum cloud music bytes"
+            default 32000000
+            range 65536 67108864
+            depends on NUWAX_MUSIC_PLAYBACK_ENABLE
+
+        config NUWAX_MUSIC_HTTP_TIMEOUT_MS
+            int "Cloud music HTTP timeout (ms)"
+            default 10000
+            range 1000 60000
+            depends on NUWAX_MUSIC_PLAYBACK_ENABLE
+
+        config NUWAX_MUSIC_CONTROL_TEST_ENABLE
+            bool "Enable LAN music test page control"
+            default n
+            depends on NUWAX_MUSIC_PLAYBACK_ENABLE
+
+        config NUWAX_MUSIC_CONTROL_TEST_URL
+            string "LAN music gateway origin (no trailing slash)"
+            default "http://192.168.31.180:8798"
+            depends on NUWAX_MUSIC_CONTROL_TEST_ENABLE
+
     endmenu
 
     menu "Round display"
@@ -3192,7 +3612,8 @@ menu "Nuwax AI Partner Cloud Voice"
             bool "Enable ST77916 SPI round display"
             default n
             help
-                Enable the 360x360 ST77916 SPI round display and draw the minimal black/white eye expression.
+                Enable the 360x360 ST77916 SPI round display. The panel stays
+                black until the formal LVGL UI has produced its first frame.
 
         config NUWAX_DISPLAY_PIN_SCK
             int "Display SCK GPIO"
@@ -3306,7 +3727,7 @@ menu "Nuwax AI Partner Cloud Voice"
             bool "Enable independent head touch input"
             default y if NUWAX_BOARD_ESP_VOCAT_V1_0
             help
-                Enable the active-high TOUCH signal from the microphone/head
+                Enable the active-low TOUCH signal from the microphone/head
                 board. This input is independent of the CST816 screen controller
                 and uses the board profile's TOUCH_WAKE GPIO (GPIO8 on Miaopan
                 2.0). A debounced touch must remain active through the configured
@@ -3314,14 +3735,14 @@ menu "Nuwax AI Partner Cloud Voice"
 
         config NUWAX_HEAD_TOUCH_LONG_PRESS_MS
             int "Head touch qualification duration in milliseconds"
-            default 1000
+            default 650
             range 100 10000
             depends on NUWAX_HEAD_TOUCH_ENABLE
             help
                 Require the head-touch input to remain continuously active for
                 this duration before publishing visual or conversation work.
                 Shorter contacts are ignored as accidental touches. A
-                successful touch starts a two-second interaction cooldown.
+                successful touch starts a one-second interaction cooldown.
 
         config NUWAX_HEAD_TOUCH_MAX_VALID_DURATION_MS
             int "Head touch maximum valid duration in milliseconds"
@@ -3333,18 +3754,17 @@ menu "Nuwax AI Partner Cloud Voice"
                 after this duration. The event is emitted once, any listening
                 action started by that touch is stopped. Agent transactions keep
                 ownership of the shared interaction gate until their normal
-                completion. This protects against a stuck-high sensor.
+                completion. This protects against a stuck-active sensor.
 
         config NUWAX_HEAD_TOUCH_GAP_TOLERANCE_MS
-            int "Head touch sensor gap tolerance in milliseconds"
+            int
             default 750
             range 0 2000
             depends on NUWAX_HEAD_TOUCH_ENABLE
             help
-                Preserve one physical head-touch qualification session across
-                brief inactive pulses from the capacitive sensor. Qualification
-                is still emitted only while the GPIO is active, so an isolated
-                short touch cannot fire after release.
+                Deprecated compatibility setting. Product head-touch requires
+                continuous contact; inactive pulses are handled by GPIO
+                debounce only. This value does not change qualification.
 
         config NUWAX_TOUCH_ENABLE
             bool "Enable CST816S/CST816-family touch input"

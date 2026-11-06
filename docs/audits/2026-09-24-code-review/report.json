@@ -1,0 +1,10 @@
+{
+  "jsonParser": "nested arrays=256 payload_bytes=537 parser_accepted=1",
+  "compiledParseValueFrame": 80,
+  "compiledRecursiveCallSites": 2,
+  "nestedFramesLowerBound": 20480,
+  "wsRxConfiguredStack": 16384,
+  "notification": "notification startup_wait_ms=198000 faults=0 transaction_timeout=0",
+  "hardwareCrashReproduced": false,
+  "productionFilesModified": false
+}

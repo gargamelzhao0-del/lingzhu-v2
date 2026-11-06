@@ -1,0 +1,41 @@
+{
+  "schema": "nuwax.handbook.validation.v1",
+  "checked_utc": "2026-10-09T06:24:49.937597+00:00",
+  "passed": true,
+  "chapters": 32,
+  "unique_markdown_pages": 33,
+  "generated_reading_copy": "全册.md",
+  "unique_prose_characters_including_markdown": 127191,
+  "unique_han_characters": 63441,
+  "local_link_occurrences_checked_including_compilation": 634,
+  "source_files_fingerprinted": 155,
+  "config_allowlist_compared": true,
+  "examples": [
+    {
+      "script": "audio_budget.py",
+      "exit_code": 0,
+      "stdout": "audio_budget: PASS",
+      "stderr": ""
+    },
+    {
+      "script": "inspect_na_frame.py",
+      "exit_code": 0,
+      "stdout": "inspect_na_frame: PASS",
+      "stderr": ""
+    },
+    {
+      "script": "owner_epoch.py",
+      "exit_code": 0,
+      "stdout": "owner_epoch: PASS (old/incorrect/duplicate completion rejected)",
+      "stderr": ""
+    }
+  ],
+  "errors": [],
+  "warnings": [],
+  "limits": [
+    "Local link targets checked, anchor semantics and remote link health not automatically validated.",
+    "Markdown fences/JSON/encoding checked; no rendered PDF or visual layout certification.",
+    "Examples are teaching checks, not firmware regression tests or real hardware measurements.",
+    "Technical claims require manual source review; hashes alone do not prove correctness."
+  ]
+}

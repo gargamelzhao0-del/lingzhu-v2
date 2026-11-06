@@ -37,16 +37,25 @@ typedef enum {
     NUWAX_APP_SHELL_ACTION_CANCEL,
     NUWAX_APP_SHELL_ACTION_SET_VOLUME,
     NUWAX_APP_SHELL_ACTION_SET_MEETING_MODE,
+    NUWAX_APP_SHELL_ACTION_SET_SIMULATED_OFFLINE,
     NUWAX_APP_SHELL_ACTION_HEAD_TOUCH_AGENT,
     NUWAX_APP_SHELL_ACTION_SHAKE_AGENT,
+    NUWAX_APP_SHELL_ACTION_CYCLE_BRIGHTNESS,
 } nuwax_app_shell_action_t;
 
 typedef struct {
     nuwax_app_shell_action_t action;
     int index;
+    /* Nonzero only for a local volume preview committed on release. */
+    uint32_t volume_sequence;
 } nuwax_app_shell_result_t;
 
 typedef void (*nuwax_app_shell_reprovision_cb_t)(void *ctx, bool enabled);
+/* Called with the input mailbox held. These callbacks only publish to the
+ * speaker's volume mailbox and must not take an audio mutex or do I/O. */
+typedef uint32_t (*nuwax_app_shell_volume_preview_cb_t)(int volume);
+typedef void (*nuwax_app_shell_volume_cancel_cb_t)(uint32_t preview_sequence);
+typedef void (*nuwax_app_shell_volume_queued_cb_t)(int volume, uint32_t preview_sequence);
 
 typedef uint32_t nuwax_app_shell_state_fields_t;
 
@@ -67,7 +76,9 @@ enum {
     NUWAX_APP_SHELL_STATE_TOUCH_EMOTION = 1U << 13,
     NUWAX_APP_SHELL_STATE_SPEAKING_PCM = 1U << 14,
     NUWAX_APP_SHELL_STATE_OTA_PROGRESS = 1U << 15,
-    NUWAX_APP_SHELL_STATE_ALL = (1U << 16) - 1U,
+    NUWAX_APP_SHELL_STATE_SIMULATED_OFFLINE = 1U << 16,
+    NUWAX_APP_SHELL_STATE_BRIGHTNESS = 1U << 17,
+    NUWAX_APP_SHELL_STATE_ALL = (1U << 18) - 1U,
 };
 
 esp_err_t nuwax_app_shell_init(void);
@@ -75,11 +86,17 @@ esp_err_t nuwax_app_shell_init(void);
  * hold the LVGL port mutex when this is paired with nuwax_app_deinit(). */
 void nuwax_app_shell_deinit(void);
 void nuwax_app_shell_set_action_queue(QueueHandle_t queue);
+/* Register on the business owner task; wake it after successful queue admission. */
+void nuwax_app_shell_action_queued(void);
 /* Provisioning can park the ordinary shell-action consumer, so its UI command
  * uses a dedicated non-blocking callback carrying the explicit target state. */
 void nuwax_app_shell_set_reprovision_callback(
     nuwax_app_shell_reprovision_cb_t callback,
     void *ctx);
+void nuwax_app_shell_set_volume_callbacks(
+    nuwax_app_shell_volume_preview_cb_t preview,
+    nuwax_app_shell_volume_cancel_cb_t cancel,
+    nuwax_app_shell_volume_queued_cb_t queued);
 bool nuwax_app_shell_is_ui_ready(void);
 bool nuwax_app_shell_is_menu_active(void);
 bool nuwax_app_shell_blocks_auto_followup(void);
@@ -87,6 +104,9 @@ bool nuwax_app_shell_can_start_listen(void);
 /* Close menu/drawer before entering wake-only state so touch wake cannot be
  * masked by an overlay left open in the previous conversation. */
 void nuwax_app_shell_close_overlays(void);
+/* Non-blocking variant for business owners such as notification playback.
+ * The LVGL task closes the drawer and drops queued drag work on its next pass. */
+void nuwax_app_shell_request_close_overlays(void);
 void nuwax_app_shell_update(uint32_t now_ms);
 void nuwax_app_shell_render_status_bar(void);
 void nuwax_app_shell_set_app_state(nuwax_app_state_t state);
@@ -100,10 +120,16 @@ void nuwax_app_shell_set_saved_wifi_networks(const char ssids[][33], int count);
 void nuwax_app_shell_set_wifi_connecting(const char *ssid);
 void nuwax_app_shell_set_wifi_result(const char *ssid, bool ok, const char *message);
 void nuwax_app_shell_set_volume_percent(int volume_percent);
+void nuwax_app_shell_confirm_volume(int volume_percent, uint32_t sequence);
+void nuwax_app_shell_set_brightness_percent(uint8_t percent);
 void nuwax_app_shell_set_meeting_state(nuwax_meeting_ui_state_t state);
 void nuwax_app_shell_set_monitoring_state(nuwax_monitoring_ui_state_t state);
 void nuwax_app_shell_set_provisioning_active(bool active);
+void nuwax_app_shell_set_provisioning_starting(void);
 void nuwax_app_shell_set_ota_progress(bool active, int percent);
+/* Test-only logical cloud disconnect.  This does not turn off the physical
+ * Wi-Fi radio or erase saved credentials. */
+void nuwax_app_shell_set_simulated_offline(bool enabled);
 /* Thread-safe one-shot request. The LVGL owner opens the dismissible QR detail
  * after delay_ms only while provisioning is active. An already-open menu may
  * transition directly to the QR; unrelated pages and details are preserved. */
@@ -149,13 +175,21 @@ nuwax_app_shell_result_t nuwax_app_shell_handle_touch_event(nuwax_app_shell_even
                                                             const nuwax_touch_point_t *point);
 bool nuwax_app_shell_drawer_is_open(void);
 bool nuwax_app_shell_drawer_is_detail(void);
-void nuwax_app_shell_drawer_begin_pull(void);
-int16_t nuwax_app_shell_drawer_current_y(void);
-bool nuwax_app_shell_drawer_preview_volume_at(uint16_t x, uint16_t y, uint8_t *volume_out);
-void nuwax_app_shell_drawer_drag_to(int16_t y);
-void nuwax_app_shell_drawer_finish_drag(bool close);
+void nuwax_app_shell_touch_begin(void);
+bool nuwax_app_shell_drawer_can_page_drag(int16_t delta_x);
+bool nuwax_app_shell_drawer_preview_volume_drag_at(uint16_t x, uint16_t y,
+                                                 bool captured, uint8_t *volume_out);
+/* A negative value cancels a captured slider without changing the setting. */
+void nuwax_app_shell_drawer_finish_volume_drag(int volume);
+/* Displacement from this contact's first captured sample. LVGL owns the
+ * animation position used as the other end of the drag anchor. */
+void nuwax_app_shell_drawer_drag_by(int16_t delta_y, bool begin_pull);
+void nuwax_app_shell_drawer_finish_drag(int16_t final_delta_y, int16_t total_dy,
+                                       int16_t velocity_y, bool cancelled);
 void nuwax_app_shell_drawer_page_drag_to(int16_t delta_x);
 void nuwax_app_shell_drawer_page_finish_drag(bool commit);
+/* Coalesced contact preview, consumed exclusively by the LVGL task. */
+void nuwax_app_shell_drawer_contact(bool down, uint16_t x, uint16_t y);
 bool nuwax_app_shell_focus_menu_main_is_open(void);
 bool nuwax_app_shell_focus_menu_detail_is_open(void);
 void nuwax_app_shell_menu_drag_to(int16_t delta_y);

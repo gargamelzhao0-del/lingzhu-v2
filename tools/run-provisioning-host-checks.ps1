@@ -1,9 +1,12 @@
-param(
-    [string]$Gcc = "gcc"
+﻿param(
+    [string]$Gcc = "gcc",
+    # Alternate source fixtures allow negative tests without editing firmware.
+    [string]$SourceRoot
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
+if ($SourceRoot) { $projectRoot = (Resolve-Path -LiteralPath $SourceRoot).Path }
 $outputDir = Join-Path $projectRoot "build-host-checks\provisioning"
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
@@ -47,6 +50,8 @@ $drawerHeader = Get-Content -Raw -LiteralPath `
     (Join-Path $projectRoot "main/nuwax_ui_v28/nuwax_drawer.h")
 $cloud = Get-Content -Raw -LiteralPath `
     (Join-Path $projectRoot "main/nuwax_provision_new/nuwax_cloud_config.c")
+$pairCommit = Get-Content -Raw -LiteralPath `
+    (Join-Path $projectRoot "main/nuwax_provision_new/nuwax_pair_commit.c")
 $appMain = Get-Content -Raw -LiteralPath `
     (Join-Path $projectRoot "main/nuwax_ai_partner_main.c")
 $wifiManager = Get-Content -Raw -LiteralPath `
@@ -72,9 +77,10 @@ if ($credentialSuccess -match 'NUWAX_PROVISION_OUTCOME_SUCCESS') {
 if ($cloud -notmatch 'nuwax_cloud_config_stage' -or
     $cloud -notmatch 'nuwax_cloud_config_commit_pending' -or
     $cloud -notmatch 'nuwax_cloud_config_discard_pending' -or
-    $provision -notmatch '(?s)nuwax_wifi_import_driver_credentials.*?nuwax_cloud_config_commit_pending.*?retry_write_wifi_verified_marker' -or
-    $provision -notmatch '(?s)nuwax_wifi_import_driver_credentials.*?write_wifi_commit_marker.*?nuwax_cloud_config_commit_pending' -or
-    $provision -notmatch '(?s)wifi_commit_marker_matches.*?!nuwax_cloud_config_has_pending.*?clear_reprovision_record' -or
+    $provision -notmatch '(?s)nuwax_pair_commit_begin.*?nuwax_pair_commit_complete.*?s_provisioned_pair_ready = true' -or
+    $provision -notmatch '(?s)recover_provisioned_pair.*?nuwax_pair_commit_load.*?nuwax_pair_commit_complete' -or
+    $pairCommit -notmatch '(?s)persist_target\(\).*?nuwax_wifi_import_driver_credentials.*?nuwax_cloud_config_set.*?mark_verified.*?nuwax_cloud_config_verify_persisted.*?retire_target\(' -or
+    $pairCommit -notmatch '(?s)nvs_erase_key\(nvs, PAIR_REQUEST_KEY\).*?nvs_erase_key\(nvs, PAIR_NVS_KEY\)' -or
     $provision -notmatch '(?s)wait_for_wifi_connection_to.*?nuwax_wifi_import_driver_credentials.*?retry_write_wifi_verified_marker.*?clear_reprovision_record') {
     throw "Provisioning transaction or verified rollback ordering regressed."
 }
@@ -147,29 +153,40 @@ $wakeSleepStart = [regex]::Match(
 $wakeSupervisor = [regex]::Match(
     $appMain,
     '(?s)static void wake_word_supervisor_task\(void \*arg\).*?(?=static void remember_sleep_request)').Value
-if ($runtimeReprovision -notmatch '(?s)nuwax_provision_main_stop\(\).*?goto cleanup;' -or
-    $runtimeReprovision -notmatch '(?s)nuwax_lvgl_port_set_runtime_provisioning_memory\(true\).*?nuwax_provision_main_start\("runtime_reprovision"\).*?cleanup:.*?nuwax_lvgl_port_set_runtime_provisioning_memory\(false\)' -or
-    $runtimeReprovision -notmatch '(?s)deinit_wake_model_serialized\(\).*?conversation_live_aec_pool_suspend_for_provisioning\(\).*?nuwax_speaker_playback_deinit_output\(\)' -or
-    $runtimeReprovision -notmatch '(?s)cleanup:.*?nuwax_provision_main_stop\(\).*?restore_audio_after_runtime_provisioning\(\).*?nuwax_provision_main_rollback_wifi_credentials\(\).*?clear_reprovision_reservation\(true\)' -or
-    $runtimeReprovision -match 'nuwax_wake_word_detector_init\(' -or
-    $appMain -notmatch '(?s)restore_audio_after_runtime_provisioning\(void\).*?request_wake_model_restore\(.*?NUWAX_REPROVISION_WAKE_MODEL_RESTORE_TIMEOUT_MS' -or
-    $appMain -notmatch '(?s)request_wake_model_restore\(uint32_t timeout_ms\).*?s_wake_model_restore_mutex.*?wake model restore joining in-flight.*?s_wake_model_restore_completed.*?xSemaphoreGive\(s_wake_model_restore_mutex\)' -or
-    $wakeInit -notmatch '(?s)esp_ptr_in_dram\(.*?s_wake_model_operation_mutex.*?nuwax_wake_word_detector_init\(.*?xSemaphoreGive\(s_wake_model_operation_mutex\)' -or
-    $wakeStart -notmatch '(?s)s_wake_model_operation_mutex.*?s_reprovision_quiesce_requested.*?nuwax_wake_word_detector_start_with_context\(context\).*?xSemaphoreGive\(s_wake_model_operation_mutex\)' -or
-    $wakeStart -match 'nuwax_wake_word_detector_init\(' -or
-    $appMain -notmatch '(?s)deinit_wake_model_serialized\(void\).*?s_wake_model_operation_mutex.*?nuwax_wake_word_detector_deinit\(\).*?nuwax_wake_word_detector_is_running\(\).*?xSemaphoreGive\(s_wake_model_operation_mutex\)' -or
-    $wakeRestoreOwner -notmatch '(?s)s_conversation_owner_task.*?xTaskGetCurrentTaskHandle\(\).*?init_wake_model_serialized\(\).*?s_wake_model_restore_result.*?s_wake_model_restore_completed.*?CONFIG_ESP_MAIN_TASK_STACK_SIZE' -or
-    $wakeSupervisor -match 'init_wake_model_serialized\(' -or
-    $wakeSleepStart -notmatch '(?s)err == ESP_ERR_INVALID_STATE.*?queue_wake_model_restore_nonblocking' -or
-    $appMain -notmatch '(?s)while \(atomic_load_explicit\(&s_reprovision_quiesce_requested,.*?service_wake_model_restore_owner\(\).*?vTaskDelay' -or
-    $appMain -notmatch '#define NUWAX_WAKE_SUPERVISOR_TASK_STACK_BYTES 16384U' -or
-    $appMain -notmatch '(?s)xSemaphoreCreateMutexStatic\(\s*&s_wake_model_restore_mutex_storage\).*?xSemaphoreCreateMutexStatic\(\s*&s_wake_model_operation_mutex_storage\).*?create_app_task\(wake_word_supervisor_task.*?if \(wake_init_err == ESP_OK\)' -or
-    $runtimeReprovision -notmatch '(?s)audio_restore_err == ESP_ERR_TIMEOUT.*?runtime_provision_wake_restore_restart.*?esp_restart\(\).*?clear_reprovision_reservation\(true\)' -or
-    $runtimeReprovision -notmatch '(?s)clear_reprovision_reservation\(true\).*?request_sleep_wake_word_detector\("ble_reprovision_complete"\).*?wait_for_sleep_wake_word_ready' -or
-    $runtimeReprovision -notmatch 'Provisioning failed; previous Wi-Fi unavailable' -or
-    $appMain -notmatch '(?s)static void set_wifi_result_from_current_link.*?nuwax_app_shell_set_wifi_result.*?nuwax_wifi_is_connected\(\).*?nuwax_app_shell_set_wifi_status' -or
-    $lvglPort -notmatch '(?s)nuwax_lvgl_port_set_runtime_provisioning_memory\(bool enabled\).*?lv_display_set_buffers.*?heap_caps_free\(previous1\)') {
-    throw "Runtime provisioning errors must converge on rollback, audio restoration, and reservation release."
+$runtimeContractResults = @(
+    @{ id='runtime-01'; source='runtimeReprovision'; failed=($runtimeReprovision -notmatch '(?s)nuwax_provision_main_stop\(\).*?goto cleanup;') }
+    @{ id='runtime-02'; source='runtimeReprovision'; failed=($runtimeReprovision -notmatch '(?s)nuwax_lvgl_port_set_runtime_provisioning_memory\(true\).*?nuwax_provision_main_start\("runtime_reprovision"\).*?cleanup:.*?nuwax_lvgl_port_set_runtime_provisioning_memory\(false\)') }
+    @{ id='runtime-03'; source='runtimeReprovision'; failed=($runtimeReprovision -notmatch '(?s)deinit_wake_model_serialized\(\).*?conversation_live_aec_pool_suspend_for_provisioning\(\).*?nuwax_speaker_playback_deinit_output\(\)') }
+    @{ id='runtime-04'; source='runtimeReprovision'; failed=($runtimeReprovision -notmatch '(?s)cleanup:.*?nuwax_provision_main_stop\(\).*?restore_audio_after_runtime_provisioning\(\).*?rollback_wifi_credentials_guarded\(\).*?clear_reprovision_reservation\(true\)') }
+    @{ id='runtime-05'; source='appMain'; failed=($appMain -notmatch '(?s)static esp_err_t rollback_wifi_credentials_guarded\(void\).*?nuwax_wake_word_detector_begin_flash_operation\(.*?nuwax_provision_main_rollback_wifi_credentials\(\).*?nuwax_wake_word_detector_end_flash_operation\(\)') }
+    @{ id='runtime-06'; source='runtimeReprovision'; failed=($runtimeReprovision -notmatch '(?s)rollback_failed = false.*?rollback_failed = true') }
+    @{ id='runtime-07'; source='runtimeReprovision'; failed=($runtimeReprovision -notmatch '(?s)if \(rollback_failed\).*?release_reprovision_wifi_interlock\(\).*?retaining isolation') }
+    @{ id='runtime-08'; source='runtimeReprovision'; failed=($runtimeReprovision -notmatch '(?s)if \(!rollback_failed\)\s*\{\s*clear_reprovision_reservation\(true\)') }
+    @{ id='runtime-09'; source='runtimeReprovision'; failed=($runtimeReprovision -match 'nuwax_wake_word_detector_init\(') }
+    @{ id='runtime-10'; source='appMain'; failed=($appMain -notmatch '(?s)restore_audio_after_runtime_provisioning\(void\).*?request_wake_model_restore\(.*?NUWAX_REPROVISION_WAKE_MODEL_RESTORE_TIMEOUT_MS') }
+    @{ id='runtime-11'; source='appMain'; failed=($appMain -notmatch '(?s)request_wake_model_restore\(uint32_t timeout_ms\).*?s_wake_model_restore_mutex.*?wake model restore joining in-flight.*?s_wake_model_restore_completed.*?xSemaphoreGive\(s_wake_model_restore_mutex\)') }
+    @{ id='runtime-12'; source='wakeInit'; failed=($wakeInit -notmatch '(?s)esp_ptr_in_dram\(.*?s_wake_model_operation_mutex.*?nuwax_wake_word_detector_init\(.*?xSemaphoreGive\(s_wake_model_operation_mutex\)') }
+    @{ id='runtime-13'; source='wakeStart'; failed=($wakeStart -notmatch '(?s)s_wake_model_operation_mutex.*?s_reprovision_quiesce_requested.*?nuwax_wake_word_detector_start_with_context\(context\).*?xSemaphoreGive\(s_wake_model_operation_mutex\)') }
+    @{ id='runtime-14'; source='wakeStart'; failed=($wakeStart -match 'nuwax_wake_word_detector_init\(') }
+    @{ id='runtime-15'; source='appMain'; failed=($appMain -notmatch '(?s)deinit_wake_model_serialized\(void\).*?s_wake_model_operation_mutex.*?nuwax_wake_word_detector_deinit\(\).*?nuwax_wake_word_detector_is_running\(\).*?xSemaphoreGive\(s_wake_model_operation_mutex\)') }
+    @{ id='runtime-16'; source='wakeRestoreOwner'; failed=($wakeRestoreOwner -notmatch '(?s)s_conversation_owner_task.*?xTaskGetCurrentTaskHandle\(\).*?init_wake_model_serialized\(\).*?s_wake_model_restore_result.*?s_wake_model_restore_completed.*?CONFIG_ESP_MAIN_TASK_STACK_SIZE') }
+    @{ id='runtime-17'; source='wakeSupervisor'; failed=($wakeSupervisor -match 'init_wake_model_serialized\(') }
+    @{ id='runtime-18'; source='wakeSleepStart'; failed=($wakeSleepStart -notmatch '(?s)err == ESP_ERR_INVALID_STATE.*?queue_wake_model_restore_nonblocking') }
+    @{ id='runtime-19'; source='appMain'; failed=($appMain -notmatch '(?s)while \(atomic_load_explicit\(&s_reprovision_quiesce_requested,.*?service_wake_model_restore_owner\(\).*?vTaskDelay') }
+    @{ id='runtime-20'; source='appMain'; failed=($appMain -notmatch '#define NUWAX_WAKE_SUPERVISOR_TASK_STACK_BYTES 16384U') }
+    @{ id='runtime-21'; source='appMain'; failed=($appMain -notmatch '(?s)xSemaphoreCreateMutexStatic\(\s*&s_wake_model_restore_mutex_storage\).*?xSemaphoreCreateMutexStatic\(\s*&s_wake_model_operation_mutex_storage\).*?create_app_task\(wake_word_supervisor_task.*?if \(wake_init_err == ESP_OK\)') }
+    @{ id='runtime-22'; source='runtimeReprovision'; failed=($runtimeReprovision -notmatch '(?s)audio_restore_err == ESP_ERR_TIMEOUT.*?runtime_provision_wake_restore_restart.*?esp_restart\(\).*?clear_reprovision_reservation\(true\)') }
+    @{ id='runtime-23'; source='runtimeReprovision'; failed=($runtimeReprovision -notmatch '(?s)clear_reprovision_reservation\(true\).*?request_sleep_wake_word_detector\("ble_reprovision_complete"\).*?wait_for_sleep_wake_word_ready') }
+    @{ id='runtime-24'; source='runtimeReprovision'; failed=($runtimeReprovision -notmatch 'Provisioning failed; previous Wi-Fi unavailable') }
+    @{ id='runtime-25'; source='appMain'; failed=($appMain -notmatch '(?s)static void set_wifi_result_from_current_link.*?nuwax_app_shell_set_wifi_result.*?nuwax_wifi_is_connected\(\).*?nuwax_app_shell_set_wifi_status') }
+    @{ id='runtime-26'; source='lvglPort'; failed=($lvglPort -notmatch '(?s)nuwax_lvgl_port_set_runtime_provisioning_memory\(bool enabled\).*?lv_display_set_buffers.*?release_draw_buffer_pair\(previous1, previous2, previous_split\)') }
+)
+$runtimeContractResults | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $outputDir 'runtime-contracts.json')
+foreach ($contract in $runtimeContractResults) {
+    Write-Host "$($contract.id) $($contract.source): $(if ($contract.failed) {'FAIL'} else {'PASS'})"
+}
+if (@($runtimeContractResults | Where-Object { $_.failed }).Count) {
+    throw 'Runtime provisioning contract failures; see build-host-checks/provisioning/runtime-contracts.json.'
 }
 if ($lvglPort -notmatch '(?s)task_stack_allocation = heap_caps_aligned_alloc\(\s*16, LVGL_TASK_STACK_GUARD_BYTES \+ LVGL_TASK_STACK_SIZE,\s*MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT\)' -or
     $lvglPort -notmatch '(?s)stack_cache_safe =.*?esp_ptr_in_dram\(task_stack_allocation\).*?esp_ptr_in_dram\(task_stack\).*?esp_ptr_in_dram\(\(const uint8_t \*\)task_stack \+.*?LVGL_TASK_STACK_SIZE - 1U\)' -or
@@ -194,7 +211,7 @@ $runtimeRequest = [regex]::Match(
     '(?s)static bool queue_ble_reprovision_request.*?(?=static bool usb_control_request_ble_reprovision)').Value
 $activeOfficialServiceJoin = [regex]::Match(
     $runtimeRequest,
-    '(?s)if \(nuwax_provision_main_is_active\(\)\).*?return true;\s*}').Value
+    '(?s)if \(nuwax_provision_main_is_active\(\)\) \{\s*ESP_LOGI\(TAG,\s*"%s BLE provisioning request joined active official service=.*?return true;\s*}').Value
 if ($provisionHeader -notmatch 'bool nuwax_provision_main_is_active\(void\);' -or
     $provision -notmatch 'static atomic_bool s_started\s*=\s*ATOMIC_VAR_INIT\(false\)' -or
     $provision -notmatch '(?s)bool nuwax_provision_main_is_active\(void\).*?atomic_load_explicit\(&s_started, memory_order_acquire\)' -or
@@ -226,7 +243,7 @@ if ($wifiHandoff -notmatch 's_provisioning_state' -or
     $wifiManager -notmatch 'nuwax_wifi_provisioning_owner_active' -or
     $wifiManager -notmatch 'WIFI_PROVISIONING_HANDOFF' -or
     $wifiManager -notmatch 'WIFI_PROVISIONING_OWNER' -or
-    $wifiManager -notmatch '(?s)WIFI_RECONNECT_BIT.*?wifi_operation_lock_for\(WIFI_RECONNECT_LOCK_TIMEOUT_MS\).*?esp_wifi_connect\(\)' -or
+    $wifiManager -notmatch '(?s)WIFI_RECONNECT_BIT.*?wifi_operation_lock_for\(WIFI_RECONNECT_LOCK_TIMEOUT_MS\).*?wifi_driver_connect_once\(\)' -or
     $wifiManager -notmatch 'Wi-Fi connect cancelled after STA start' -or
     $runtimeRequest -notmatch '(?s)nuwax_wifi_request_provisioning_handoff.*?xTaskNotify' -or
     $appMain -notmatch 'NUWAX_REPROVISION_PHASE_WAIT_READY' -or
@@ -246,7 +263,7 @@ if ($wifiManager -notmatch 'WIFI_RECONNECT_BACKOFF_BASE_MS' -or
     $wifiReconnectWatcher -notmatch 'failures < WIFI_RECONNECT_MAX_DRIVER_FAILURES' -or
     $wifiReconnectWatcher -notmatch '(?s)wifi_operation_unlock().*?vTaskDelay' -or
     $wifiReconnectWatcher -notmatch '(?s)!nuwax_wifi_provisioning_active().*?s_wifi_connect_requested.*?!nuwax_wifi_is_connected().*?WIFI_RECONNECT_BIT' -or
-    $wifiOwnerClaim -notmatch '(?s)esp_wifi_connect().*?WIFI_RECONNECT_BIT') {
+    $wifiOwnerClaim -notmatch '(?s)wifi_driver_connect_once().*?WIFI_RECONNECT_BIT') {
     throw "Deferred Wi-Fi reconnect must use bounded driver retries outside the Wi-Fi owner lock."
 }
 $orphanRecovery = [regex]::Match(
@@ -301,34 +318,41 @@ if ($provision -notmatch 'nuwax_provision_boot_profile_required' -or
     throw "Late provisioning discovery can enter BLE without the low-memory reboot profile."
 }
 
-if ($provisionHeader -notmatch 'nuwax_provision_main_request_runtime_cancel' -or
-    $provisionHeader -notmatch 'nuwax_provision_main_has_complete_pair' -or
-    $provision -notmatch 'static atomic_int s_cancel_state' -or
-    $provision -notmatch 'static atomic_bool s_force_reprovision' -or
-    $provision -notmatch '(?s)force_reprovision_requested\(void\).*?atomic_load_explicit\(&s_force_reprovision' -or
-    $provision -notmatch '(?s)set_force_reprovision\(bool enabled\).*?atomic_store_explicit\(&s_force_reprovision' -or
-    $provision -notmatch 'PROVISION_CANCEL_REQUESTED' -or
-    $provision -notmatch '(?s)provisioning_cancel_requested\(\).*?finish_runtime_cancel\(\)' -or
-    $appShellHeader -notmatch 'nuwax_app_shell_reprovision_cb_t\)\(void \*ctx, bool enabled\)' -or
-    $appShell -notmatch '(?s)result->action == NUWAX_APP_SHELL_ACTION_REPROVISION_WIFI.*?callback\(callback_ctx, result->index != 0\);.*?return true;.*?xQueueSend\(queue, result, wait_ticks\)' -or
-    $appMain -notmatch '(?s)shell_dispatch_set_reprovisioning\(void \*ctx, bool enabled\).*?if \(!enabled\).*?nuwax_provision_main_request_runtime_cancel' -or
-    $appMain -notmatch '(?s)nuwax_app_shell_set_reprovision_callback\(\s*shell_dispatch_set_reprovisioning, NULL\)' -or
-    $drawer -notmatch '(?s)s_provision_pending_target = !provisioning_active\(\);.*?result\.value = s_provision_pending_target \? 1 : 0;' -or
-    $appShell -notmatch 'nuwax_app_shell_schedule_provisioning_qr' -or
-    $appShell -notmatch '(?s)s_pending_provisioning_qr_deadline_us =\s*provisioning_qr_retry_deadline_us.*?if \(shown\).*?s_pending_provisioning_qr = false;' -or
-    $appShell -notmatch '(?s)if \(was_active\).*?s_pending_provisioning_qr_close = true;' -or
-    $drawerHeader -notmatch 'nuwax_drawer_hide_provisioning_qr' -or
-    $drawer -notmatch '(?s)nuwax_drawer_hide_provisioning_qr\(void\).*?s_detail != CC_DETAIL_QR.*?nuwax_drawer_close\(\);' -or
-    $drawer -notmatch '#define CC_PROVISION_PENDING_TIMEOUT_MS 15000U' -or
-    $drawer -notmatch '(?s)s_provision_pending = true;.*?s_provision_pending_deadline_us =.*?CC_PROVISION_PENDING_TIMEOUT_MS' -or
-    $appMain -notmatch '!nuwax_provision_main_has_complete_pair\(\)' -or
-    $drawer -notmatch '(?s)nuwax_drawer_begin_pull\(void\).*?set_page\(CC_PAGE_MENU, false\);.*?render_page_if_dirty\(CC_PAGE_MENU\);' -or
-    $appShell -notmatch '(?s)event == NUWAX_APP_SHELL_EVENT_SWIPE_DOWN && y < NUWAX_GESTURE_TOP_BAND\).*?nuwax_drawer_open_menu\(\);' -or
-    $drawer -notmatch 'state->provisioning_active\) return "\u914D\u7F51\u4E2D";' -or
-    $drawer -notmatch '(?s)nuwax_drawer_show_provisioning_qr\(void\).*?if \(!s_open\).*?open_control_center\(CC_PAGE_MENU\);.*?s_page != CC_PAGE_MENU.*?show_qr\(\);' -or
-    $appMain -notmatch '(?s)nuwax_provision_main_start\("runtime_reprovision"\).*?if \(result != ESP_OK\).*?goto cleanup;.*?nuwax_app_shell_schedule_provisioning_qr\(0U\);' -or
-    $appMain -notmatch '(?s)nuwax_provision_main_start\("first_boot"\).*?if \(provision_start_err != ESP_OK\).*?else \{.*?nuwax_app_shell_schedule_provisioning_qr\(0U\);') {
-    throw "Target-state provisioning cancellation or boot QR lifecycle regressed."
+$qrContractResults = @(
+    @{ id='qr-01'; source='provisionHeader'; failed=($provisionHeader -notmatch 'nuwax_provision_main_request_runtime_cancel') }
+    @{ id='qr-02'; source='provisionHeader'; failed=($provisionHeader -notmatch 'nuwax_provision_main_has_complete_pair') }
+    @{ id='qr-03'; source='provision'; failed=($provision -notmatch 'static atomic_int s_cancel_state') }
+    @{ id='qr-04'; source='provision'; failed=($provision -notmatch 'static atomic_bool s_force_reprovision') }
+    @{ id='qr-05'; source='provision'; failed=($provision -notmatch '(?s)force_reprovision_requested\(void\).*?atomic_load_explicit\(&s_force_reprovision') }
+    @{ id='qr-06'; source='provision'; failed=($provision -notmatch '(?s)set_force_reprovision\(bool enabled\).*?atomic_store_explicit\(&s_force_reprovision') }
+    @{ id='qr-07'; source='provision'; failed=($provision -notmatch 'PROVISION_CANCEL_REQUESTED') }
+    @{ id='qr-08'; source='provision'; failed=($provision -notmatch '(?s)provisioning_cancel_requested\(\).*?finish_runtime_cancel\(\)') }
+    @{ id='qr-09'; source='appShellHeader'; failed=($appShellHeader -notmatch 'nuwax_app_shell_reprovision_cb_t\)\(void \*ctx, bool enabled\)') }
+    @{ id='qr-10'; source='appShell'; failed=($appShell -notmatch '(?s)result->action == NUWAX_APP_SHELL_ACTION_REPROVISION_WIFI.*?callback\(callback_ctx, result->index != 0\);.*?return true;.*?xQueueSend\(queue, result, wait_ticks\)') }
+    @{ id='qr-11'; source='appMain'; failed=($appMain -notmatch '(?s)shell_dispatch_set_reprovisioning\(void \*ctx, bool enabled\).*?if \(!enabled\).*?nuwax_provision_main_request_runtime_cancel') }
+    @{ id='qr-12'; source='appMain'; failed=($appMain -notmatch '(?s)nuwax_app_shell_set_reprovision_callback\(\s*shell_dispatch_set_reprovisioning, NULL\)') }
+    @{ id='qr-13'; source='drawer'; failed=($drawer -notmatch '(?s)s_provision_pending_target = true;.*?result\.action = NUWAX_DRAWER_ACTION_REPROVISION_WIFI;.*?result\.value = 1;') }
+    @{ id='qr-14'; source='appShell'; failed=($appShell -notmatch 'nuwax_app_shell_schedule_provisioning_qr') }
+    @{ id='qr-15'; source='appShell'; failed=($appShell -notmatch '(?s)s_pending_provisioning_qr_deadline_us =\s*provisioning_qr_retry_deadline_us.*?if \(shown\).*?s_pending_provisioning_qr = false;') }
+    @{ id='qr-16'; source='appShell'; failed=($appShell -notmatch '(?s)if \(was_active\).*?s_pending_provisioning_qr_close = true;') }
+    @{ id='qr-17'; source='drawerHeader'; failed=($drawerHeader -notmatch 'nuwax_drawer_hide_provisioning_qr') }
+    @{ id='qr-18'; source='drawer'; failed=($drawer -notmatch '(?s)nuwax_drawer_hide_provisioning_qr\(void\).*?s_detail != CC_DETAIL_QR.*?nuwax_drawer_close\(\);') }
+    @{ id='qr-19'; source='drawer'; failed=($drawer -notmatch '#define CC_PROVISION_PENDING_TIMEOUT_MS 15000U') }
+    @{ id='qr-20'; source='drawer'; failed=($drawer -notmatch '(?s)s_provision_pending = true;.*?s_provision_pending_deadline_us =.*?CC_PROVISION_PENDING_TIMEOUT_MS') }
+    @{ id='qr-21'; source='appMain'; failed=($appMain -notmatch '!nuwax_provision_main_has_complete_pair\(\)') }
+    @{ id='qr-22'; source='drawer'; failed=($drawer -notmatch '(?s)nuwax_drawer_begin_pull\(void\).*?set_page\(CC_PAGE_STATUS, false\);.*?render_page_if_dirty\(CC_PAGE_STATUS\);') }
+    @{ id='qr-23'; source='appShell'; failed=($appShell -notmatch '(?s)event == NUWAX_APP_SHELL_EVENT_SWIPE_DOWN && y < NUWAX_GESTURE_TOP_BAND\).*?nuwax_drawer_open\(\);') }
+    @{ id='qr-24'; source='drawer'; failed=($drawer -notmatch '(?s)s_detail == CC_DETAIL_QR && provisioning_active\(\).*?s_provision_pending_target = false;.*?result\.action = NUWAX_DRAWER_ACTION_REPROVISION_WIFI;.*?result\.value = 0;') }
+    @{ id='qr-25'; source='drawer'; failed=($drawer -notmatch '(?s)nuwax_drawer_show_provisioning_qr\(void\).*?nuwax_device_qr_view_show.*?cancel_reveal_animation\(\);.*?s_detail = CC_DETAIL_QR;.*?apply_reveal_progress\(1000, false, true\);.*?lv_obj_set_pos\(qr, 0, 0\);.*?return true;') }
+    @{ id='qr-26'; source='appMain'; failed=($appMain -notmatch '(?s)nuwax_provision_main_start\("runtime_reprovision"\).*?if \(result != ESP_OK\).*?goto cleanup;.*?nuwax_app_shell_schedule_provisioning_qr\(0U\);') }
+    @{ id='qr-27'; source='appMain'; failed=($appMain -notmatch '(?s)nuwax_provision_main_start\("first_boot"\).*?if \(provision_start_err != ESP_OK\).*?else \{.*?nuwax_app_shell_schedule_provisioning_qr\(0U\);') }
+)
+$qrContractResults | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $outputDir 'qr-contracts.json')
+foreach ($contract in $qrContractResults) {
+    Write-Host "$($contract.id) $($contract.source): $(if ($contract.failed) {'FAIL'} else {'PASS'})"
+}
+if (@($qrContractResults | Where-Object { $_.failed }).Count) {
+    throw 'Provisioning QR/cancel contract failures; see build-host-checks/provisioning/qr-contracts.json.'
 }
 foreach ($defaultFile in $defaultFiles) {
     $profile = Get-Content -Raw -LiteralPath $defaultFile

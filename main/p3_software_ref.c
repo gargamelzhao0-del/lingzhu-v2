@@ -82,6 +82,9 @@ static void write_samples_locked(const int16_t *samples, size_t sample_count, si
     if (initial_write_index < s_ref.capacity_samples) {
         free_until_full = s_ref.capacity_samples - initial_write_index;
     }
+    /* Keep a rolling buffer cursor instead of performing a 64-bit modulo for
+     * every sample. This path runs for every speaker PCM frame during TTS. */
+    size_t buffer_index = (size_t)(initial_write_index % s_ref.capacity_samples);
     for (size_t i = 0; i < sample_count; i++) {
         const int16_t sample = samples[i * stride];
         const int32_t abs_sample = abs_pcm16(sample);
@@ -89,7 +92,10 @@ static void write_samples_locked(const int16_t *samples, size_t sample_count, si
             peak = abs_sample;
         }
         sum_sq += (uint64_t)((int32_t)sample * (int32_t)sample);
-        s_ref.buffer[s_ref.write_index % s_ref.capacity_samples] = sample;
+        s_ref.buffer[buffer_index] = sample;
+        if (++buffer_index == s_ref.capacity_samples) {
+            buffer_index = 0;
+        }
         s_ref.write_index++;
     }
 

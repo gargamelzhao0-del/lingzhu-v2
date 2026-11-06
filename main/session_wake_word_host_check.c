@@ -75,6 +75,12 @@ esp_err_t nuwax_ws_send_text_until_if_epoch(nuwax_ws_client_t *ws,
     return nuwax_ws_send_text_until(ws, payload, deadline_us);
 }
 
+esp_err_t nuwax_ws_send_keepalive_until_if_epoch(nuwax_ws_client_t *ws,
+    const char *payload, int64_t deadline_us, uint32_t expected_epoch)
+{
+    return nuwax_ws_send_text_until_if_epoch(ws,payload,deadline_us,expected_epoch);
+}
+
 esp_err_t nuwax_ws_send_text_with_timeout_if_epoch(
     nuwax_ws_client_t *ws,
     const char *payload,
@@ -266,6 +272,22 @@ static void assert_ack_ok(const cJSON *ack, bool expected)
 
 int main(void)
 {
+    const char *pongs[] = {
+        "{\"type\":\"pong\",\"server_ms\":1792634400123,\"now_ms\":1234}",
+        "{\"type\":\"pong\"}",
+        "{\"type\":\"pong\",\"server_ms\":1234}",
+        "{\"type\":\"pong\",\"server_ms\":\"1792634400123\"}",
+        "{\"type\":\"pong\",\"server_ms\":1792634400123.5}",
+        "{\"type\":\"pong\",\"server_ms\":null}",
+        "{\"type\":\"pong\",\"server_ms\":1e100}"
+    };
+    nuwax_session_command_t pong;
+    for (unsigned i = 0; i < sizeof(pongs) / sizeof(pongs[0]); ++i) {
+        memset(&pong, 0x5a, sizeof(pong));
+        nuwax_session_handle_text(pongs[i], (int)strlen(pongs[i]), &pong);
+        assert(pong.has_pong);
+        assert(pong.pong_server_ms == (i == 0 ? UINT64_C(1792634400123) : 0));
+    }
     assert(nuwax_session_validate_text_frame(
         "{\"type\":\"device_command\",\"command\":\"wifi_scan\",\"request_id\":\"scan-1\"}",
         (int)strlen("{\"type\":\"device_command\",\"command\":\"wifi_scan\",\"request_id\":\"scan-1\"}")));

@@ -1,0 +1,60 @@
+"use strict";
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const http = require("node:http");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { createMusicControl } = require("./control");
+
+test("music gateway: exact source, replacement, stop, acknowledgement and reboot boundaries", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nuwax-music-check-"));
+  let time = 100000;
+  const control = createMusicControl({ uploadDir: directory, now: () => time });
+  const server = http.createServer((req, res) => {
+    if (!control.handle(req, res, new URL(req.url, "http://localhost"))) { res.writeHead(404); res.end(); }
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); fs.rmSync(directory, { recursive: true, force: true }); });
+  const post = async (route, body, headers = {}) => {
+    const response = await fetch(base + route, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
+    return { status: response.status, value: await response.json() };
+  };
+  const identity = { device_id: "94a990f1b4c4", boot_id: "12345678", state: "idle", ack: "" };
+  assert.equal((await post("/api/play", identity)).status, 409);
+  assert.equal((await post("/api/device/poll", identity)).status, 200);
+  assert.equal((await post("/api/play", identity)).status, 409);
+  const original = Buffer.from([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 0, 255, 251, 144, 0]);
+  const upload = await fetch(base + "/api/music/mp3", { method: "POST", body: original });
+  assert.equal(upload.status, 200);
+  const selected = await upload.json();
+  assert.deepEqual(Buffer.from(await (await fetch(base + selected.path)).arrayBuffer()), original);
+  const first = (await post("/api/play", identity)).value;
+  const delivered = (await post("/api/device/poll", identity)).value;
+  assert.equal(delivered.request_id, first.request_id);
+  assert.equal(delivered.format, "mp3");
+  assert.equal(delivered.path, selected.path);
+  assert.equal((await post("/api/device/poll", identity)).value.request_id, first.request_id, "unacknowledged commands retry");
+  const second = (await post("/api/play", identity)).value;
+  assert.notEqual(first.request_id, second.request_id);
+  assert.equal((await post("/api/device/poll", identity)).value.request_id, second.request_id, "latest song replaces old pending song");
+  const stop = (await post("/api/stop", identity)).value;
+  assert.equal((await post("/api/device/poll", identity)).value.command, "stop_music");
+  assert.deepEqual((await post("/api/device/poll", { ...identity, ack: stop.request_id, accepted: true })).value, {});
+  await post("/api/play", identity);
+  assert.deepEqual((await post("/api/device/poll", { ...identity, boot_id: "87654321" })).value, {}, "old commands must not survive reboot");
+  await post("/api/play", identity);
+  time += 31000;
+  assert.deepEqual((await post("/api/device/poll", { ...identity, boot_id: "87654321" })).value, {}, "expired commands do not start later");
+  assert.equal((await post("/api/stop", identity, { Origin: "https://untrusted.example" })).status, 403);
+  const pcm = Buffer.alloc(640, 7); const legacy = path.join(directory, "music.pcm");
+  fs.writeFileSync(legacy, pcm);
+  const legacySource = control.selectLegacy(legacy);
+  fs.writeFileSync(legacy, Buffer.alloc(640, 9));
+  assert.deepEqual(Buffer.from(await (await fetch(base + legacySource.path)).arrayBuffer()), pcm, "already selected sources are immutable");
+  assert.equal(control.status().source.format, "pcm");
+  time += 6000;
+  assert.equal((await post("/api/play", identity)).status, 409, "offline devices cannot queue unexpected playback");
+  assert.equal((await fetch(base + "/sources/invalid.mp3")).status, 404);
+});

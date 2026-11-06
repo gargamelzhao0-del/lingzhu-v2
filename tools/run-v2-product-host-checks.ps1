@@ -1,8 +1,11 @@
-param(
+﻿param(
     [string]$Gcc = "gcc"
 )
 
 $ErrorActionPreference = "Stop"
+
+& py -3 (Join-Path $PSScriptRoot 'test-ota-identity-cache.py')
+if ($LASTEXITCODE -ne 0) { throw 'OTA boot identity cache checks failed.' }
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $outputDir = Join-Path $projectRoot "build-host-checks\v2-product"
@@ -17,8 +20,113 @@ function Invoke-Checked([scriptblock]$Command, [string]$Label) {
 }
 
 Invoke-Checked {
+    & py -3 (Join-Path $PSScriptRoot "run-audit-tooling-checks.py")
+} "W01 log gate negatives and provisioning lifecycle contracts"
+
+Invoke-Checked {
+    & py -3 (Join-Path $PSScriptRoot "audit-audio-teardown.py")
+} "W05 audio ownership teardown, recovery and negative mutants"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-network-join-handoff.py")
+} "network join, bounded STA restart and cancellation"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-network-recovery-boundaries.py")
+} "provisioning reset and restart power retention faults"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-provision-finish.py")
+} "provisioning handoff, NimBLE stop and success response delivery"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-cloud-resume.py")
+} "cloud resume, local wake epochs and real audio claims"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-rejected-playback-owner.py")
+    if ($LASTEXITCODE -ne 0) { throw "Rejected playback owner host check failed" }
+    & py -3 (Join-Path $projectRoot "tools/test-mic-init-owner.py")
+    if ($LASTEXITCODE -ne 0) { throw "MIC init admission host check failed" }
+    & py -3 (Join-Path $projectRoot "tools/test-qmi-poll.py")
+    if ($LASTEXITCODE -ne 0) { throw "QMI poll host check failed" }
+    & py -3 (Join-Path $projectRoot "tools/test-shake-startup.py")
+    if ($LASTEXITCODE -ne 0) { throw "Shake startup lifecycle regression failed." }
+    & py -3 (Join-Path $projectRoot "tools/test-shake-gap.py")
+} "shake qualification gaps, fault recovery and negative mutants"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-interaction-sensitivity.py")
+} "650 ms head touch, lighter shake, exact cooldowns and legacy config compatibility"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-playback-startup.py")
+} "bounded playback startup, metadata retirement and deadline races"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-json-budget.py")
+} "bounded JSON recursion, malformed recovery and unsafe configuration negative"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-json-resource-budget.py")
+} "JSON total resource budget and all inbound parser coverage"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-notification-startup.py")
+} "notification startup, physical-stop ordering and origin recovery"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-runtime-privacy.py")
+} "sensitive logging exclusion and payload preservation"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-wake-evidence.py")
+} "wake acoustic evidence, environmental false-trigger boundary and negative mutants"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-wake-response.py")
+} "wake noise tracking, diagnostic shadow and immediate greeting feedback ownership"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-jitter-stability.py")
+} "short rebuffer stability classification and latency boundaries"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-link-convergence.py")
+} "Wi-Fi UI convergence, absent SD and diagnostic NVS boundaries"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-interaction-boundaries.py")
+} "interaction publication and sensor fault boundaries"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-drawer-contact.py")
+} "drawer contact anchor and shared movement threshold"
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-drawer-input.py")
+} "drawer gesture release, captured slider, recent flick and missing boundary recovery"
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-drawer-mailbox.py")
+} "drawer FIFO boundaries and coalesced motion ordering"
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-volume-preview.py")
+} "nonblocking touch volume preview and playback-owner synchronization"
+
+Invoke-Checked {
     & py -3 (Join-Path $projectRoot "tools/verify-emotion-pack.py")
 } "production emotion pack verification"
+
+Invoke-Checked {
+    & py -3 (Join-Path $projectRoot "tools/test-diagnostic-idle-gate.py") --gcc $Gcc
+} "diagnostic Flash isolation during playback and terminal drain"
+
+Invoke-Checked {
+    & py -3 (Join-Path $PSScriptRoot "test-board-power-boundaries.py") --gcc $Gcc
+} "board power, battery fault injection and storage shutdown boundaries"
+
+Invoke-Checked {
+    & py -3 (Join-Path $PSScriptRoot "test-startup-admission-boundaries.py") --gcc $Gcc
+} "startup STA preparation, OTA version admission and I2C contention accounting"
 
 $emotionDeltaExe = Join-Path $outputDir "emotion_delta_format.exe"
 Invoke-Checked {
@@ -259,6 +367,8 @@ $latencyContract = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/c
 $bargeController = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/conversation/barge_in_controller.c")
 $meeting = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/audio_modes/meeting/meeting_mode.c")
 $monitoring = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/audio_modes/monitoring/monitoring_mode.c")
+$offlineAudio = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/offline_audio_spool.c")
+$offlineAudioHeader = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/offline_audio_spool.h")
 $session = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/session_protocol.c")
 $cloudProtocol = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/cloud_protocol_compat.c")
 $mcpServer = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/mcp_server.c")
@@ -295,6 +405,7 @@ $headTouch = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/convers
 $boardInputs = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/board/board_gpio_inputs.c")
 $shakeDetector = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/board/shake_detector.c")
 $shakeDetectorHeader = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/board/shake_detector.h")
+$shakeMotionPolicy = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/board/shake_motion_policy.h")
 $deviceState = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/nuwax_ui_v28/nuwax_device_state.h")
 $drawer = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/nuwax_ui_v28/nuwax_drawer.c")
 $drawerHeader = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "main/nuwax_ui_v28/nuwax_drawer.h")
@@ -321,9 +432,9 @@ foreach ($emotionName in $canonicalEmotionNames) {
 
 $setEmotionCallback = [regex]::Match(
     $main,
-    '(?s)static bool session_dispatch_set_emotion\(.*?\n\}').Value
+    '(?s)static bool session_dispatch_set_emotion_common\(.*?\n\}').Value
 if ($setEmotionCallback.Length -eq 0 -or
-    $setEmotionCallback -notmatch
+    $main -notmatch
         'apply_semantic_emotion_name\(emotion,\s*"device_command"\)' -or
     $setEmotionCallback -match 'sleep_transaction_blocks_new_audio') {
     throw "set_emotion must remain a UI-only command and must not use the sleep audio gate."
@@ -375,11 +486,12 @@ if ($main -notmatch '#define NUWAX_WS_APPLICATION_ACTIVITY_TIMEOUT_MS\s+45000' -
     $main -notmatch '(?s)static bool meeting_or_monitoring_mode_blocks_sleep\(void\)\s*\{[^}]*nuwax_meeting_mode_has_audio_claim[^}]*nuwax_monitoring_mode_has_audio_claim[^}]*\}' -or
     $main -notmatch '(?s)static bool exclusive_audio_mode_blocks_normal_audio\(void\)\s*\{[^}]*nuwax_meeting_mode_has_pending[^}]*nuwax_monitoring_mode_has_pending[^}]*\}' -or
     $main -notmatch '(?s)static void service_pending_sleep_request\(void\)\s*\{.{0,1200}?meeting_or_monitoring_mode_blocks_sleep\(\).{0,800}?clear_sleep_request\(\).{0,400}?conversation_capture_busy_for_sleep\(\)' -or
-    $main -notmatch '(?s)static void request_sleeping_conversation_state\(const char \*reason\)\s*\{.{0,600}?meeting_or_monitoring_mode_blocks_sleep\(\).{0,400}?clear_sleep_request\(\).{0,400}?return;' -or
+    $main -notmatch '(?s)static void request_sleeping_conversation_state\(const char \*reason\)\s*\{.{0,3000}?meeting_or_monitoring_mode_blocks_sleep\(\).{0,1800}?clear_sleep_request\(\).{0,1800}?return;' -or
     $main -notmatch '(?s)static bool commit_sleeping_conversation_state\(const char \*reason\)\s*\{.{0,600}?meeting_or_monitoring_mode_blocks_sleep\(\).{0,400}?return false;.{0,5000}?set_state\(NUWAX_APP_STATE_SLEEPING\).{0,800}?return true;' -or
-    $main -notmatch '(?s)service_sleep_transaction\(void\).*?if \(!commit_sleeping_conversation_state\("remote_sleep_transaction"\)\) \{.*?return;.*?nuwax_sleep_transaction_commit_sleeping' -or
+    $main -notmatch '(?s)service_sleep_transaction\(void\).*?commit_sleeping_conversation_state\(.*?\).*?nuwax_sleep_transaction_commit_sleeping' -or
     $main -notmatch '(?s)static esp_err_t run_audio_source\(.*?nuwax_monitoring_mode_state.*?nuwax_meeting_mode_state.*?nuwax_monitoring_mode_has_pending.*?nuwax_meeting_mode_has_pending' -or
-    $main -notmatch '(?s)conversation_was_in_flight.*?if \(!exclusive_mode_was_active\).*?preserve_awake_session_for_ws_reconnect\(.*?ws_disconnect_inflight_aborted.*?nuwax_speaker_playback_reset_runtime\(\)' -or
+    $main -notmatch '(?s)conversation_was_in_flight.*?if \(!exclusive_mode_was_active &&\s*!cloud_connect_cancelled_for_reprovision\(NULL\)\).*?preserve_awake_session_for_ws_reconnect\(.*?ws_disconnect_inflight_aborted.*?nuwax_speaker_playback_reset_runtime\(\)' -or
+    $main -notmatch '(?s)static bool cloud_connect_cancelled_for_reprovision\(void \*ctx\)\s*\{[^}]*return nuwax_provision_main_binding_required\(\) \|\|\s*atomic_load_explicit\(&s_reprovision_quiesce_requested,\s*memory_order_acquire\);' -or
     $main -notmatch 'invalid inbound WebSocket text dropped.*transport retained and application liveness not refreshed' -or
     $main -match '(?s)if \(!nuwax_session_validate_text_frame\(payload, len\)\)\s*\{(?:(?!\n\s*return;).)*nuwax_ws_request_close_if_epoch' -or
     $speakerPlayback -notmatch 'esp_err_t nuwax_speaker_playback_reset_runtime\(void\)' -or
@@ -414,7 +526,7 @@ if ($main -match 'reconnecting even if transport pong remains healthy' -or
     $main -notmatch '(?s)cloud rejected application authentication.*?NUWAX_WS_CLOSE_CAUSE_AUTH_REJECTED' -or
     $main -notmatch 'NUWAX_POST_END_RESPONSE_TIMEOUT_MS\s+15000U' -or
     $main -notmatch '(?s)post-END cloud response timed out.*?NUWAX_WS_CLOSE_CAUSE_BUSINESS_STALLED' -or
-    $main -notmatch '(?s)critical session queue full.*?nuwax_ws_request_close_if_epoch' -or
+    $main -notmatch '(?s)"%s session queue full event=%d command=%s; closing bound epoch so transaction can be retried".*?is_notification_control \? "notification" : "critical".*?nuwax_ws_request_close_if_epoch' -or
     $main -notmatch '(?s)cancel_turn send failed.*?nuwax_ws_request_close_if_epoch' -or
     $main -notmatch '(?s)forcing WebSocket reconnect for OTA state refresh.*?NUWAX_WS_CLOSE_CAUSE_OTA_STATE_REFRESH' -or
     $main -notmatch '(?s)wait_for_cloud_owner_to_park_for_reprovision.*?nuwax_ws_force_close_if_epoch' -or
@@ -450,7 +562,7 @@ foreach ($step in @(
     'nuwax_speaker_playback_deinit_output()',
     'nuwax_provision_main_run_runtime_rebind(',
     'restore_audio_after_runtime_provisioning()',
-    'nuwax_provision_main_rollback_wifi_credentials()',
+    'rollback_wifi_credentials_guarded()',
     'clear_reprovision_reservation(true)'
 )) {
     if (-not $runtimeReprovisionOrderValid) {
@@ -489,7 +601,8 @@ if ($main -match 'return "audio capture active"' -or
     $main -notmatch '(?s)while \(nuwax_ws_is_connected\(&ws\)\).*?service_conversation_live_aec_pool_recovery\(\).*?run_audio_source\(&ws\)' -or
     $main -notmatch '(?s)start_sleep_wake_word_detector.*?start_wake_model_serialized\(&request\)' -or
     $main -notmatch '(?s)while \(true\).*?s_reprovision_quiesce_requested.*?s_cloud_owner_parked.*?cloud owner resumed after BLE provisioning' -or
-    $wifiManager -notmatch '(?s)nuwax_wifi_set_provisioning_active\(bool active\).*?reconnect_armed.*?s_wifi_connect_requested.*?esp_wifi_connect\(\)' -or
+    $wifiManager -notmatch '(?s)nuwax_wifi_set_provisioning_active\(bool active\).*?reconnect_armed.*?s_wifi_connect_requested.*?wifi_driver_connect_once\(\)' -or
+    $wifiManager -notmatch '(?s)static esp_err_t wifi_driver_connect_once\(void\).*?nuwax_wifi_provisioning_active\(\).*?atomic_exchange_explicit\(&s_wifi_driver_connecting, true, memory_order_acq_rel\).*?esp_wifi_connect\(\)' -or
     $main -notmatch 'Provisioning failed; previous Wi-Fi unavailable' -or
     $provision -notmatch 'NETWORK_PROV_EVENT_HANDLER_NONE' -or
     $provision -match 'NETWORK_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BLE') {
@@ -499,7 +612,7 @@ if ($main -match 'return "audio capture active"' -or
 $wakeInitIndex = $main.IndexOf(
     "esp_err_t wake_init_err = init_wake_model_serialized()")
 $wifiConnectIndex = $main.IndexOf(
-    "boot_wifi_err = nuwax_wifi_connect()")
+    "const bool boot_wifi_connected = nuwax_wifi_is_connected()")
 $wsDisconnectServiceIndex = $main.IndexOf(
     'service_offline_wake_word_detector("ws_disconnect")')
 $wakeInit = [regex]::Match(
@@ -528,7 +641,7 @@ if ($wakeInitIndex -lt 0 -or
     $main -notmatch '(?s)deinit_wake_model_serialized\(void\).*?s_wake_model_operation_mutex.*?nuwax_wake_word_detector_deinit\(\).*?nuwax_wake_word_detector_is_running\(\).*?xSemaphoreGive\(s_wake_model_operation_mutex\)' -or
     $wakeRestoreOwner -notmatch '(?s)s_conversation_owner_task.*?xTaskGetCurrentTaskHandle\(\).*?init_wake_model_serialized\(\).*?s_wake_model_restore_result.*?s_wake_model_restore_completed.*?CONFIG_ESP_MAIN_TASK_STACK_SIZE' -or
     $wakeSupervisor -match 'init_wake_model_serialized\(' -or
-    $wakeSupervisor -notmatch '(?s)s_wake_detector_desired.*?conversation_capture_busy_for_sleep\(\).*?exclusive_audio_mode_blocks_normal_audio\(\).*?start_sleep_wake_word_detector\("wake_supervisor"\)' -or
+    $wakeSupervisor -notmatch '(?s)s_wake_detector_desired.*?conversation_capture_busy_for_sleep\(\).*?meeting_or_monitoring_mode_blocks_sleep\(\).*?start_sleep_wake_word_detector\("wake_supervisor"\)' -or
     $wakeSleepStart -notmatch '(?s)err == ESP_ERR_INVALID_STATE.*?queue_wake_model_restore_nonblocking' -or
     $main -notmatch '(?s)static void ensure_sleep_wake_word_detector\(void\).*?nuwax_awake_session_state_is_active\(&s_awake_session\).*?s_turn_guard\.active' -or
     $main -notmatch '(?s)while \(atomic_load_explicit\(&s_reprovision_quiesce_requested,.*?service_wake_model_restore_owner\(\).*?vTaskDelay' -or
@@ -537,9 +650,10 @@ if ($wakeInitIndex -lt 0 -or
     $main -notmatch '(?s)wake_word_detected_callback\(.*?active_ws_epoch_snapshot\(\).*?event\.arm\.ws_epoch.*?xQueueSend\(s_wake_word_events' -or
     $main -notmatch '(?s)xQueueReceive\(s_wake_word_events.*?wake_event\.arm\.ws_epoch.*?active_epoch.*?wake_event\.detected_ms.*?NUWAX_WAKE_EVENT_MAX_AGE_MS.*?stale_wake_event' -or
     $main -notmatch '(?s)early local wake ready=.*?network_reserve_ok=.*?boot_network_memory_reserve' -or
-    $main -notmatch '(?s)boot_wifi_connected.*?NUWAX_LIVE_AEC_PREP_MIN_INTERNAL_FREE_BYTES.*?boot_aec_memory_reserve.*?conversation_live_aec_pool_init\(\).*?boot_network_ready' -or
-    $main -notmatch '(?s)boot Wi-Fi connection unavailable.*?continuing offline with background recovery.*?set_wifi_transport_connecting_state\("boot_wifi_unavailable"\)') {
-    throw "Wake lifecycle regression: local wake must start before blocking Wi-Fi, fail closed on low heap, ignore offline hits, and survive WebSocket reconnects."
+    $main -notmatch '(?s)NUWAX_LIVE_AEC_PREP_MIN_INTERNAL_FREE_BYTES.*?boot_aec_memory_reserve.*?conversation_live_aec_pool_init\(\).*?boot_preflight_complete.*?boot_preallocate.*?boot_local_wake.*?boot_wifi_connected.*?boot_network_ready' -or
+    $main -notmatch '(?s)boot Wi-Fi deferred to worker after local preflight.*?set_wifi_transport_connecting_state\("boot_wifi_pending"\).*?queue_wifi_status_report\("recovery_pending"' -or
+    $main -notmatch 'begin_wifi_connect_operation\("background_recovery", 0\)') {
+    throw "Wake lifecycle regression: local wake must start before background Wi-Fi handoff, fail closed on low heap, ignore offline hits, and survive WebSocket reconnects."
 }
 if ($main -notmatch 'conversation_live_aec_pool_suspend\("boot_preflight_complete"\)' -or
     $main -notmatch 'conversation_live_aec_pool_suspend\("sleep"\)' -or
@@ -573,6 +687,8 @@ $beforeWifiOffset = $appMain.IndexOf('nuwax_diagnostics_log_heap_label(TAG, "bef
 $afterWifiConnectOffset = $appMain.IndexOf('nuwax_diagnostics_log_heap_label(TAG, "after_wifi_connect")')
 $helloOffset = $appMain.IndexOf('nuwax_session_send_hello(')
 $aecPoolOffset = $appMain.IndexOf('conversation_live_aec_pool_init()')
+$modelInitOffset = $appMain.IndexOf('init_wake_model_serialized()')
+$firstWakeOffset = $appMain.IndexOf('request_sleep_wake_word_detector("boot_local_wake")')
 $displayOffset = $appMain.IndexOf('nuwax_display_init()')
 $touchOffset = $appMain.IndexOf('nuwax_touch_init()')
 $lvglOffset = $appMain.IndexOf('nuwax_lvgl_port_init()')
@@ -587,7 +703,8 @@ if ($beforeWifiOffset -lt 0 -or $afterWifiConnectOffset -lt 0 -or
     $helloOffset -lt 0 -or $aecPoolOffset -lt 0 -or
     $displayOffset -lt 0 -or $touchOffset -lt 0 -or $lvglOffset -lt 0 -or
     $speakerAnchorOffset -lt 0 -or $micHealthOffset -lt 0 -or
-    $aecPoolOffset -lt $afterWifiConnectOffset -or
+    $modelInitOffset -lt $beforeWifiOffset -or $aecPoolOffset -lt $modelInitOffset -or
+    $firstWakeOffset -lt $speakerAnchorOffset -or
     $aecPoolOffset -gt $speakerAnchorOffset -or
     $aecPoolOffset -gt $helloOffset -or $micHealthOffset -lt $speakerAnchorOffset -or
     $main -notmatch 'OTA_BOOT_HEALTH_LIVE_AEC\s*=\s*1U\s*<<\s*9' -or
@@ -596,10 +713,10 @@ if ($beforeWifiOffset -lt 0 -or $afterWifiConnectOffset -lt 0 -or
     $appMain -match 'aec_ota_pending_verify' -or
     $bootBeforeHello -match 'nuwax_speaker_playback_deinit_output\(\)' -or
     $appMain -notmatch 'nuwax_speaker_playback_release_idle_output\("ws_disconnect"\)') {
-    throw "Boot lifecycle regression: reusable AEC must be reserved after Wi-Fi but before speaker/TLS, required by OTA boot health, and codec handles must stay anchored across validation and reconnects."
+    throw "Boot lifecycle regression: AEC preflight must follow model construction and precede speaker/wake/TLS; OTA health and anchored codec handles must remain intact."
 }
 $uiStartupStart = $main.IndexOf(
-    'static esp_err_t initialize_v28_ui_with_retry(void)')
+    'static esp_err_t initialize_v28_ui_with_retry(bool provisioning_face)')
 $uiStartupEnd = if ($uiStartupStart -ge 0) {
     $main.IndexOf('static nuwax_app_state_t head_touch_get_conversation_state',
                   $uiStartupStart)
@@ -639,11 +756,11 @@ if ($emotionPack -notmatch '#define PACK_PARTITION_LABEL "emotion_0"' -or
     $emotionPack -notmatch '#define PACK_REQUIRED_FLASH_SIZE 0x1000000U' -or
     $emotionPack -notmatch 'PACK_RELEASE_PAYLOAD_CRC32' -or
     $emotionPack -notmatch 'PACK_RELEASE_CATALOG_CRC32' -or
-    $emotionPack -notmatch '(?s)validate_payload_crc\(void\).*?crc != s_header.payload_crc32' -or
+    $emotionPack -notmatch '(?s)validate_pack_integrity\(void\).*?crc != s_header.payload_crc32' -or
     $projectCmake -notmatch 'NUWAX_EMOTION_COMPATIBLE_SHA256' -or
     $projectCmake -notmatch 'NUWAX_EMOTION_RELEASE_SHA_INDEX' -or
     $cmake -notmatch 'NUWAX_EMOTION_COMPATIBLE_SHA256_CSV' -or
-    $emotionPack -notmatch '(?s)validate_pack_sha256\(void\).*?psa_crypto_init\(\).*?compatible_sha256.*?ESP_ERR_INVALID_CRC' -or
+    $emotionPack -notmatch '(?s)validate_pack_integrity\(void\).*?psa_crypto_init\(\).*?compatible_sha256.*?ESP_ERR_INVALID_CRC' -or
     $emotionPack -notmatch 'release_match' -or
     $emotionPack -notmatch 'integrity=sha256\+payload\+segment_crc abi=v%u' -or
     $emotionPack -notmatch 'PACK_VERSION_V1 NUWAX_EMOTION_ASSET_PACK_ABI_V1' -or
@@ -665,12 +782,15 @@ if ($faceAdapter -notmatch 'FACE_BACKEND_ANIMATED' -or
     $faceAdapter -match 'legacy face' -or
     $faceAdapter -notmatch '(?s)activate_failsafe.*?nuwax_emotion_animation_player_deinit\(\).*?create_failsafe_face\(\)' -or
     $faceAdapter -notmatch 'lv_obj_move_to_index\(s_failsafe_root, 0\)' -or
-    $faceAdapter -notmatch '(?s)nuwax_face_create.*?nuwax_emotion_animation_player_init\(parent\).*?activate_failsafe\(err, "animation_startup"\).*?return ESP_OK;' -or
-    $faceAdapter -notmatch '(?s)nuwax_face_tick.*?nuwax_emotion_animation_player_tick\(\).*?activate_failsafe\(err, "frame_decode"\)' -or
+    $faceAdapter -notmatch '(?s)nuwax_face_create_with_initial_asset.*?nuwax_emotion_animation_player_init_with_initial_asset\(.*?initial_asset.*?\).*?activate_failsafe\(err, "animation_startup"\).*?return ESP_OK;' -or
+    $faceAdapter -notmatch '#define FACE_FRAME_RECOVERY_MAX_ATTEMPTS 3U' -or
+    $faceAdapter -notmatch '#define FACE_FRAME_RECOVERY_BACKOFF_US 5000000LL' -or
+    $faceAdapter -notmatch '(?s)nuwax_face_tick.*?nuwax_emotion_animation_player_tick\(\).*?nuwax_emotion_animation_player_recover\(\).*?s_frame_recovery_failures >= FACE_FRAME_RECOVERY_MAX_ATTEMPTS.*?s_frame_recovery_blocked_until_us' -or
+    $faceAdapter -match 'activate_failsafe\(err, "frame_decode"\)' -or
     $faceAdapter -notmatch 'state->wifi == NUWAX_WIFI_CONNECTING' -or
     $faceAdapter -match 'state->wifi != NUWAX_WIFI_CONNECTED' -or
     $faceAdapter -match 'cloud_unavailable' -or
-    $stateBridge -notmatch '(?s)case NUWAX_APP_STATE_WS_CONNECTING:.*?return NUWAX_EMOTION_SLEEPING_FACE;' -or
+    $stateBridge -notmatch '(?s)case NUWAX_APP_STATE_WS_CONNECTING:.*?return NUWAX_EMOTION_DISCONNECTED_FACE;' -or
     $stateBridge -notmatch '(?s)case NUWAX_APP_STATE_THINKING:\s*return NUWAX_EMOTION_THINKING;' -or
     $uiApp -notmatch '#define EMOTION_PLAYER_TICK_MS 5' -or
     $uiApp -notmatch 'nuwax_face_tick\(\)' -or
@@ -739,10 +859,11 @@ if ($deviceState -notmatch '(?s)NUWAX_EMOTION_CHARGING,\s*/\* Appended values pr
 if ($main -notmatch '(?s)if \(provisioning_boot_profile && ui_ready_snapshot\(\)\) \{.*?attempt <= 3U.*?nuwax_lvgl_port_set_runtime_provisioning_memory\(false\).*?UI continues in reduced-performance mode') {
     throw "First-boot provisioning must make a bounded attempt to restore the LVGL draw buffer to internal RAM."
 }
-if ($lvglPort -notmatch '(?s)if \(prefer_internal\).*?after_first_free >= \(DRAW_BUF_SIZE \+ LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE\).*?buf2 = heap_caps_aligned_alloc' -or
+if ($lvglPort -notmatch '(?s)if \(prefer_internal\).*?buf2 = display_acquire_draw_buffer\(DRAW_BUF_SIZE\).*?if \(!buf2\).*?after_first_free >= DRAW_BUF_SIZE \+ LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE.*?buf2 = heap_caps_aligned_alloc' -or
     $lvglPort -notmatch '(?s)if \(!buf1\) \{.*?MALLOC_CAP_SPIRAM.*?if \(DRAW_BUF_DOUBLE_BUFFER_ENABLE\).*?buf2 = heap_caps_aligned_alloc' -or
     $lvglPort -notmatch '(?s)if \(!buf2\) \{.*?Using single LVGL draw buffer' -or
-    $lvglPort -notmatch '(?s)unsigned target_buffer_count = want_double \? 2U : 1U;.*?target_buffer_count = 1U;.*?uint8_t \*next2 = NULL;.*?if \(next1 && target_buffer_count == 2U\).*?if \(!next2\) \{.*?target_buffer_count = 1U;.*?continuing single-buffered.*?if \(!next1\)') {
+    $lvglPort -notmatch '(?s)unsigned target_buffer_count = want_double \? 2U : 1U;.*?uint8_t \*next2 = NULL;.*?if \(next1 && target_buffer_count == 2U && !target_internal\).*?if \(!next2\) \{.*?target_buffer_count = 1U;.*?continuing single-buffered.*?if \(!next1\)' -or
+    $lvglPort -notmatch '(?s)display_acquire_draw_buffer\(DRAW_BUF_SIZE\).*?s_driver_draw_buffer = loan;.*?s_draw_buf2 = loan;.*?target_buffer_count = s_draw_buf2 \? 2U : 1U;') {
     throw "LVGL draw-buffer allocation must prefer bounded double buffering and degrade to a valid single buffer under memory pressure."
 }
 if ($defaults -notmatch '(?m)^CONFIG_NUWAX_UI_DRAW_BUFFER_LINES=20\s*$' -or
@@ -753,11 +874,13 @@ if ($defaults -notmatch '(?m)^CONFIG_NUWAX_UI_DRAW_BUFFER_LINES=20\s*$' -or
     throw "LVGL performance contract requires two bounded 20-line internal buffers to halve object-tree strip traversal while retaining runtime single-buffer degradation."
 }
 if ($lvglPort -notmatch '(?s)static bool lvgl_async_flush_deinit\(void\).*?s_flush_task_exited.*?eSuspended.*?if \(!stopped\).*?return false;.*?vTaskDelete\(s_flush_task\)' -or
-    $lvglPort -notmatch '(?s)static bool lvgl_port_init_cleanup\(bool tick_started\).*?if \(!lvgl_async_flush_deinit\(\)\).*?preserving display and draw-buffer ownership.*?return false;.*?lv_display_delete\(s_display\).*?heap_caps_free\(s_draw_buf1\).*?return true;' -or
+    $lvglPort -notmatch '(?s)static bool lvgl_port_init_cleanup\(bool tick_started\).*?if \(!lvgl_async_flush_deinit\(\)\).*?preserving display and draw-buffer ownership.*?return false;.*?lv_display_delete\(s_display\).*?release_draw_buffer_pair\(s_draw_buf1, s_draw_buf2, s_draw_buffers_split\).*?return true;' -or
+    $lvglPort -notmatch '(?s)static void release_draw_buffer_pair\(void \*first, void \*second, bool split\)\s*\{\s*release_draw_buffer\(first\);\s*if \(!split\) release_draw_buffer\(second\);\s*\}' -or
+    $lvglPort -notmatch '(?s)static void release_draw_buffer\(.*?display_release_draw_buffer\(buffer\).*?heap_caps_free\(buffer\)' -or
     $lvglPort -notmatch '(?s)if \(!lvgl_port_init_cleanup\(tick_started\)\).*?restarting before dependent resources are released.*?esp_restart\(\);') {
     throw "LVGL rollback must never release display or draw-buffer resources before the asynchronous flush owner has quiesced."
 }
-if ($lvglPort -notmatch '#define LVGL_TASK_STACK_SIZE \(20 \* 1024\)' -or
+if ($lvglPort -notmatch '#define LVGL_TASK_STACK_SIZE \(12 \* 1024\)' -or
     $lvglPort -notmatch '#define LVGL_TASK_STACK_GUARD_BYTES 512U' -or
     $lvglPort -notmatch '#define LVGL_TASK_STACK_WARN_BYTES \(4 \* 1024U\)' -or
     $lvglPort -notmatch '(?s)task_stack_allocation = heap_caps_aligned_alloc\(\s*16, LVGL_TASK_STACK_GUARD_BYTES \+ LVGL_TASK_STACK_SIZE,\s*MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT\);' -or
@@ -770,11 +893,16 @@ if ($lvglPort -notmatch '#define LVGL_TASK_STACK_SIZE \(20 \* 1024\)' -or
 }
 if ($lvglPort -notmatch '#define DOUBLE_BUFFER_RESTORE_STABLE_MS 2000' -or
     $lvglPort -notmatch '#define DOUBLE_BUFFER_RESTORE_HEADROOM 8000U' -or
-    $lvglPort -notmatch '(?s)static void lvgl_maybe_rebalance_internal_buffers\(int64_t now_us\).*?lv_display_set_buffers\(s_display, s_draw_buf1, NULL.*?second internal draw buffer released.*?s_double_buffer_restore_candidate_us.*?heap_caps_aligned_alloc\(\s*16, DRAW_BUF_SIZE, MALLOC_CAP_INTERNAL.*?lv_display_set_buffers\(s_display, restored, NULL.*?internal draw buffer restored' -or
-    $lvglPort -notmatch '(?s)lvgl_port_init_cleanup\(bool tick_started\).*?s_double_buffer_restore_candidate_us = 0;.*?s_internal_restore_last_log_us = 0;.*?s_runtime_internal_preferred = !s_provisioning_memory_profile;' -or
+    $lvglPort -notmatch '(?s)static void lvgl_maybe_rebalance_internal_buffers\(int64_t now_us\).*?lv_display_set_buffers\(s_display, s_draw_buf1, s_draw_buf2,.*?release_draw_buffer\(released\).*?second internal draw buffer released.*?s_double_buffer_restore_candidate_us.*?heap_caps_aligned_alloc\(\s*16, DRAW_BUF_SIZE, MALLOC_CAP_INTERNAL.*?lv_display_set_buffers\(s_display, restored, NULL.*?internal draw buffer restored' -or
+    $lvglPort -notmatch '(?s)lvgl_port_init_cleanup\(bool tick_started\).*?s_double_buffer_restore_candidate_us = 0;.*?s_internal_restore_incident_active = false;.*?s_runtime_internal_preferred = !s_provisioning_memory_profile;' -or
     $lvglPort -notmatch '(?s)nuwax_lvgl_port_set_runtime_provisioning_memory\(bool enabled\).*?s_runtime_internal_preferred = target_internal;') {
     throw "LVGL runtime buffer regression: memory pressure must degrade safely and later restore internal double buffering without inheriting rollback state."
 }
+Invoke-Checked {
+    & py -3 (Join-Path $PSScriptRoot "test-display-buffer-lease.py")
+    if ($LASTEXITCODE -ne 0) { throw "Display buffer lease regression failed." }
+    & py -3 (Join-Path $PSScriptRoot "test-lvgl-memory-pressure.py")
+} "LVGL compact buffer leases, DMA fences and memory-pressure restoration"
 if ($uiPerfDefaults -notmatch '(?m)^CONFIG_NUWAX_UI_PERF_LOG_ENABLE=y\s*$' -or
     $uiPerfDefaults -notmatch '(?m)^CONFIG_NUWAX_UI_PERF_LOG_INTERVAL_MS=2000\s*$' -or
     $uiPerfDefaults -notmatch '(?m)^CONFIG_NUWAX_UI_LONG_HANDLER_WARN_US=33000\s*$' -or
@@ -787,10 +915,10 @@ if ($main -notmatch 'static atomic_bool s_ui_ready = ATOMIC_VAR_INIT\(false\);' 
     $main -notmatch '#define NUWAX_UI_STARTUP_MAX_ATTEMPTS 3U' -or
     $main -match 'ui_recovery_task' -or
     $appMain -notmatch '(?s)if \(display_err != ESP_OK\) \{.*?ui_ready_store\(false\);.*?\} else \{\s*esp_err_t lvgl_err = nuwax_lvgl_port_init\(\);' -or
-    $appMain -notmatch '(?s)if \(lvgl_err == ESP_OK\) \{.*?esp_err_t ui_err = initialize_v28_ui_with_retry\(\);' -or
+    $appMain -notmatch '(?s)if \(lvgl_err == ESP_OK\) \{.*?esp_err_t ui_err = initialize_v28_ui_with_retry\(\s*provisioning_boot_profile\s*\);' -or
     $uiStartupBlock.Length -eq 0 -or
     $uiStartupBlock -notmatch 'ui_ready_store\(false\);' -or
-    $uiStartupBlock -notmatch '(?s)attempt <= NUWAX_UI_STARTUP_MAX_ATTEMPTS.*?nuwax_lvgl_port_lock\(NUWAX_UI_STARTUP_LOCK_TIMEOUT_MS\).*?esp_err_t ui_err = nuwax_app_create\(lv_screen_active\(\)\);.*?esp_err_t shell_err = nuwax_app_shell_init\(\);' -or
+    $uiStartupBlock -notmatch '(?s)attempt <= NUWAX_UI_STARTUP_MAX_ATTEMPTS.*?nuwax_lvgl_port_lock\(NUWAX_UI_STARTUP_LOCK_TIMEOUT_MS\).*?esp_err_t ui_err = nuwax_app_create_with_provisioning_face\(\s*lv_screen_active\(\),\s*provisioning_face\);.*?esp_err_t shell_err = nuwax_app_shell_init\(\);' -or
     $uiStartupBlock -notmatch '(?s)if \(shell_err == ESP_OK\) \{.*?nuwax_lvgl_port_unlock\(\);\s*ui_ready_store\(true\);.*?return ESP_OK;' -or
     $uiStartupBlock -notmatch '(?s)V28 UI shell startup failed.*?nuwax_app_deinit\(\);' -or
     $uiStartupBlock -notmatch '(?s)attempt < NUWAX_UI_STARTUP_MAX_ATTEMPTS.*?vTaskDelay\(pdMS_TO_TICKS\(retry_delay_ms\)\);' -or
@@ -799,7 +927,7 @@ if ($main -notmatch 'static atomic_bool s_ui_ready = ATOMIC_VAR_INIT\(false\);' 
     $uiApp -notmatch '(?s)nuwax_app_create\(lv_obj_t \*screen\).*?!nuwax_lvgl_port_lock_is_held_by_current_task\(\).*?return ESP_ERR_INVALID_STATE;' -or
     $uiApp -notmatch '(?s)nuwax_app_deinit\(void\).*?!nuwax_lvgl_port_lock_is_held_by_current_task\(\).*?return ESP_ERR_INVALID_STATE;' -or
     $lvglPort -notmatch '(?s)bool nuwax_lvgl_port_lock_is_held_by_current_task\(void\).*?xSemaphoreGetMutexHolder\(s_lvgl_mutex\) == xTaskGetCurrentTaskHandle\(\)' -or
-    $uiApp -notmatch '(?s)esp_err_t err = nuwax_face_create\(screen\);\s*if \(err != ESP_OK\) goto fail;.*?err = nuwax_drawer_create\(screen\);\s*if \(err != ESP_OK\) goto fail;.*?err = nuwax_gesture_init\(screen\);\s*if \(err != ESP_OK\) goto fail;' -or
+    $uiApp -notmatch '(?s)esp_err_t err = provisioning_face\s*\?\s*nuwax_face_create_with_initial_asset\(\s*screen,\s*NUWAX_EMOTION_ASSET_PROVISIONING\)\s*:\s*nuwax_face_create\(screen\);\s*if \(err != ESP_OK\) goto fail;.*?err = nuwax_drawer_create\(screen\);\s*if \(err != ESP_OK\) goto fail;.*?err = nuwax_gesture_init\(screen\);\s*if \(err != ESP_OK\) goto fail;' -or
     $uiApp -notmatch '(?s)fail:\s*ESP_LOGE\(TAG, "V28 UI creation failed: %s", esp_err_to_name\(err\)\);\s*esp_err_t cleanup_err = nuwax_app_deinit\(\);.*?return err;' -or
     $drawer -notmatch '(?s)if \(!control_center_memory_preflight\(\)\) \{\s*return ESP_ERR_NO_MEM;\s*\}.*?s_pending_timer = lv_timer_create\(pending_timer_cb, 250, NULL\);\s*if \(!s_pending_timer\) \{.*?nuwax_drawer_deinit\(\);.*?return ESP_ERR_NO_MEM;\s*\}') {
     throw "UI startup contract regressed: physical display readiness and fallible LVGL timers must gate s_ui_ready."
@@ -833,13 +961,15 @@ if ($drawer -notmatch '#define CC_MEETING_PENDING_TIMEOUT_MS 6000U' -or
     $drawer -match '(?m)^#define CC_PENDING_TIMEOUT_MS' -or
     $drawer -notmatch '(?s)s_meeting_pending && now_us >= s_pending_deadline_us.*?s_meeting_pending = false;.*?s_pending_deadline_us = 0;' -or
     $drawer -notmatch '(?s)s_provision_pending &&\s*now_us >= s_provision_pending_deadline_us.*?s_provision_pending = false;' -or
-    $drawer -notmatch '(?s)s_provision_pending_target = !provisioning_active\(\);\s*s_provision_pending = true;.*?s_provision_pending_deadline_us =.*?result\.value = s_provision_pending_target \? 1 : 0;' -or
+    $drawer -notmatch '(?s)s_provision_pending_target = true;\s*s_provision_pending = true;.*?s_provision_pending_deadline_us =.*?result\.action = NUWAX_DRAWER_ACTION_REPROVISION_WIFI;\s*result\.value = 1;' -or
+    $drawer -notmatch '(?s)s_detail == CC_DETAIL_QR && provisioning_active\(\).*?s_provision_pending_target = false;.*?s_provision_pending_deadline_us =.*?result\.action = NUWAX_DRAWER_ACTION_REPROVISION_WIFI;\s*result\.value = 0;' -or
     $drawer -notmatch '(?s)NUWAX_DRAWER_ACTION_SET_VOLUME\) \{\s*set_volume_visual\(s_have_state \? s_state\.volume : 60U\);') {
     throw "Control-center transaction regression: provisioning must settle from owner feedback and rejected volume commands must restore the canonical UI value."
 }
-if ($touchGesture -notmatch '(?s)static void restore_confirmed_volume_preview\(void\).*?nuwax_app_shell_get_device_state_snapshot\(&state, NULL\).*?s_volume_preview_cb\(state\.volume\);' -or
-    $touchGesture -notmatch '(?s)static void queue_shell_action\(.*?nuwax_app_shell_notify_action_rejected\(result->action\);.*?NUWAX_APP_SHELL_ACTION_SET_VOLUME.*?restore_confirmed_volume_preview\(\);.*?nuwax_app_shell_set_volume_percent\(result->index\);' -or
-    $appShell -notmatch '(?s)xQueueSend\(queue, result, wait_ticks\).*?result->action == NUWAX_APP_SHELL_ACTION_SET_VOLUME.*?app_shell_post_volume' -or
+if ($touchGesture -match 'NUWAX_APP_SHELL_ACTION_SET_VOLUME' -or
+    $touchGesture -notmatch '(?s)drawer_volume_drag_active.*?nuwax_app_shell_drawer_finish_volume_drag\(valid \? final_volume : -1\);' -or
+    $appShell -notmatch '(?s)app_shell_finish_volume_on_lvgl\(.*?input\.scene_generation == queued->scene_generation.*?app_shell_touch_allowed_locked\(queued->contact_sequence\).*?if \(!commit \|\| !app_shell_queue_result\(&result\)\).*?app_shell_restore_volume_locked\(queued->volume_sequence\);' -or
+    $appShell -notmatch '(?s)xQueueSend\(queue, result, wait_ticks\).*?result->action == NUWAX_APP_SHELL_ACTION_SET_VOLUME.*?s_volume_queued_cb\(result->index, result->volume_sequence\).*?app_shell_post_volume_locked' -or
     $appShell -notmatch '(?s)result->action == NUWAX_APP_SHELL_ACTION_REPROVISION_WIFI.*?callback\(callback_ctx, result->index != 0\);.*?return true;.*?xQueueSend\(queue, result, wait_ticks\)' -or
     $main -notmatch '(?s)shell_dispatch_set_reprovisioning\(void \*ctx, bool enabled\).*?if \(!enabled\).*?nuwax_provision_main_request_runtime_cancel' -or
     $main -notmatch '(?s)Provisioning audio stop timeout.*?nuwax_app_shell_notify_action_rejected\(\s*NUWAX_APP_SHELL_ACTION_REPROVISION_WIFI\);') {
@@ -876,8 +1006,10 @@ if ($shellRelease -lt 0 -or $listenerRelease -le $shellRelease -or
 if ($appShell -notmatch '(?s)void nuwax_app_shell_deinit\(void\).*?app_shell_set_ui_ready\(false\);.*?nuwax_lvgl_port_set_pre_handler_cb\(NULL, NULL\);.*?app_shell_clear_transient_ui_locked\(\);.*?s_state_mailbox\.published_revision = 0U;' -or
     $appShell -notmatch '(?s)esp_err_t nuwax_app_shell_init\(void\).*?xQueueCreateStatic\(.*?app_shell_clear_transient_ui_locked\(\);.*?app_shell_next_state_revision_locked\(\);.*?nuwax_lvgl_port_set_pre_handler_cb\(app_shell_lvgl_pre_handler, NULL\);.*?app_shell_set_ui_ready\(true\);' -or
     $appShell -notmatch '(?s)static void app_shell_post_menu_drag\(int16_t delta_y\).*?if \(!s_ui_ready\).*?return;.*?s_pending_menu_drag = true;' -or
-    $appShell -notmatch '(?s)static void app_shell_lvgl_pre_handler\(void \*user_data\).*?xQueueReceive\(s_touch_event_queue.*?app_shell_handle_touch_event_on_lvgl\(.*?app_shell_queue_result\(&result\);' -or
-    $appShell -notmatch '(?s)nuwax_app_shell_handle_touch_event\(.*?xQueueSend\(s_touch_event_queue,.*?APP_SHELL_TOUCH_EVENT_QUEUE_WAIT_MS.*?return result;' -or
+    $appShell -notmatch '(?s)static bool app_shell_drain_touch_events\(bool discard\).*?xQueueReceive\(s_touch_event_queue.*?app_shell_handle_touch_event_on_lvgl\(.*?app_shell_queue_result\(&result\);' -or
+    $appShell -notmatch '(?s)static void app_shell_lvgl_pre_handler\(void \*user_data\).*?app_shell_drain_touch_events\(blocked\)' -or
+    $appShell -notmatch '(?s)nuwax_app_shell_handle_touch_event\(.*?app_shell_enqueue_input\(&queued\);.*?return result;' -or
+    $appShell -notmatch '(?s)static bool app_shell_enqueue_input\(.*?xQueueSend\(s_touch_event_queue, queued,.*?APP_SHELL_TOUCH_EVENT_QUEUE_WAIT_MS' -or
     $appShell -notmatch '(?s)app_shell_handle_touch_event_on_lvgl\(.*?nuwax_lvgl_port_lock_is_held_by_current_task\(\)' -or
     $appShell -match 'LVGL_TOUCH_LOCK_TIMEOUT_MS') {
     throw "App-shell lifecycle regression: terminal touch events must use the bounded LVGL-task queue while teardown discards transient input and preserves canonical state."
@@ -892,8 +1024,8 @@ if ($drawer -notmatch '#define CC_REVEAL_DIRTY_BANDS 4' -or
     $drawer -notmatch '#define CC_REVEAL_CONTENT_DIRTY_AREAS 6' -or
     $drawer -notmatch '#define CC_REVEAL_RADIUS_Q4 2995' -or
     $drawer -notmatch '#define CONFIG_NUWAX_UI_ANIMATION_TARGET_FPS 40' -or
-    $drawer -notmatch '(?s)update_backdrop_progress\(int32_t progress\).*?CC_REVEAL_DIRTY_BANDS.*?invalidate_backdrop_band' -or
-    $drawer -notmatch '(?s)reveal_timer_cb\(lv_timer_t \*timer\).*?nuwax_control_center_timeline_step\(.*?planned_step > s_reveal_anim_step \+ 1U.*?s_reveal_anim_step = planned_step;.*?apply_reveal_animation_step\(s_reveal_anim_step\).*?lv_timer_delete\(timer\).*?reveal_completed\(NULL\)' -or
+    $drawer -notmatch '(?s)update_backdrop_progress\(int32_t progress\).*?update_reveal_mask_rows\(progress\).*?old_radius.*?new_radius.*?invalidate_backdrop_band' -or
+    $drawer -notmatch '(?s)reveal_timer_cb\(lv_timer_t \*timer\).*?nuwax_control_center_timeline_step\(.*?applied_step > s_reveal_anim_step \+ 1U.*?s_reveal_anim_step = applied_step;.*?apply_reveal_animation_step\(s_reveal_anim_step\).*?lv_timer_delete\(timer\).*?reveal_completed\(NULL\)' -or
     $drawer -notmatch '(?s)animate_reveal\(bool opening\).*?CONFIG_NUWAX_UI_ANIMATION_TARGET_FPS.*?lv_timer_create\(reveal_timer_cb,\s*CC_REVEAL_FRAME_MS' -or
     $drawer -notmatch '(?s)open_control_center\(cc_page_t page\).*?nuwax_face_freeze_interaction\(\).*?nuwax_face_frozen_frame_ready\(\)' -or
     $drawer -notmatch '(?s)nuwax_drawer_begin_pull\(void\).*?nuwax_face_freeze_interaction\(\).*?nuwax_face_frozen_frame_ready\(\)' -or
@@ -910,7 +1042,7 @@ if ($drawer -notmatch '#define CC_REVEAL_DIRTY_BANDS 4' -or
     throw "Control-center animation regression: deadline-bound 40 FPS dirty-band reveal must freeze, RGB565-mask, skip expired poses, and release the published face frame."
 }
 if ($drawer -notmatch '#define CC_OPERATION_MIN_FPS 30' -or
-    $drawer -notmatch '(?s)#ifndef CONFIG_NUWAX_UI_ANIMATION_TARGET_FPS.*?#define CONFIG_NUWAX_UI_ANIMATION_TARGET_FPS 40.*?#endif\s*#define CC_REVEAL_FRAME_MS \(1000U / CONFIG_NUWAX_UI_ANIMATION_TARGET_FPS\)\s*_Static_assert\(CC_PAGE_ANIM_STEPS' -or
+    $drawer -notmatch '(?s)#ifndef CONFIG_NUWAX_UI_ANIMATION_TARGET_FPS.*?#define CONFIG_NUWAX_UI_ANIMATION_TARGET_FPS 40.*?#endif\s*#define CC_REVEAL_FRAME_MS \(1000U / CONFIG_NUWAX_UI_ANIMATION_TARGET_FPS\).*?_Static_assert\(CC_PAGE_ANIM_STEPS' -or
     $drawer -notmatch '#define CC_PAGE_ANIM_MS 230' -or
     $drawer -notmatch '#define CC_PAGE_ANIM_STEPS 10' -or
     $drawer -notmatch '(?s)_Static_assert\(CC_PAGE_ANIM_STEPS \* 1000U >=.*?CC_OPERATION_MIN_FPS.*?_Static_assert\(CC_PAGE_ANIM_STEPS \* 1000U >=.*?CONFIG_NUWAX_UI_ANIMATION_TARGET_FPS' -or
@@ -922,10 +1054,12 @@ if ($drawer -notmatch '#define CC_OPERATION_MIN_FPS 30' -or
 if ($drawer -notmatch '#define CC_TRANSITION_CACHE_COMPONENTS' -or
     $drawer -notmatch '(?s)transition_cache_bind_sources\(void\).*?CC_PSRAM_RUNTIME_RESERVE_BYTES.*?heap_caps_aligned_alloc\(.*?MALLOC_CAP_SPIRAM.*?lv_draw_buf_init' -or
     $drawer -notmatch '(?s)transition_cache_capture_page\(cc_page_t page\).*?suspend_display_invalidation\(s_surface\).*?lv_snapshot_take_to_draw_buf.*?transition_cache_release\(\);' -or
-    $drawer -notmatch '(?s)transition_cache_compose_component\(.*?s_reveal_mask_rows.*?memcpy\(destination, source.*?blend_rgb565_u8' -or
-    $drawer -notmatch '(?s)control_center_flush_filter\(.*?transition_cache_compose\(x, y, width, height, pixels, stride_pixels\).*?nuwax_face_frozen_rgb565' -or
+    $drawer -notmatch '(?s)transition_cache_compose_component\(.*?s_reveal_mask_rows.*?copy_rgb565_span\(destination, source.*?blend_rgb565_u8' -or
+    $drawer -notmatch '(?s)control_center_flush_filter\(.*?transition_cache_compose\(x, y, menu_width, height, pixels, stride_pixels\).*?nuwax_face_frozen_rgb565' -or
     $drawer -notmatch '(?s)pending_timer_cb\(lv_timer_t \*timer\).*?!s_open.*?transition_cache_prepare_page\(CC_PAGE_STATUS\).*?transition_cache_prepare_page\(CC_PAGE_MENU\)' -or
-    $drawer -notmatch '(?s)transition_cache_mark_page_dirty\(cc_page_t page\).*?generation.*?\(\*generation\)\+\+;' -or
+    $drawer -notmatch '(?s)transition_cache_mark_dirty\(cc_page_t page, lv_obj_t \*source\).*?source == source.*?dirty = true;.*?\(\*generation\)\+\+;' -or
+    $drawer -notmatch '(?s)transition_cache_mark_page_dirty\(cc_page_t page\).*?transition_cache_mark_dirty\(page, NULL\);' -or
+    $drawer -notmatch '(?s)transition_cache_begin_build\(cc_page_t page\).*?s_transition_cache_build_mask = 0U;.*?s_transition_cache\[i\].dirty.*?s_transition_cache_build_mask \|= 1U << i;' -or
     $drawer -notmatch '(?s)transition_cache_capture_page\(cc_page_t page\).*?s_transition_cache_build_next.*?lv_snapshot_take_to_draw_buf.*?s_transition_cache_build_components\+\+.*?return false;.*?s_transition_cache_build_active = false;' -or
     $drawer -notmatch '(?s)transition_cache_activate\(bool both_pages\).*?current_ready.*?other_ready.*?if \(!s_transition_cache_available \|\| !current_ready \|\|.*?return false;.*?s_transition_cache_active = true;.*?set_page_tree_mode' -or
     $drawer -notmatch '(?s)transition_cache_deactivate\(void\).*?s_transition_cache_active = false;' -or
@@ -944,7 +1078,8 @@ if ($emotionPlayer -notmatch '#define FRAME_PATCH_OBJECT_COUNT NUWAX_EMOTION_ASS
     $emotionPlayer -notmatch '(?s)create_frame_patches\(.*?s_frame_patch_compositor = lv_obj_create\(parent\).*?lv_obj_set_size\(s_frame_patch_compositor, FRAME_WIDTH, FRAME_HEIGHT\)' -or
     $emotionPlayer -notmatch '(?s)update_frame_patch_state\(.*?FRAME_PATCH_OBJECT_COUNT.*?nuwax_emotion_component_regions_compact\(.*?FRAME_PATCH_OBJECT_COUNT\).*?invalidate_frame_patch_damage\(.*?lv_obj_invalidate_area\(s_frame_patch_compositor' -or
     $emotionPlayer -notmatch '(?s)begin_component_bridge\(.*?nuwax_emotion_component_bridge_allowed\(s_asset_id, target_asset\)' -or
-    $emotionPlayer -notmatch '(?s)tick_component_bridge\(.*?nuwax_emotion_component_bridge_ready_to_animate.*?visual_elapsed_us.*?nuwax_emotion_component_regions_compact\(.*?FRAME_PATCH_OBJECT_COUNT\).*?present_frame_patches_direct\(regions, region_count.*?direct_present_frames.*?fallback_present_frames.*?nuwax_emotion_component_bridge_next_elapsed_us.*?bridge->next_frame_us = render_started_us \+ COMPONENT_BRIDGE_PERIOD_US' -or
+    $emotionPlayer -notmatch '#define COMPONENT_BRIDGE_TARGET_DECODE_STALL_US 150000U' -or
+    $emotionPlayer -notmatch '(?s)tick_component_bridge\(.*?nuwax_emotion_component_bridge_ready_to_animate.*?target_decode_us >.*?COMPONENT_BRIDGE_TARGET_DECODE_STALL_US.*?commit_component_bridge_target\(now_us\).*?visual_elapsed_us.*?nuwax_emotion_component_regions_compact\(.*?FRAME_PATCH_OBJECT_COUNT\).*?queue_frame_patches\(regions, region_count\).*?queued_present_frames.*?nuwax_emotion_component_bridge_next_elapsed_us.*?bridge->next_frame_us = bridge->started_us \+.*?bridge->visual_elapsed_us' -or
     $defaults -notmatch 'CONFIG_NUWAX_UI_BACKGROUND_DECODE_ENABLE=y' -or
     $emotionPlayer -notmatch '(?s)prepare_next_frame\(decode_frame_slot_t \*slot\).*?NUWAX_EMOTION_ASSET_PACK_ABI_V4.*?decode_v4_frame_prepare\(slot\).*?NUWAX_EMOTION_ASSET_PACK_ABI_V3.*?decode_v3_frame_prepare\(slot\).*?NUWAX_EMOTION_ASSET_PACK_ABI_V2.*?decode_v2_frame_prepare\(slot\).*?decode_frame_prepare\(\)' -or
     $emotionPlayer -notmatch '(?s)decode_v3_frame_prepare\(.*?V3_BOOTSTRAP_TRANSITION.*?v3->transition_offset.*?V3_BOOTSTRAP_WRAP.*?v3->wrap_offset.*?v3_expand_key' -or
@@ -957,17 +1092,18 @@ if ($emotionPlayer -notmatch '#define FRAME_PATCH_OBJECT_COUNT NUWAX_EMOTION_ASS
     $emotionPlayer -notmatch '(?s)apply_queued_asset_if_stable\(void\).*?restored_bridge_source = false;.*?restore_component_bridge_source\(now_us\);.*?restored_bridge_source = true;.*?restored_bridge_source && queued == \(unsigned\)s_asset_id.*?atomic_compare_exchange_strong_explicit\(\s*&s_queued_asset_id, &expected, 0U' -or
     $emotionPlayer -notmatch '(?s)nuwax_emotion_animation_player_tick\(void\).*?apply_queued_asset_if_stable\(\).*?if \(s_interaction_active\) \{\s*return ESP_OK;\s*\}\s*if \(s_component_bridge\.active\).*?tick_component_bridge' -or
     $emotionPlayer -notmatch '(?s)nuwax_emotion_animation_player_set_interaction_active\(bool active\).*?if \(active\).*?nuwax_emotion_animation_player_freeze\(\).*?if \(!s_interaction_active\) return;.*?s_interaction_active = false;.*?s_component_bridge\.started_us \+= paused_us;.*?s_component_bridge\.next_frame_us \+= paused_us;.*?s_next_frame_us = resumed_us;') {
-    throw "Emotion animation regression: bounded component patches, 40 FPS bridging, background decode with synchronous fallback, deadline pacing, and interaction resume must remain intact."
+    throw "Emotion animation regression: bounded component patches, target-40 FPS bridging with overload catch-up, background decode, deadline pacing, and interaction resume must remain intact."
 }
 if ($displayHeader -notmatch 'display_write_region_pixels_strided' -or
     $display -notmatch '(?s)copy_pixels_byte_swapped\(.*?spi_write_pixels_strided\(' -or
     $display -notmatch '(?s)display_write_region_pixels_strided\(.*?source_stride_pixels.*?st77916_set_addr_window\(.*?spi_write_pixels_strided\(' -or
     $lvglPortHeader -notmatch 'nuwax_lvgl_port_present_rgb565_regions' -or
     $lvglPort -notmatch '(?s)nuwax_lvgl_port_present_rgb565_regions\(.*?nuwax_lvgl_port_lock_is_held_by_current_task\(\).*?lvgl_flush_pipeline_take\(timeout_ms\).*?display_write_region_pixels_strided\(.*?lvgl_flush_pipeline_give\(\)' -or
-    $emotionPlayer -notmatch '#define COMPONENT_BRIDGE_DIRECT_PRESENT_TIMEOUT_MS 2U' -or
-    $emotionPlayer -notmatch '(?s)present_frame_patches_direct\(.*?update_frame_patch_state\(.*?nuwax_lvgl_port_present_rgb565_regions\(.*?invalidate_frame_patch_damage\(damage, damage_count\)' -or
-    $emotionPlayer -notmatch 'direct_avg_us=%u direct_max_us=%u') {
-    throw "Emotion direct-present regression: transitions must serialize with LVGL flush ownership, stream strided RGB565 damage without another framebuffer, and retain bounded LVGL fallback telemetry."
+    $emotionPlayer -notmatch '(?s)queue_frame_patches\(.*?update_frame_patches\(regions, region_count\).*?nuwax_lvgl_port_wake\(\)' -or
+    $emotionPlayer -match 'nuwax_lvgl_port_present_rgb565_regions|present_frame_patches_direct|COMPONENT_BRIDGE_DIRECT_PRESENT' -or
+    $emotionPlayer -notmatch '(?s)commit_component_bridge_target\(int64_t now_us\).*?const uint16_t \*source_rgb565 = bridge->source_rgb565;.*?cancel_component_bridge\(\).*?hide_frame_patches\(\).*?reset_dirty_areas\(\).*?nuwax_emotion_component_bridge_pixel_needs_final_damage\(\s*s_rgb565\[pixel\], source_rgb565\[pixel\],\s*target_rgb565\[pixel\]\).*?include_dirty_run\(changed_start.*?memcpy\(s_rgb565, target_rgb565, FRAME_RGB_BYTES\).*?invalidate_dirty_regions\(\).*?nuwax_lvgl_port_wake\(\)' -or
+    $emotionPlayer -notmatch 'queued_pixels=%lu') {
+    throw "Emotion presentation regression: transitions must use the LVGL-owned asynchronous flush path and final handoffs must invalidate the complete visible-frame difference."
 }
 if ($emotionPlayer -notmatch '#define COMPONENT_BRIDGE_PSRAM_RESERVE_BYTES \(1024U \* 1024U\)' -or
     $emotionPlayer -notmatch '(?s)ensure_component_bridge_work\(void\).*?COMPONENT_BRIDGE_PSRAM_RESERVE_BYTES.*?s_bridge_source_work = heap_caps_malloc.*?s_bridge_target_work = heap_caps_malloc.*?s_bridge_target_indices_work = heap_caps_malloc' -or
@@ -986,9 +1122,20 @@ if ($emotionPlayer -match '=\s*tinfl_decompress_mem_to_mem\(' -or
 if ($emotionPlayer -notmatch '#define COMPONENT_BRIDGE_MIN_FPS 30U' -or
     $emotionPlayer -notmatch '#define DECODE_TASK_PRIORITY 4U' -or
     $emotionPlayer -notmatch '(?s)render_bridge_opaque_scaled_rows\(.*?memcpy\(&s_rgb565.*?render_bridge_eye\(.*?scale_rgb565_over_black' -or
-    $emotionPlayer -notmatch '(?s)tick_component_bridge\(int64_t now_us\).*?render_started_us.*?max_gap_us.*?max_render_us.*?visual_elapsed_us.*?bridge->next_frame_us = render_started_us \+ COMPONENT_BRIDGE_PERIOD_US' -or
-    $emotionPlayer -notmatch '(?s)commit_component_bridge_target\(int64_t now_us\).*?average_render_us.*?component bridge below minimum.*?COMPONENT_BRIDGE_MIN_FPS.*?COMPONENT_BRIDGE_FPS') {
+    $emotionPlayer -notmatch '(?s)tick_component_bridge\(int64_t now_us\).*?render_started_us.*?max_gap_us.*?max_render_us.*?observed_elapsed_us.*?pose_catchups.*?bridge->next_frame_us = bridge->started_us \+.*?bridge->visual_elapsed_us' -or
+    $emotionPlayer -notmatch '(?s)commit_component_bridge_target\(int64_t now_us\).*?average_render_us.*?component bridge below minimum.*?COMPONENT_BRIDGE_MIN_FPS.*?COMPONENT_BRIDGE_FPS' -or
+    $emotionPlayer -notmatch 'queued_pixels=%lu') {
     throw "Emotion transition telemetry regression: every component bridge must report its real cadence and render budget against the 30/40 FPS contract."
+}
+if ($appShell -notmatch '(?s)nuwax_app_shell_request_close_overlays\(void\).*?s_pending_close_overlays = true;.*?app_shell_cancel_touch_locked\(\);.*?nuwax_lvgl_port_wake\(\)' -or
+    $appShell -notmatch '(?s)nuwax_app_shell_close_overlays\(void\).*?nuwax_app_shell_request_close_overlays\(\);.*?nuwax_lvgl_port_lock\(500\).*?app_shell_apply_pending_close\(\);' -or
+    $appShell -notmatch '(?s)app_shell_apply_pending_close\(void\).*?s_pending_close_overlays.*?nuwax_drawer_close\(\)' -or
+    $appShell -notmatch '(?s)app_shell_lvgl_pre_handler\(.*?app_shell_apply_pending_close\(\);.*?app_shell_drain_touch_events\(blocked\)' -or
+    $main -notmatch '(?s)notification_begin_local_quiesce\(.*?nuwax_app_shell_request_close_overlays\(\)' -or
+    $main -notmatch '(?s)NUWAX_NOTIFICATION_STATE_BEGIN_PENDING.*?sync_pending_semantic_emotion\(\).*?notification_takeover_pending_fence.*?set_state\(NUWAX_APP_STATE_THINKING\)' -or
+    $main -match '(?s)NUWAX_NOTIFICATION_STATE_BEGIN_PENDING.{0,2500}nuwax_state_bridge_clear_semantic_emotion\(' -or
+    $main -notmatch '(?s)while \(nuwax_ws_is_connected\(&ws\)\).*?nuwax_notification_blocks_conversation\(.*?drain_session_commands_limited\(&ws, 4U\).*?service_application_keepalive\(.*?notification_wait.*?conversation_owner_wait_ms\(100U\);.*?continue;') {
+    throw "Notification UI isolation regression: takeover must close frozen overlays, retain its cloud expression, and avoid rebuilding normal MIC sessions while notification audio owns the device."
 }
 if ($faceAdapter -match 'SPEAKING_OVERLAY|speaking_draw_cb|create_speaking_overlay|set_speaking_visible|s_speaking_last_frame_us') {
     throw "Retired speaking bubble must not create an LVGL overlay or schedule periodic redraws."
@@ -1054,25 +1201,31 @@ if ($defaults -notmatch 'CONFIG_NUWAX_TOUCH_WAKE_ACTION_ENABLE=n' -or
     $headTouch -notmatch 'CONFIG_NUWAX_TOUCH_INTERRUPT_ACTION_ENABLE != 0') {
     throw "Product touch controls must keep touch wake disabled while active-turn interruption remains enabled."
 }
-if ($defaults -notmatch 'CONFIG_NUWAX_HEAD_TOUCH_LONG_PRESS_MS=1000' -or
+if ($defaults -notmatch 'CONFIG_NUWAX_HEAD_TOUCH_LONG_PRESS_MS=650' -or
     $defaults -notmatch 'CONFIG_NUWAX_HEAD_TOUCH_GAP_TOLERANCE_MS=750' -or
-    $kconfig -notmatch '(?s)config NUWAX_HEAD_TOUCH_LONG_PRESS_MS.*?default 1000' -or
+    $kconfig -notmatch '(?s)config NUWAX_HEAD_TOUCH_LONG_PRESS_MS.*?default 650' -or
     $kconfig -notmatch '(?s)config NUWAX_HEAD_TOUCH_GAP_TOLERANCE_MS.*?default 750' -or
-    $boardInputs -notmatch 's_head_touch_long_press_ms = 1000U' -or
-    $boardInputs -notmatch 's_head_touch_gap_tolerance_ms = 750U' -or
-    $headTouch -notmatch '#define CONFIG_NUWAX_HEAD_TOUCH_LONG_PRESS_MS 1000U' -or
+    $boardInputs -notmatch 's_head_touch_long_press_ms = 650U' -or
+    $boardInputs -match 's_head_touch_gap_tolerance_ms' -or
+    $headTouch -notmatch 'contact=continuous' -or
+    $headTouch -notmatch '#define CONFIG_NUWAX_HEAD_TOUCH_LONG_PRESS_MS 650U' -or
     $boardInputs -notmatch '(?s)NUWAX_BOARD_INPUT_HEAD_TOUCH.*?\.active_level = 0' -or
     $boardInputs -notmatch 'ready head_touch=GPIO%d\(active-low\)' -or
     $boardInputs -notmatch '(?s)head_touch_raw_active_started_ms =.*?esp_timer_get_time.*?head_touch_raw_active_started_valid = true' -or
     $boardInputs -notmatch '(?s)activation_started_ms =.*?head_touch_raw_active_started_valid.*?head_touch_raw_active_started_ms.*?head_touch_press_started_ms = activation_started_ms' -or
     $boardInputs -match 'resume_session|head_touch_session_started_ms|session_duration_ms' -or
     $boardInputs -notmatch '(?s)if \(head_touch_active\).*?press_duration_ms.*?press_duration_ms >= long_press_ms.*?NUWAX_HEAD_TOUCH_EVENT_LONG_PRESS' -or
-    $shakeDetectorHeader -notmatch '#define NUWAX_HEAD_TOUCH_INTERACTION_COOLDOWN_MS 2000U' -or
-    $shakeDetectorHeader -notmatch '#define NUWAX_SHAKE_INTERACTION_COOLDOWN_MS 4000U' -or
+    $shakeMotionPolicy -notmatch '#define NUWAX_SHAKE_WINDOW_MS 1500U' -or
+    $shakeMotionPolicy -notmatch '#define NUWAX_SHAKE_MIN_SPAN_MS 400U' -or
+    $shakeMotionPolicy -notmatch '#define NUWAX_SHAKE_DYNAMIC_PEAK_MG 380\.0f' -or
+    $shakeMotionPolicy -notmatch '#define NUWAX_SHAKE_REQUIRED_PEAKS 4U' -or
+    $shakeDetector -notmatch 'nuwax_shake_motion_observe\(&motion' -or
+    $shakeDetectorHeader -notmatch '#define NUWAX_HEAD_TOUCH_INTERACTION_COOLDOWN_MS 1000U' -or
+    $shakeDetectorHeader -notmatch '#define NUWAX_SHAKE_INTERACTION_COOLDOWN_MS 2000U' -or
     $shakeDetector -notmatch '(?s)interaction_cooldown_ms\(.*?NUWAX_HEAD_TOUCH_INTERACTION_COOLDOWN_MS.*?NUWAX_SHAKE_INTERACTION_COOLDOWN_MS' -or
     $shakeDetector -notmatch '(?s)const uint32_t cooldown_ms = interaction_cooldown_ms\(owner\);.*?if \(cooldown_ms > 0U\).*?s_interaction_cooldown_until_ms = 0U;' -or
     $headTouch -notmatch '(?s)static bool s_press_claimed_gate;.*?case NUWAX_HEAD_TOUCH_EVENT_LONG_PRESS:.*?s_press_claimed_gate = true;.*?case NUWAX_HEAD_TOUCH_EVENT_RELEASE:.*?if \(s_press_claimed_gate\).*?nuwax_shake_detector_release_head_touch\(\);') {
-    throw "Head-touch debounce regression: GPIO8 must remain active-low, qualification must start at the first sampled active edge and remain 1 second, retriggers require a 2-second cooldown, and only the current press may release the shared interaction gate."
+    throw "Interaction debounce regression: GPIO8 must remain active-low with 650 ms head-touch qualification, shake must retain four alternating peaks at 380 mg and a 400 ms minimum span in a 1.5-second window, touch/shake cooldowns must remain 1/2 seconds, and only the current interaction may release the shared gate."
 }
 if ($defaults -notmatch 'CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=n' -or
     $defaults -notmatch 'CONFIG_I2C_MASTER_ISR_HANDLER_IN_IRAM=y' -or
@@ -1096,19 +1249,20 @@ if ($uplink -notmatch "formal cloud uplink requires a 16 kHz sample rate" -or
 if ($latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_CAPTURE_SLOTS 12U" -or
     $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_CAPTURE_PRE_DSP_MAX_AGE_MS 60U" -or
     $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_BARGE_END_TO_END_MAX_AGE_MS 100U" -or
-    $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_UPLINK_PACKET_SLOTS 16U" -or
-    $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_UPLINK_STAGING_MAX_AGE_MS 160U" -or
+    $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_UPLINK_PACKET_SLOTS 64U" -or
+     $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_UPLINK_STAGING_MAX_AGE_MS 1000U" -or
     $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_MIN_DSP_RESERVE_MS 40U" -or
     $latencyContract -notmatch "barge end-to-end age must reserve at least 40 ms for DSP" -or
     $kconfig -notmatch 'Realtime microphone uplink queue depth in packet slots' -or
     $kconfig -notmatch 'config NUWAX_BARGE_END_TO_END_MAX_FRAME_AGE_MS' -or
-    $bargeConfig -notmatch 'CONFIG_NUWAX_VOICE_UPLINK_QUEUE_DEPTH=16' -or
-    $bargeConfig -notmatch 'CONFIG_NUWAX_VOICE_UPLINK_REALTIME_MAX_AGE_MS=160' -or
-    $bargeConfig -notmatch 'CONFIG_NUWAX_RT_CAPTURE_QUEUE_DEPTH=12' -or
-    $bargeConfig -notmatch 'CONFIG_NUWAX_RT_CAPTURE_MAX_DECISION_AGE_MS=60' -or
-    $bargeConfig -notmatch 'CONFIG_NUWAX_BARGE_END_TO_END_MAX_FRAME_AGE_MS=100') {
-    throw "The normal-conversation latency contract or Kconfig semantics drifted."
-}
+    $bargeConfig -notmatch 'CONFIG_NUWAX_VOICE_UPLINK_QUEUE_DEPTH=64' -or
+     $bargeConfig -notmatch 'CONFIG_NUWAX_VOICE_UPLINK_REALTIME_MAX_AGE_MS=1000' -or
+     $bargeConfig -notmatch 'CONFIG_NUWAX_RT_CAPTURE_QUEUE_DEPTH=12' -or
+     $bargeConfig -notmatch 'CONFIG_NUWAX_RT_CAPTURE_MAX_DECISION_AGE_MS=60' -or
+     $bargeConfig -notmatch 'CONFIG_NUWAX_BARGE_END_TO_END_MAX_FRAME_AGE_MS=100' -or
+     $kconfig -notmatch '(?s)config NUWAX_VOICE_UPLINK_REALTIME_MAX_AGE_MS.*?default 1000') {
+     throw "The normal-conversation latency contract or Kconfig semantics drifted."
+ }
 if ($uplinkHeader -notmatch "NUWAX_AUDIO_UPLINK_STREAM_BATCH_FRAMES 4" -or
     $uplinkHeader -notmatch "NUWAX_AUDIO_UPLINK_LOW_LATENCY_FIRST_BATCH_FRAMES 1" -or
     $uplinkHeader -notmatch "NUWAX_AUDIO_UPLINK_LOW_LATENCY_STEADY_BATCH_FRAMES 1" -or
@@ -1150,21 +1304,29 @@ if ($uplinkHeader -notmatch "NUWAX_AUDIO_UPLINK_STREAM_BATCH_FRAMES 4" -or
     $uplink -notmatch "audio_uplink_ensure_reaper_ready" -or
     $uplink -notmatch "NUWAX_AUDIO_UPLINK_REAPER_FATAL_RESTART_MS" -or
     $uplink -notmatch "uplink sender did not release singleton" -or
-    $uplink -notmatch "xQueueCreateStatic" -or
-    $uplink -notmatch "caller retains session" -or
+    $uplink -notmatch "audio_uplink_take_detached_cleanup" -or
+    $uplinkHeader -notmatch "cleanup_next" -or
     $uplink -match '\babort\s*\(' -or
     $main -notmatch 'nuwax_audio_uplink_t \*send_ctx = nuwax_audio_uplink_create\(\)' -or
     $uplink -match "ctx->send_result\s*=") {
     throw "Audio uplink profile regression: isolate realtime/reliable queues and preserve heap-owned, non-aborting sender cleanup."
 }
 $wsTransport = Get-Content -LiteralPath (Join-Path $projectRoot "main\ws_transport.c") -Raw
-if ($wsTransport -notmatch "effective_io_timeout_ms" -or
-    $wsTransport -notmatch "total_budget_us" -or
-    $wsTransport -notmatch "remaining_us" -or
+if ($wsTransport -notmatch "const uint32_t effective_io_timeout_ms = io_timeout_ms" -or
+    $wsTransport -match "effective_io_timeout_ms > remaining_ms" -or
+    $wsTransport -notmatch "hold_lifecycle_during_io" -or
+    $wsTransport -notmatch "NUWAX_WS_ARCHIVE_LIFECYCLE_LOCK_TIMEOUT_MS" -or
+    $wsTransport -notmatch "NUWAX_WS_ARCHIVE_CHUNK_MAX_PAYLOAD_BYTES 8064U" -or
+    $wsTransport -notmatch "NUWAX_WS_ARCHIVE_LIFECYCLE_LOCK_TIMEOUT_MS\s*,\s*NUWAX_WS_ARCHIVE_IO_TIMEOUT_MS\s*,\s*true\s*,\s*false" -or
     $wsTransport -notmatch "transport_wait_write_ready_until" -or
     $wsTransport -notmatch "transport_wait_write_ready_until\(client, soft_deadline_us\)" -or
     $wsTransport -match "transport_write_ready_now") {
     throw "Realtime WebSocket send timeout must cover lock wait and frame I/O."
+}
+if ($speakerPlayback -notmatch '#define CONFIG_NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS 15000U' -or
+    $speakerPlayback -notmatch '#define NUWAX_SPEAKER_REBUFFER_STALL_WARN_MS 5000U' -or
+    $speakerPlayback -notmatch '(?s)stalled_ms >= NUWAX_SPEAKER_REBUFFER_STALL_WARN_MS.*?still waiting for cloud PCM.*?stalled_ms >= NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS.*?jitter_rebuffer_timeout') {
+    throw "Long-TTS rebuffer regression: five seconds must remain advisory while a bounded 15-second hard stall owns generation-safe recovery."
 }
 if ($main -notmatch 'const uint32_t wire_sequence = \*recorded_frames;' -or
     $main -notmatch 'const uint32_t wire_sequence = recorded_frames;' -or
@@ -1172,8 +1334,8 @@ if ($main -notmatch 'const uint32_t wire_sequence = \*recorded_frames;' -or
     $main -notmatch 'NUWAX_CONVERSATION_CAPTURE_SLOT_DEPTH' -or
     $main -notmatch 'NUWAX_CONVERSATION_CAPTURE_PRE_DSP_MAX_AGE_MS' -or
     $bargeController -notmatch 'NUWAX_CONVERSATION_BARGE_END_TO_END_MAX_AGE_MS' -or
-    $defaults -notmatch 'CONFIG_NUWAX_VOICE_UPLINK_QUEUE_DEPTH=16' -or
-    $defaults -notmatch 'CONFIG_NUWAX_VOICE_UPLINK_REALTIME_MAX_AGE_MS=160' -or
+    $defaults -notmatch 'CONFIG_NUWAX_VOICE_UPLINK_QUEUE_DEPTH=64' -or
+     $defaults -notmatch 'CONFIG_NUWAX_VOICE_UPLINK_REALTIME_MAX_AGE_MS=1000' -or
     $defaults -notmatch 'CONFIG_NUWAX_RT_CAPTURE_QUEUE_DEPTH=12' -or
     $defaults -notmatch 'CONFIG_NUWAX_RT_CAPTURE_MAX_DECISION_AGE_MS=60' -or
     $defaults -notmatch 'CONFIG_NUWAX_BARGE_END_TO_END_MAX_FRAME_AGE_MS=100' -or
@@ -1200,6 +1362,57 @@ if ($deviceState -notmatch "nuwax_monitoring_ui_state_t monitoring" -or
     $appShell -notmatch "nuwax_app_shell_set_monitoring_state" -or
     $main -notmatch "nuwax_app_shell_set_monitoring_state") {
     throw "Exclusive-mode UI synchronization, control-center state icon semantics, or retry mailbox is incomplete."
+}
+if ($offlineAudio -notmatch '#define QUEUE_DEPTH 128U' -or
+    $offlineAudio -notmatch '(?s)commit_segment_locked\(\s*item->complete != 0U &&.*?&s_close_complete.*?!atomic_load_explicit\(&s\.degraded.*?!atomic_load_explicit\(\s*&s\.writer_error' -or
+    $offlineAudio -notmatch '(?s)nuwax_offline_audio_request_stop\(bool complete\).*?if \(!complete\).*?s\.capture_complete, false' -or
+    $offlineAudioHeader -notmatch '(?s)nuwax_offline_audio_handle_protocol_text\(const char \*payload, int len,.*?uint32_t connection_epoch\)' -or
+    $offlineAudio -notmatch '(?s)nuwax_offline_audio_handle_protocol_text\(const char \*payload, int len,.*?uint32_t connection_epoch\).*?connection_epoch == 0U.*?s\.replay_ack\.epoch == connection_epoch' -or
+    $offlineAudio -notmatch '(?s)\.user_ctx = replay_ws.*?s_replay_test_transport_quarantined, true.*?break;' -or
+    $main -notmatch '(?s)nuwax_offline_audio_handle_protocol_text\(payload, len,\s*ws_connection_epoch\)') {
+    throw "Offline archive regression: bounded buffering, monotonic completeness, epoch-bound ACKs, and failed-close quarantine must remain enforced."
+}
+$offlineCaptureTaskStart = $offlineAudio.IndexOf("static void offline_capture_task")
+$offlineCaptureHandleClear = if ($offlineCaptureTaskStart -ge 0) {
+    $offlineAudio.IndexOf("s.capture_task = NULL;", $offlineCaptureTaskStart)
+} else { -1 }
+$offlineCaptureDonePublish = if ($offlineCaptureHandleClear -ge 0) {
+    $offlineAudio.IndexOf("xEventGroupSetBits(s.capture_events, DONE_BIT)",
+                          $offlineCaptureHandleClear)
+} else { -1 }
+$offlineCaptureRunningClear = if ($offlineCaptureDonePublish -ge 0) {
+    $offlineAudio.IndexOf("atomic_store_explicit(&s.capture_running, false",
+                          $offlineCaptureDonePublish)
+} else { -1 }
+if ($offlineCaptureTaskStart -lt 0 -or
+    $offlineCaptureHandleClear -lt 0 -or
+    $offlineCaptureDonePublish -lt 0 -or
+    $offlineCaptureRunningClear -lt 0 -or
+    !($offlineCaptureTaskStart -lt $offlineCaptureHandleClear -and
+      $offlineCaptureHandleClear -lt $offlineCaptureDonePublish -and
+      $offlineCaptureDonePublish -lt $offlineCaptureRunningClear)) {
+    throw "Offline capture task exit regression: clear the old handle and publish DONE before reopening capture admission."
+}
+if ($offlineAudio -notmatch '(?s)if \(queue_busy\) \{.*?Leave the\s+\* recovery flag clear.*?notify_writer_task\(\);.*?continue;.*?s\.media_recovery_requested, true' -or
+    $offlineAudio -notmatch '(?s)static esp_err_t find_next_ready_name.*?if \(!dir\) \{.*?open_errno == ENOENT.*?open_errno == ENODEV.*?nuwax_sd_card_mark_io_fault\(ESP_FAIL\);.*?return ESP_ERR_NOT_FOUND;') {
+    throw "Offline SD recovery regression: residual writer work must drain before remount fencing, and replay directory loss must latch media recovery."
+}
+if ($main -notmatch '(?s)if \(nuwax_wifi_simulated_offline\(\)\) \{.*?service_offline_capture_retry_disconnected\(\);.*?continue;') {
+    throw "Simulated offline regression: offline capture retry must run while the cloud socket is intentionally held down."
+}
+if ($main -notmatch '(?s)while \(remaining_ms > 0U\).*?offline_mode_lease_pending\(\).*?break;') {
+    throw "Reconnect backoff regression: an active offline lease must interrupt cloud retry delay."
+}
+if ($offlineAudio -notmatch 'REPLAY_SEND_RETRY_ATTEMPTS' -or
+    $offlineAudio -notmatch '(?s)static esp_err_t replay_send_frame_buffered\(.*?ESP_ERR_TIMEOUT.*?REPLAY_SEND_RETRY_DELAY_MS' -or
+    $offlineAudio -notmatch '(?s)static esp_err_t replay_send_frame\(.*?return replay_send_frame_buffered\(' -or
+    $offlineAudio -notmatch '(?s)replay_ready_impl\(.*?bool independent_transport' -or
+    $offlineAudio -notmatch '(?s)!independent_transport &&\s*!nuwax_offline_audio_storage_busy\(\) &&\s*!nuwax_audio_uplink_background_ready') {
+    throw "Offline replay regression: safe send retries or independent test-gateway scheduling was removed."
+}
+$sdDriver = Get-Content -LiteralPath (Join-Path $projectRoot "main\board\sd_card_driver.c") -Raw
+if ($sdDriver -notmatch '(?s)esp_err_t nuwax_sd_card_probe\(void\).*?esp_vfs_fat_info\("/sdcard".*?stat\("/sdcard/offline_audio".*?s_healthy = false') {
+    throw "SD health probe regression: idle hot-plug detection must perform a FAT transaction and retain the archive-directory invariant."
 }
 if ($session -notmatch '"meeting_mode_v1"' -or
     $session -notmatch '"monitoring_mode_v1"' -or
@@ -1228,7 +1441,7 @@ if ($provision -notmatch 'cJSON_AddStringToObject\(root, "hardwareVersion",\s*nu
     throw "BLE device-info must report the selected board and running image version."
 }
 if ($otaDevice -notmatch 'static void request_firmware_metadata_refresh\(void\)' -or
-    $otaDevice -notmatch '(?s)emit_result_reliably\((?:true,\s*)?"committed"(?:,\s*"ok")?.*?s_boot_pending_verify = false;.*?refresh_interlocks\(\);\s*if \(err == ESP_OK\) \{\s*/\*.*?\*/\s*request_firmware_metadata_refresh\(\);') {
+    $otaDevice -notmatch '(?s)emit_result_reliably\((?:true,\s*)?"committed"(?:,\s*"ok")?.*?s_boot_pending_verify = false;.*?refresh_interlocks\(\);\s*(?:ESP_LOGI\(TAG, "OTA boot verification finished.*?;\s*)?if \(err == ESP_OK\) \{\s*/\*.*?\*/\s*request_firmware_metadata_refresh\(\);') {
     throw "A committed OTA image must reconnect once so the next hello reports ota_state=valid."
 }
 if ($main -notmatch 'static bool ota_blocks_wake_detector\(void\)' -or
@@ -1312,7 +1525,7 @@ if ($firmwareReport -notmatch '#define FIRMWARE_IDENTITY_TASK_STACK_BYTES 5120U'
 }
 if ($otaMain -notmatch '(?s)running_identity_condition\(esp_err_t err\).*?ESP_ERR_NVS_NOT_FOUND.*?NUWAX_OTA_IDENTITY_MISSING' -or
     $otaMain -notmatch '(?s)running_identity_condition\(esp_err_t err\).*?ESP_ERR_INVALID_CRC.*?NUWAX_OTA_IDENTITY_STALE' -or
-    $otaMain -notmatch '(?s)nuwax_ota_main_get_running_image_sha256\(.*?nuwax_ota_running_image_pending_verify\(&pending_verify\).*?nuwax_ota_identity_partition_fallback_allowed\(\s*pending_verify, identity_condition\).*?esp_image_get_metadata.*?partition_sha256_hex') {
+    $otaMain -notmatch '(?s)nuwax_ota_main_get_running_image_sha256\(.*?nuwax_ota_running_image_pending_verify\(&pending_verify\).*?nuwax_ota_identity_partition_fallback_allowed\(\s*pending_verify, identity_condition\).*?esp_image_get_metadata.*?running_partition_sha256') {
     throw "OTA running identity recovery regression: stale accepted metadata may fall back only for a non-pending running image."
 }
 $uidInitOffset = $deviceUid.IndexOf("esp_err_t nuwax_device_uid_init(void)")
@@ -1332,7 +1545,9 @@ if ($audioBoard -notmatch '\.hardware_profile = "miaopan_v2_0_n32r8"' -or
 }
 if ($audioBoard -notmatch 'current->channels == candidate->channels' -or
     $audioBoard -notmatch 'stale or malformed audio lease release rejected' -or
-    $audioBoard -notmatch 'audio board init retrying pending teardown before reinitialization' -or
+    $audioBoard -notmatch 'esp_err_t err = retry_teardown_locked\(\);' -or
+    $audioBoard -notmatch 'stale audio board ref rejected' -or
+    $audioBoard -notmatch 'memset\(ref, 0, sizeof\(\*ref\)\);' -or
     $vocatAudioBoard -notmatch 'static bool pa_output_latch_enabled\(void\)' -or
     $vocatAudioBoard -notmatch 'REG_READ\(GPIO_OUT_REG\)' -or
     $vocatAudioBoard -notmatch 'REG_READ\(GPIO_OUT1_REG\)' -or
@@ -1421,13 +1636,14 @@ if ($productDefaults -notmatch 'CONFIG_NUWAX_OTA_ENABLE=y' -or
     $productDefaults -notmatch '(?m)^# CONFIG_NUWAX_LIVE_AEC_ADAPTIVE_REF_ENABLE is not set\s*$' -or
     $productDefaults -notmatch '(?m)^CONFIG_NUWAX_LIVE_AEC_HUMAN_RESCUE_ENABLE=y\s*$' -or
     $productDefaults -notmatch '(?m)^# CONFIG_NUWAX_LIVE_AEC_HUMAN_RESCUE_FIR_ENABLE is not set\s*$' -or
-    $productDefaults -notmatch '(?m)^CONFIG_NUWAX_VOICE_UPLINK_QUEUE_DEPTH=16\s*$' -or
-    $productDefaults -notmatch '(?m)^CONFIG_NUWAX_VOICE_UPLINK_REALTIME_MAX_AGE_MS=160\s*$' -or
+    $productDefaults -notmatch '(?m)^CONFIG_NUWAX_VOICE_UPLINK_QUEUE_DEPTH=64\s*$' -or
+     $productDefaults -notmatch '(?m)^CONFIG_NUWAX_VOICE_UPLINK_REALTIME_MAX_AGE_MS=1000\s*$' -or
     $productDefaults -notmatch '(?m)^CONFIG_NUWAX_RT_CAPTURE_QUEUE_DEPTH=12\s*$' -or
     $productDefaults -notmatch '(?m)^CONFIG_NUWAX_RT_CAPTURE_MAX_DECISION_AGE_MS=60\s*$' -or
     $productDefaults -notmatch '(?m)^CONFIG_NUWAX_BARGE_END_TO_END_MAX_FRAME_AGE_MS=100\s*$' -or
     $productDefaults -notmatch '(?m)^CONFIG_NUWAX_SPEAKER_BUFFER_BYTES=393216\s*$' -or
     $productDefaults -notmatch '(?m)^CONFIG_NUWAX_SPEAKER_BACKPRESSURE_POLL_MS=20\s*$' -or
+    $productDefaults -notmatch '(?m)^CONFIG_NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS=15000\s*$' -or
     $defaults -notmatch '(?m)^CONFIG_NUWAX_LIVE_AEC_NEAREND_RAW_MIX_Q15=0\s*$' -or
     $defaults -notmatch '(?m)^CONFIG_NUWAX_LIVE_AEC_STRONG_NEAREND_RAW_MIX_Q15=0\s*$') {
     throw "Product OTA defaults are incomplete."
@@ -1442,5 +1658,14 @@ if ($projectCmake -notmatch 'idf_component_get_property\(esp_audio_codec_compone
     $projectCmake -notmatch 'PROPERTY INTERFACE_LINK_LIBRARIES "\$\{esp_audio_codec_links\}"') {
     throw "The source-controlled esp_audio_codec path-with-spaces link fix is incomplete."
 }
+
+& python (Join-Path $projectRoot "tools/test-uplink-cleanup-handoff.py")
+if ($LASTEXITCODE -ne 0) { throw "Uplink cleanup handoff regression failed." }
+
+& python (Join-Path $projectRoot "tools/test-uplink-reaper-budget.py")
+if ($LASTEXITCODE -ne 0) { throw "Uplink reaper budget regression failed." }
+
+& python (Join-Path $projectRoot "tools/test-sd-media-admission.py")
+if ($LASTEXITCODE -ne 0) { throw "SD media admission regression failed." }
 
 Write-Host "V2 product migration host contracts: PASS"

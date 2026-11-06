@@ -1,0 +1,17 @@
+{
+  "revision": "20260922-audio-owner-v1",
+  "admissionRevision": "20260924-audio-admission-v1",
+  "sourceHashes": {
+    "main/mic_input.c": "8bab566945ca2e673406df2810fe2d395d1392019d2f308038e601498164a6d9",
+    "main/mic_input.h": "b8046d276e7892772e869cd5cd2b5dcd32a309bb51520e3f4374fa94e187adc8",
+    "main/board/audio_board.c": "03c8f78598189c4b70c8a30748f3bbb700762c1248b23b03f25c1c52146a1bcc",
+    "main/board/audio_board.h": "d33658803462aeaa5cf1fec293e5193a13f1369ddb71c509241c31998342adc8"
+  },
+  "elfSha256": "c84bfa4a4f3f7727172d97a767a45e8ddaa3d38e84c86f5560f68d9733e1423d",
+  "binSha256": "525856b47dd8949068472f4e8733fc76d22b1fed371753f6ed16d237f708e691",
+  "bytes": 3827536,
+  "referenceRegistryBytes": 64,
+  "referenceHandleBytes": 8,
+  "linkedMarkersVerified": true,
+  "hardwareValidated": false
+}

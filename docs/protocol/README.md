@@ -4,6 +4,19 @@ This directory contains machine-readable protocol assets for the device/server W
 
 ## Files
 
+- [`../SD会议监控场次上传协议.md`](../SD会议监控场次上传协议.md)
+  - Current card-session wire contract, reviewed against 7.0.173: one session begin, per-file commit, session_end, timestamps, control identity and binary layouts.
+- [`../SD会议监控功能逻辑与异常处理.md`](../SD会议监控功能逻辑与异常处理.md)
+  - Current recording, capacity-based monitoring retention, recovery, paired PC gateway profile and verification limits.
+  - These two documents take precedence for the card-session path. Root/default builds and legacy offline_audio profiles are separate configurations.
+- `../SD会议监控功能与协议完整说明.md`
+  - Historical 7.0.125/7.0.150 description; not the current integration contract.
+
+- `meeting-monitoring-sd-current-20260910.md`
+  - Historical September implementation contract, retained for the legacy path.
+  - Does not override the current card-session documents above.
+  - The separate complete-v2 document remains a future protocol design.
+
 - `device-cloud-protocol-complete-v1.md`
   - Current complete device/cloud WebSocket protocol entry point.
   - Covers authentication, keepalive, normal conversation, NA v1 uplink/downlink audio, barge-in, all device commands, meeting, monitoring, Wi-Fi, MCP, OTA, ACK/retry rules, and current compatibility messages.
@@ -48,6 +61,51 @@ This directory contains machine-readable protocol assets for the device/server W
   - Cloud-initiated notification playback for conversation and sleeping
     states, including ACK ordering, NA audio framing, cancellation, timeout,
     retry, and mode-isolation rules.
+
+- `device-error-report-v1.md`
+  - Bounded device error event queue, compact payload, idempotent cloud ACK,
+    retry and offline delivery rules.
+
+- `offline-audio-replay-v1.md`
+  - Minimal JSON begin/chunk/commit contract for replaying meeting or
+    monitoring audio archived on the SD card after a WebSocket reconnect.
+
+Legacy offline replay verification (not the current card-session test build):
+
+```powershell
+node .\NuwaxAIPartner-v2\tools\protocol\offline-audio-replay-gateway.js --self-test
+node .\NuwaxAIPartner-v2\tools\protocol\offline-audio-replay-gateway.js --host 0.0.0.0 --port 8810
+```
+
+The second command starts a test-only, unauthenticated WebSocket receiver at
+`ws://<LAN-IP>:8810/api/device/ws` (the path is accepted for compatibility).
+It persists each chunk before acknowledging it, supports resume from the
+durable `next_offset`, validates the `NWXOFF1` archive and CRC at commit, and
+renames a verified upload to `.complete`. It never connects to or changes the
+formal cloud service. Use `--delay-ack-ms`, `--drop-after-chunks`,
+`--reject-begin`, or `--reject-commit` to exercise timeout and negative-ACK
+handling; a device must retain its `.ready` file in all those failure cases.
+
+For hardware validation where the device must keep using the formal cloud,
+build with the additional defaults file:
+
+```powershell
+$env:SDKCONFIG_DEFAULTS = "sdkconfig.defaults;sdkconfig.product-ota.defaults;sdkconfig.offline-replay-test.defaults"
+idf.py -B build-offline-replay-test reconfigure build
+```
+
+This profile keeps the primary cloud URL and credentials unchanged. After a
+formal-cloud reconnect, a separate low-priority WebSocket sends only the
+offline archive protocol to the LAN receiver. Failure closes only that test
+connection and leaves `.ready` files for retry.
+
+Production builds use the authenticated formal-cloud WebSocket for offline
+replay. The product baseline enables
+`NUWAX_OFFLINE_AUDIO_REPLAY_FORMAL_ENABLE` and disables the LAN test switch.
+The device still retains each `.ready` segment until a matching successful
+commit ACK is received. The formal cloud must deploy the receiver and pass the
+protocol/CRC/resume acceptance tests before enabling this product image on
+fleet devices. The two replay switches remain mutually exclusive.
 
 - `fixtures/na/manifest.json`
   - Metadata for NA binary fixtures.

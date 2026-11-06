@@ -25,6 +25,13 @@ $lvglSources = Get-ChildItem -LiteralPath (Join-Path $LvglDir "src") -Recurse -F
 $sources = @(
     (Join-Path $CaptureDir "capture_main.c"),
     (Join-Path $CaptureDir "sim_stubs.c"),
+    (Join-Path $ProjectRoot "main\nuwax_ui_v28\face\conversation_visual.c"),
+    (Join-Path $ProjectRoot "main\nuwax_ui_v28\ota_progress.c"),
+    (Join-Path $ProjectRoot "main\nuwax_ui_v28\low_battery_warning.c"),
+    (Join-Path $ProjectRoot "main\nuwax_ui_v28\assets\low_battery_assets.c"),
+    (Join-Path $ProjectRoot "main\nuwax_ui_v28\assets\ota_logo.c"),
+    (Join-Path $ProjectRoot "main\nuwax_ui_v28\assets\ota_capsule.c"),
+    (Join-Path $ProjectRoot "main\nuwax_ui_v28\assets\fonts\nuwax_font_ota.c"),
     (Join-Path $ProjectRoot "main\nuwax_ui_v28\nuwax_face.c")
 ) + $lvglSources
 
@@ -42,15 +49,25 @@ function Path-Token([string]$Path) {
 }
 
 $objects = [System.Collections.Generic.List[string]]::new()
+$headerStamp = (Get-ChildItem -LiteralPath $LvglDir,$CaptureDir,$SupportDir -Recurse -File -Filter '*.h' |
+    Measure-Object -Property LastWriteTimeUtc -Maximum).Maximum
+$faceHeaderStamp = (Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'main\nuwax_ui_v28') -Recurse -File -Filter '*.h' |
+    Measure-Object -Property LastWriteTimeUtc -Maximum).Maximum
 foreach ($source in $sources) {
+    $dependencyStamp=$headerStamp
+    if (-not $source.StartsWith($LvglDir,[StringComparison]::OrdinalIgnoreCase) -and $faceHeaderStamp -gt $dependencyStamp) {
+        $dependencyStamp=$faceHeaderStamp
+    }
     $object = Join-Path $ObjDir ((Path-Token $source) + ".obj")
     $objects.Add($object)
     if ((Test-Path -LiteralPath $object) -and
         ((Get-Item -LiteralPath $object).LastWriteTimeUtc -ge
-         (Get-Item -LiteralPath $source).LastWriteTimeUtc)) {
+         (Get-Item -LiteralPath $source).LastWriteTimeUtc) -and
+        ((Get-Item -LiteralPath $object).LastWriteTimeUtc -ge $dependencyStamp)) {
         continue
     }
-    & $Gcc @commonArgs -c $source -o $object
+    $compileArgs=@($commonArgs)
+    & $Gcc @compileArgs -c $source -o $object
     if ($LASTEXITCODE -ne 0) { throw "compile failed: $source" }
 }
 

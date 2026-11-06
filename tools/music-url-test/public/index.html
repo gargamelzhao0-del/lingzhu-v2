@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f2f4f5" />
+    <title>Nuwax 音乐 URL 测试</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <span class="brand-mark" aria-hidden="true">NX</span>
+        <div class="brand-copy">
+          <span class="product-name">NUWAX DEVICE LAB</span>
+          <h1>音乐 URL 测试</h1>
+        </div>
+        <span id="server-state" class="state-pill">
+          <span class="state-dot" aria-hidden="true"></span>
+          <span id="server-state-text">正在检查</span>
+        </span>
+      </header>
+
+      <div class="workspace">
+        <div class="source-column">
+          <section class="source-section" aria-labelledby="source-heading">
+            <div class="section-heading">
+              <div>
+                <span class="section-label">音频源</span>
+                <h2 id="source-heading">选择测试音乐</h2>
+              </div>
+              <span class="format-badge">MP3 原文件 · 兼容 PCM</span>
+            </div>
+
+            <label id="drop-zone" for="audio-file">
+              <input
+                id="audio-file"
+                type="file"
+                accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac"
+              />
+              <span class="upload-symbol" aria-hidden="true">↑</span>
+              <strong id="upload-title">拖入音频文件</strong>
+              <span class="upload-subtitle">或点击浏览本地文件</span>
+              <span class="file-types">WAV · MP3 · M4A · AAC · OGG · FLAC</span>
+              <span class="waveform" aria-hidden="true">
+                <i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i>
+              </span>
+            </label>
+
+            <div id="progress-wrap" class="progress-wrap" hidden>
+              <div class="progress-head">
+                <span id="progress-label">处理中</span>
+                <span id="progress-value">0%</span>
+              </div>
+              <progress id="progress" max="100" value="0"></progress>
+            </div>
+          </section>
+
+          <section id="preview" class="preview-panel" hidden aria-label="本地试听">
+            <div class="preview-copy">
+              <span class="preview-icon" aria-hidden="true">♪</span>
+              <div>
+                <span class="section-label">本地试听</span>
+                <strong id="source-name">已转换音频</strong>
+              </div>
+            </div>
+            <audio id="audio-preview" controls preload="metadata"></audio>
+          </section>
+        </div>
+
+        <aside class="device-panel" aria-labelledby="device-heading">
+          <div class="device-heading">
+            <div>
+              <span class="section-label">目标设备</span>
+              <h2 id="device-heading">播放参数</h2>
+            </div>
+            <span class="device-indicator" aria-label="局域网服务在线">
+              <span aria-hidden="true"></span>
+              LAN
+            </span>
+          </div>
+
+          <div class="url-field">
+            <span>设备播放 URL</span>
+            <div class="url-row">
+              <code id="device-url">正在检测地址</code>
+              <button
+                id="copy-url"
+                class="icon-button"
+                type="button"
+                title="复制设备播放 URL"
+                aria-label="复制设备播放 URL"
+              >
+                <span class="copy-icon" aria-hidden="true"></span>
+              </button>
+            </div>
+          </div>
+
+          <dl class="spec-list">
+            <div>
+              <dt>目标格式</dt>
+              <dd id="source-format">等待音频</dd>
+            </div>
+            <div>
+              <dt>采样率</dt>
+              <dd id="sample-rate">跟随 MP3 原采样率</dd>
+            </div>
+            <div>
+              <dt>文件大小</dt>
+              <dd id="file-size">-</dd>
+            </div>
+            <div>
+              <dt>播放时长</dt>
+              <dd id="duration">-</dd>
+            </div>
+          </dl>
+
+          <div class="music-controls">
+            <label for="target-device">播放设备</label>
+            <select id="target-device"><option value="">等待设备连接</option></select>
+            <div class="control-buttons">
+              <button id="send-music" type="button" disabled>发送播放</button>
+              <button id="stop-music" type="button" disabled>中止</button>
+            </div>
+            <p id="device-playback-state" role="status">设备上线后即可发送；再次发送会切换歌曲。</p>
+          </div>
+        </aside>
+      </div>
+
+      <footer class="status-footer">
+        <span id="message-icon" class="message-icon" aria-hidden="true">i</span>
+        <p id="message" role="status" aria-live="polite">请选择一个音频文件。</p>
+      </footer>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

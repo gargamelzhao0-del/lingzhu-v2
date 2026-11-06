@@ -1,0 +1,37 @@
+[
+  {
+    "suite": "run-v2-product-host-checks.ps1",
+    "exit_code": 0,
+    "elapsed_s": 250.77
+  },
+  {
+    "suite": "run-conversation-host-checks.ps1",
+    "exit_code": 0,
+    "elapsed_s": 18.22
+  },
+  {
+    "suite": "run-meeting-host-checks.ps1",
+    "exit_code": 0,
+    "elapsed_s": 2.95
+  },
+  {
+    "suite": "run-monitoring-host-checks.ps1",
+    "exit_code": 0,
+    "elapsed_s": 2.79
+  },
+  {
+    "suite": "run-offline-audio-host-checks.ps1",
+    "exit_code": 0,
+    "elapsed_s": 39.59
+  },
+  {
+    "suite": "run-provisioning-host-checks.ps1",
+    "exit_code": 0,
+    "elapsed_s": 0.97
+  },
+  {
+    "suite": "run-wifi-recovery-host-checks.ps1",
+    "exit_code": 0,
+    "elapsed_s": 1.42
+  }
+]

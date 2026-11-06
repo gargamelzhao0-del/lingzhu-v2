@@ -1,0 +1,135 @@
+/* Hardware ownership is doubled; policy, activity and reconciliation are
+ * extracted from production main. No enum alone proves a live MIC owner. */
+#include <assert.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <string.h>
+#include "app_state.h"
+#include "conversation/awake_session_state.h"
+#include "conversation/prelisten_state.h"
+#include "conversation/listen_resume_state.h"
+#include "conversation/normal_conversation_policy.h"
+#include "conversation/turn_guard.h"
+#define CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC 1
+#define CONFIG_NUWAX_SPEAKER_ENABLE 1
+#define NUWAX_HEAD_TOUCH_AGENT_STATE_IDLE 0
+#define NUWAX_SPEAKER_PLAYBACK_OWNER_CONVERSATION 1
+#define ESP_LOGI(tag,...) do{(void)(tag);if(0)printf(__VA_ARGS__);}while(0)
+static const char *TAG="host";
+static nuwax_awake_session_state_t s_awake_session;
+static nuwax_prelisten_state_t s_prelisten;
+static nuwax_listen_resume_state_t s_listen_resume;
+static nuwax_turn_guard_t s_turn_guard;
+static nuwax_normal_conversation_policy_t s_normal_conversation;
+static atomic_bool s_reprovision_quiesce_requested;
+static struct {bool active;} s_notification_transaction,s_sleep_transaction,s_touch_cancel_recovery,s_playback_terminal_guard;
+static bool terminal_pending;
+static struct {int state;} s_head_touch_agent_intent;
+static bool music,exclusive,power,mic,sender,menu,playback,s_sleep_request_pending,ota;
+static bool s_sleep_request_local_power;
+static uint32_t barriers;
+static char s_sleep_request_reason[48];
+static uint32_t now,epoch=1,starts,sleeps,cancels;
+static nuwax_app_state_t state;
+typedef struct {
+ int active_owner;
+ uint32_t playback_generation,playback_connection_epoch,played_frames;
+} nuwax_speaker_playback_stats_t;
+static nuwax_speaker_playback_stats_t stats;
+static uint32_t monotonic_ms(void){return now;}
+static uint32_t active_ws_epoch_snapshot(void){return epoch;}
+static void *active_ws_snapshot(void *unused){(void)unused;return NULL;}
+static bool product_music_blocks_audio(void){return music;}
+static bool exclusive_audio_mode_blocks_normal_audio(void){return exclusive;}
+static bool local_power_transition_active(void){return power;}
+static bool exclusive_audio_owner_active(void){return exclusive;}
+static bool nuwax_ota_device_blocks_audio(void){return ota;}
+static bool conversation_capture_busy_for_sleep(void){return mic;}
+static bool nuwax_audio_uplink_sender_busy(void){return sender;}
+static bool nuwax_audio_terminal_recovery_pending(void){return terminal_pending;}
+static bool nuwax_app_shell_blocks_auto_followup(void){return menu;}
+static bool nuwax_speaker_playback_has_pending(void){return playback;}
+static void nuwax_speaker_playback_get_stats(nuwax_speaker_playback_stats_t *out){*out=stats;}
+static nuwax_app_state_t conversation_state_current(void){return state;}
+static bool sleep_transaction_blocks_new_audio(void){return s_sleep_request_pending||s_sleep_transaction.active;}
+static void clear_sleep_request(void){s_sleep_request_pending=false;s_sleep_request_reason[0]=0;}
+static void enter_sleeping_conversation_state(const char *why){(void)why;++sleeps;state=NUWAX_APP_STATE_SLEEPING;nuwax_awake_session_state_clear(&s_awake_session);}
+static void request_sleeping_conversation_state(const char *why){
+ if(mic){++cancels;s_sleep_request_pending=true;strcpy(s_sleep_request_reason,why);}
+ else enter_sleeping_conversation_state(why);
+}
+static int begin_local_power_sleep_transaction(void *ws,const char *why){
+ (void)ws;
+ ++barriers;s_sleep_request_pending=s_sleep_request_local_power=true;
+ strcpy(s_sleep_request_reason,why);return 0;
+}
+static uint32_t awake_session_listen_window_ms(uint32_t t){return nuwax_awake_session_state_remaining_ms(&s_awake_session,t);}
+static void start_prelisten_window(const char *mode,uint32_t window,uint32_t delay){
+ ++starts;nuwax_prelisten_state_start_window(&s_prelisten,mode,now,window,delay);
+}
+@FUNCTION:note_valid_conversation_activity@
+@FUNCTION:service_normal_conversation_inactivity@
+@FUNCTION:awake_idle_sleep_admitted@
+@FUNCTION:maybe_enter_idle_sleep@
+static void reset(void){
+ memset(&s_prelisten,0,sizeof(s_prelisten));memset(&s_listen_resume,0,sizeof(s_listen_resume));
+ memset(&s_turn_guard,0,sizeof(s_turn_guard));memset(&stats,0,sizeof(stats));
+ music=exclusive=power=mic=sender=menu=playback=ota=s_sleep_request_local_power=false;barriers=0;
+ s_notification_transaction.active=s_sleep_transaction.active=false;
+ s_touch_cancel_recovery.active=s_playback_terminal_guard.active=terminal_pending=false;
+ s_head_touch_agent_intent.state=0;atomic_store(&s_reprovision_quiesce_requested,false);
+ clear_sleep_request();starts=sleeps=cancels=0;now=1000;
+ nuwax_awake_session_state_begin(&s_awake_session,60000);
+ nuwax_normal_conversation_begin(&s_normal_conversation,s_awake_session.generation,now,60000);
+ state=NUWAX_APP_STATE_LISTENING;
+}
+int main(void){
+ reset();maybe_enter_idle_sleep();assert(starts==1 && s_prelisten.pending);
+ puts("PASS paused LISTENING with no physical owner re-arms capture");
+ for(int gate=0;gate<13;gate++){
+  reset();
+  switch(gate){case 0:mic=true;break;case 1:sender=true;break;
+   case 2:s_turn_guard.active=true;break;case 3:s_notification_transaction.active=true;break;
+   case 4:s_sleep_transaction.active=true;break;case 5:exclusive=true;break;
+   case 6:playback=true;break;case 7:menu=true;break;
+   case 8:s_head_touch_agent_intent.state=1;break;
+   case 10:s_touch_cancel_recovery.active=true;break;
+   case 11:s_playback_terminal_guard.active=true;break;
+   case 12:terminal_pending=true;break;
+   case 9:nuwax_listen_resume_state_bind_round(&s_listen_resume,s_awake_session.generation,"round");
+    assert(nuwax_listen_resume_state_arm_post_end_asr_bounded(&s_listen_resume,1,now,15000,60000));break;}
+  maybe_enter_idle_sleep();assert(starts==0 && !s_prelisten.pending && !sleeps);
+ }
+ puts("PASS MIC, sender, turn, notification, sleep, mode, playback, menu, touch, post-END owner fences");
+ reset();menu=true;now=60999;assert(!service_normal_conversation_inactivity());
+ now=61000;assert(service_normal_conversation_inactivity());assert(sleeps==1);
+ reset();s_turn_guard.active=true;now=61000;
+ assert(service_normal_conversation_inactivity() && sleeps==1);
+ puts("PASS menu and remote wait cannot pause the 60s effective-activity deadline");
+ for(int gate=0;gate<6;gate++){
+  reset();now=100000;
+  if(gate==0)music=true;
+  if(gate==1)exclusive=true;
+  if(gate==2)power=true;
+  if(gate==3)s_notification_transaction.active=true;
+  if(gate==4)atomic_store(&s_reprovision_quiesce_requested,true);
+  if(gate==5)ota=true;
+  assert(!service_normal_conversation_inactivity() && !sleeps);
+ }
+ puts("PASS inactivity recovery preserves music, meeting/monitoring, power, notification and provisioning owners");
+ reset();playback=true;s_turn_guard.active=true;s_turn_guard.speaker_generation=7;
+ stats.active_owner=NUWAX_SPEAKER_PLAYBACK_OWNER_CONVERSATION;
+ stats.playback_generation=7;stats.playback_connection_epoch=epoch;
+ for(now=2000;now<=122000;now+=1000){stats.played_frames++;assert(!service_normal_conversation_inactivity());}
+ assert(!sleeps);now=181999;assert(!service_normal_conversation_inactivity());
+ now=182000;assert(service_normal_conversation_inactivity() && !sleeps && barriers==1);
+    note_valid_conversation_activity();assert(s_sleep_request_pending);
+ puts("PASS advancing physical PCM sustains long reply; stalled playback expires after 60s");
+ reset();mic=true;now=61000;assert(!service_normal_conversation_inactivity());
+ now=61599;assert(!service_normal_conversation_inactivity());
+ now=61600;assert(service_normal_conversation_inactivity() && cancels==1 && s_sleep_request_pending);
+ note_valid_conversation_activity();assert(!s_sleep_request_pending);
+ assert(!service_normal_conversation_inactivity());
+ puts("PASS bounded speech-confirmation margin; safe MIC cancellation; valid activity revokes stale local sleep intent");
+ return 0;
+}

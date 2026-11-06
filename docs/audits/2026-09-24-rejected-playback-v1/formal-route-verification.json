@@ -1,0 +1,21 @@
+{
+  "profile": "formal-cloud",
+  "elfSha256": "51435de69084ba9824e2933c7c4da269e827bd10eb40eb734aedccb62a2da443",
+  "binSha256": "8302559308227b4019addc6c0cb639869fa80599c58fd0bfb39d372e7fc2bddc",
+  "requiredSymbols": [
+    "formal_replay_task",
+    "nuwax_offline_audio_replay_formal_start",
+    "nuwax_offline_audio_observe_formal_hello",
+    "nuwax_cloud_config_get",
+    "nuwax_ota_progress_create",
+    "nuwax_ota_progress_update",
+    "nuwax_ota_logo",
+    "nuwax_ota_capsule"
+  ],
+  "testImplementationsAbsent": true,
+  "testUrlAndTokenAbsent": true,
+  "otaBootPreviewAbsent": true,
+  "otaProductionUiLinked": true,
+  "offlineHours": 8,
+  "hardwareValidated": false
+}

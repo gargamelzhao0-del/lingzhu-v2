@@ -1,0 +1,45 @@
+# Formal replay shares the authenticated, provisioned cloud WebSocket.
+# This overlay never supplies a cloud URL or a device secret.
+# CONFIG_NUWAX_TEST_PANEL_ENABLE is not set
+# CONFIG_NUWAX_TEST_NETWORK_ENABLE is not set
+# CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE is not set
+# CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_LANE_PROBE is not set
+# CONFIG_NUWAX_SD_GATEWAY_DISCOVERY_ENABLE is not set
+CONFIG_NUWAX_SD_REPLAY_EARLY_TCP_WRITABLE=y
+CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE=y
+CONFIG_NUWAX_SD_SESSION_ENABLE=y
+# Keep the deployed APP control compatibility; upload messages are unchanged.
+CONFIG_NUWAX_SD_LEGACY_CONTROL_COMPAT=y
+CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_FORMAL_ENABLE=y
+CONFIG_NUWAX_OFFLINE_AUDIO_MAX_SEGMENT_BYTES=4194304
+CONFIG_NUWAX_OFFLINE_AUDIO_MAX_BYTES=1610612736
+CONFIG_NUWAX_MEETING_OFFLINE_MAX_HOURS=8
+CONFIG_NUWAX_SD_MEETING_MAX_HOURS=8
+CONFIG_NUWAX_SD_TLS_SCOPED_AES=y
+CONFIG_NUWAX_MONITORING_OFFLINE_MAX_HOURS=8
+# Retain the validated SD/display performance settings during cloud migration.
+CONFIG_NUWAX_SD_CARD_HIGHSPEED_ENABLE=y
+# TCP buffers are ceilings, allocated on demand. The SD sender additionally
+# limits actual queued bytes by CURRENT PSRAM/internal memory and reserves
+# control space. Scaling is required for a send limit above 65535 bytes.
+CONFIG_LWIP_WND_SCALE=y
+CONFIG_LWIP_TCP_RCV_SCALE=0
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=131072
+CONFIG_LWIP_TCP_WND_DEFAULT=11520
+# One 8064-byte historical audio payload plus protocol/WS headers per record.
+# External mbedTLS allocation is retained. Global AES/SHA stay software;
+# the SD Binary sender alone may use the checked hardware AES adapter.
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=8192
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=32
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+# Run socket API work under lwIP's mutex instead of posting and waiting for
+# a TCPIP-thread message on every write. RX input keeps its normal task path.
+CONFIG_LWIP_TCPIP_CORE_LOCKING=y
+CONFIG_ESP32S3_DATA_CACHE_32KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
+CONFIG_NUWAX_UI_PERF_LOG_ENABLE=y
+CONFIG_CJSON_NESTING_LIMIT=32
+# URL music uses the existing play_music/stop_music cloud commands.
+CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE=y
+# CONFIG_NUWAX_MUSIC_CONTROL_TEST_ENABLE is not set

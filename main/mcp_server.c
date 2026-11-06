@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "json_resource_budget.h"
 #include "esp_log.h"
 
 static const char *TAG = "nuwax_mcp";
@@ -251,7 +252,7 @@ esp_err_t nuwax_mcp_handle_message(nuwax_ws_client_t *ws,
 
     const size_t payload_len = strlen(payload_json);
     const char *parse_end = NULL;
-    cJSON *request = cJSON_ParseWithLengthOpts(payload_json,
+    cJSON *request = nuwax_json_parse_with_length_opts(payload_json,
                                               payload_len,
                                               &parse_end,
                                               false);

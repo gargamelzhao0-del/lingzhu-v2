@@ -1,0 +1,56 @@
+{
+  "revision": "20260922-audio-owner-v1",
+  "elfSha256": "8cb4a2eb7dc9546626f88d01a0de5e5f63fb94cf94c1b65ee3ceb09244606040",
+  "binSha256": "9a02abda1dac79cc055224fd45aac4ce3aa3ace8a9482d99104dadc446f2e754",
+  "bytes": 3818400,
+  "referenceRegistryBytes": 64,
+  "referenceHandleBytes": 8,
+  "linkedMarkersVerified": true,
+  "hardwareValidated": false,
+  "captureStackFrames": {
+    "stream_microphone_audio": 3488
+  },
+  "images": [
+    {
+      "offset": "0x0",
+      "file": "bootloader/bootloader.bin",
+      "sha256": "537317e1c755d39e787830af655e524dfca17feab31861c5f25442f8a06904fe"
+    },
+    {
+      "offset": "0x8000",
+      "file": "partition_table/partition-table.bin",
+      "sha256": "2d14d431e660392a4f6bd8610a97f298b6a7e5810dbdcaf5d16ab98089abb06d"
+    },
+    {
+      "offset": "0xf000",
+      "file": "ota_data_initial.bin",
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    },
+    {
+      "offset": "0x20000",
+      "file": "srmodels/srmodels.bin",
+      "sha256": "dec3196aaadcf4e6305434462f5735e1148e5ddfe1f6a0696776d666f9066d34"
+    },
+    {
+      "offset": "0x2c0000",
+      "file": "NuwaxAIPartner.bin",
+      "sha256": "9a02abda1dac79cc055224fd45aac4ce3aa3ace8a9482d99104dadc446f2e754"
+    },
+    {
+      "offset": "0xb00000",
+      "file": "emotion_assets/emotion-assets.bin",
+      "sha256": "c8e9258f5963f6b08089ef80af6190ba1053e3e73dfc990d529d090a6f752897"
+    }
+  ],
+  "sourceSha256": {
+    "main/board/audio_board.c": "e153981edde7acfc88ced3012610dd949fbaf1324f3613b2a9335e24b818f56a",
+    "main/board/audio_board.h": "5fe9b189e75ff7bf5f207719dbb766d5620123b10cf071459bae90d30ba4bbfb",
+    "main/board/vocat_audio_board.c": "ba29f1bd407380d1810bb6164df79d1759f58bbd749968f4f75f4d85f446eb33",
+    "main/mic_input.c": "a92290420c1f4167dea1d6650cccc7d1dbed8da09362a6a4a5186a1e0ac86f0c",
+    "main/mic_input.h": "728ddc558e20a2793a820ee61a87b4f73dfa0544a4da93bf891e87c1a81fb165",
+    "main/speaker_output.c": "b5e13809b93dc64136d43814a4283c3a90b169e226c7259c9b3b56e08050c676",
+    "main/speaker_output.h": "f0a2d0e483472cff19667a7fdfd86cbba2f6f5d217cac7c5ea8d7fad9c5349e7",
+    "main/conversation/speaker_playback.c": "80766c3c0276956afcb5a193e49729021da091661d3d070119229e5a668a3ed4",
+    "main/nuwax_ai_partner_main.c": "8bc1b2dae072272ef5af6b9df44c1f9da2711b36064c01ab227149ed01816006"
+  }
+}

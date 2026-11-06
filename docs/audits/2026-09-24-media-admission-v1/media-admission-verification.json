@@ -1,0 +1,13 @@
+{
+  "revision": "20260924-media-admission-v1",
+  "elfSha256": "6f50ec9c8302dd271c43cbb9534517551dc56a49fbafa5c5017b39a3f5b9e79c",
+  "binSha256": "e05f6031a92cceffcca99259778a82e703673288c1d3d911cb45703cc8b0bd07",
+  "bytes": 3828256,
+  "hardwareValidated": false,
+  "sourceHashes": {
+    "main/offline_audio_spool.c": "f8149e133c8be0aedbc4abd672cc0a709e7670788d19b9868f720024976dd261",
+    "main/offline_audio_spool.h": "95ab9bc706863a09e7113d782c0e40af0282a611eae4f3e71fa82e8dd268f968",
+    "main/offline_audio_mirror_host_check.c": "cc5a6278d32ce942a3d63ac9f0e7dcf61c3dd1489087121d12479b48d5fe3355",
+    "tools/test-sd-media-admission.py": "b402d3ede84601b5479121495231d460c28191b1215e08de647c24906cdf7cb2"
+  }
+}

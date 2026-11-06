@@ -1,0 +1,14 @@
+{
+  "source_files_checked": 636,
+  "changed_source_files": [],
+  "original_baseline": "docs/audits/2026-10-09-product-release/source-hashes.json",
+  "product_source_modified": false,
+  "hardware_flashed": false,
+  "network_attack_executed": false,
+  "packaged_domains": [
+    "audio-ux",
+    "data-network",
+    "security"
+  ],
+  "portability_edits": "Audit scripts locate repository ancestor; cloud config test uses explicit include search path; product code untouched."
+}

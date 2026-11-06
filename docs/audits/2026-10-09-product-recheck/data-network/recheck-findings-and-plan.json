@@ -1,0 +1,144 @@
+{
+  "scope": "Read-only second review of current device source; no production code changes, no hardware flash, no cloud upload.",
+  "R2": {
+    "verdict": "Confirmed persistent-state defect; wording narrowed to the mode status, not every screen indicator.",
+    "real_user_path": [
+      "A user starts an authorized online meeting or monitoring session. The SD backup is optional for this online path.",
+      "The network is lost while the card is absent, cannot mount, or the SD runtime cannot initialize.",
+      "main:34975-35013 retains the offline lease despite the failed init/start result.",
+      "main:34333 repeatedly calls the actual retry service; offline_audio_spool:1581 returns the real media error.",
+      "main:12795 marks capture_failed and 12824 enqueues a diagnostic, but neither changes the user-visible mode state.",
+      "main:4372-4388 derives ACTIVE from lease alone; drawer:1401-1405 maps meeting ACTIVE to the visible text 运行中.",
+      "This persists while no card returns and the user does not explicitly stop. No offline MIC-owner time is consumed if capture never starts."
+    ],
+    "counterevidence_and_limits": [
+      "A healthy brief handoff may legitimately have lease=true/capture=false. The first-review isolated UI test alone did not distinguish it; the second-review test exercises 600 seconds of actual retry and UI functions.",
+      "The existing background retry does recover after storage becomes usable. It cannot recreate the audio from the failed interval.",
+      "nuwax_dialog_policy.h:16-20 prioritizes network recovery RECOGNIZING over exclusive-mode LISTENING. Do not claim every face or bottom indicator necessarily lies.",
+      "device_error_report.c:1005 returns without sending while disconnected; advisory warnings may be deduplicated or dropped. This is not an immediate offline user notification.",
+      "Online cloud-only recording may remain legitimately active without SD. SD backup failure alone must not abort a working online stream.",
+      "Monitoring VAD silence is intentionally not archived. Cloud upload pause does not stop the independent local voice archive (monitoring_mode.c:1681-1690). Neither condition is a recording failure.",
+      "User disable is fenced and stops offline capture; local stop must remain possible in a proposed ERROR/WAITING state.",
+      "A full-card/writer failure is independently source-confirmed but not physically reproduced here; the exact SD write latency and failure behavior still require hardware injection."
+    ],
+    "host_test": {
+      "script": "recheck_offline_failure.py",
+      "evidence": "persistent-missing-sd-evidence.json",
+      "log": "persistent-missing-sd.log",
+      "result_each_mode": "600000 simulated ms; 124 init retries; 124 warning enqueue calls; zero capture starts; failure flag true; mode ACTIVE throughout.",
+      "controls": "Restored init result launches capture and clears failure. Explicit duration expiry clears the lease and UI state.",
+      "limits": "Deterministic SD init error and scheduler/clock stubs, not physical absence measurement. The production caller, retry, expiry and UI branches establish reachability."
+    }
+  },
+  "recording_state_design": {
+    "principle": "Keep user intent, actual capture, storage result and session coverage separate. No SD management panel is required.",
+    "axes": {
+      "intent": "OFF / MEETING / MONITORING, with an explicit cancellation generation and authorization/binding scope.",
+      "capture": "STARTING / RUNNING / HANDOFF / STOPPING / STOPPED / FAULT; include a monotonic progress heartbeat and physical MIC ownership.",
+      "local_sink": "NOT_REQUIRED / READY / BUFFERING / WRITING / DRAINING / UNAVAILABLE / FULL / IO_ERROR; track admitted, written and durably synced sequence watermarks independently.",
+      "live_sink": "AUTHORIZED / CONNECTED / SENDING / PAUSED_BY_POLICY / DISCONNECTED / FAILED; transport send success does not imply durable server storage.",
+      "coverage": "HEALTHY / KNOWN_GAP / UNKNOWN_BOUNDARY, with sticky per-session totals and intervals. Existing footer complete is not a complete end-to-end coverage proof.",
+      "replay": "QUEUED / TRANSFERRING / COMMIT_ACKED / LOCAL_DELETE_PENDING, always tied to owner scope, binding generation and WS epoch."
+    },
+    "ui_policy": [
+      "A short healthy handoff with bounded retained PCM uses existing STARTING/recovering status; do not turn every handoff into a failure. Choose the grace from existing handoff bounds and measured target-board latency, not a guessed universal timeout.",
+      "An offline start that has no usable local sink must show the existing mode ERROR plus one concise notice: 录音已中断，当前内容无法保存. Keep a separate auto-recovery intent only while the user has not stopped and ownership remains valid.",
+      "Persistent write failure or exhausted staging must latch an interrupted-recording result, including already lost interval; a hidden warning queue is insufficient.",
+      "A restored sink or restored authenticated live path may resume the same session if the intent, generation and offline budget still allow it. Show 录音已恢复，期间有内容未保存 once; do not erase the coverage fault.",
+      "Healthy monitoring with no detected speech stays armed/active without requiring an open file or recent SD write. Storage admission/health and detector progress, not output-byte rate, determine readiness.",
+      "Online working cloud capture can continue when optional local backup is unavailable. The severe interruption message applies when required recording has no viable destination.",
+      "Explicit stop wins over recovery, pending enable ACK, UI refresh and card insertion. ERROR must not make the stop control inaccessible.",
+      "A separate saved/completed notification must wait for the relevant close/durability result. ACTIVE means operating, not a guarantee that every frame has been committed."
+    ],
+    "session_and_gap_rules": [
+      "Keep original audio_session_id for an authorized surviving session; new transport requests use new request_id. Reopening after a real stop, expiry, owner change or boot without persisted resume authorization is a new session.",
+      "Do not reset captured or persisted sequence counters on a storage retry. Carry the existing next_capture_sequence behavior forward.",
+      "A write rejection after a known physical frame has an exact missing sequence range. A period with no MIC capture has unknown sample count: record start/end monotonic time and reason, not invented exact missing frames.",
+      "Use boot_id plus monotonic times, with trusted wall-clock anchor where available, so reboot does not merge incomparable uptime ranges.",
+      "Classify monitoring policy silence separately from storage loss; its sequence gaps between speech segments are intentional.",
+      "Store bounded session ledger/checkpoints outside the failed audio sink where practicable, with double-record CRC/version and safe asynchronous persistence. If that metadata cannot persist, retain UNKNOWN coverage rather than claim success.",
+      "Do not rewrite existing archive headers, PCM, footers or CRCs to add status. Sidecar metadata is separate; legacy wire payload and segment identity remain unchanged.",
+      "For immediate compatibility, existing device_error_report can carry session-scoped interruption codes, but its bounded advisory queue is not the authoritative durable ledger. Rich APP recovery/history status requires an agreed optional protocol extension or server query; firmware cannot prove that the current APP already renders it."
+    ],
+    "storage_policy": [
+      "Check media and at least the next segment/reserve before admitting offline storage. If an eight-hour guarantee is offered, also preflight available quota and physical space against existing backlog and declared format.",
+      "Retain staging only within its actual bounded capacity; temporary queue backpressure is not loss until that buffer overflows or its close deadline expires.",
+      "Keep recording higher priority than replay. Never delete uncommitted old recordings to manufacture free space.",
+      "On FULL while offline, report recording interruption and retry only on meaningful recovery opportunities. On network recovery, allow an authorized live sink; historical replay drains when storage/capture owners permit.",
+      "Do not block UI/MIC callbacks on scans, fsync, NVS compaction or cloud ACKs. Use owner task snapshots and deferred actions."
+    ]
+  },
+  "R3": {
+    "verdict": "Client lacks original-owner isolation; actual disclosure is conditional on cloud accepting begin and exposing the data.",
+    "ack_gate": "offline_audio_spool.c:3684-3691 must accept matching begin ACK before binary chunks. Current epoch correlation protects transport lifetime, not ownership provenance.",
+    "required_distinctions": {
+      "wifi_change": "Same owner scope, preserve archives and resume normally.",
+      "credential_rotation": "Same stable owner scope with a new auth-key generation, preserve archives; secret hash is not owner identity.",
+      "ws_to_wss_or_endpoint_migration": "Require trusted same-owner/server migration proof; preserve archive bytes and ownership. Changing URL must not automatically delete files or imply a new person.",
+      "owner_change": "A different authenticated owner scope or ownership epoch fences old captures and replay and isolates their archives.",
+      "silent_cloud_reassignment_same_secret": "A local random generation or comparing deviceId/secret cannot detect it. The server must return authoritative current ownership scope before replay.",
+      "legacy_archive": "Unknown provenance must not be silently assigned to the current user or deleted. Keep quarantined, original bytes and CRC unchanged."
+    },
+    "recommended_design": [
+      "Add an authenticated stable recording_owner_scope plus ownership_epoch from the authoritative cloud. Keep auth/key generation and network configuration generation separate.",
+      "Negotiate owner-aware replay capability. Missing scope means no automatic replay of owner-unknown/legacy data; it may not be interpreted as proof that old recordings belong to the current connection.",
+      "Persist owner scope in an atomic sidecar or authenticated local metadata index before an archive becomes replay-eligible. Do not alter existing archive wire headers/CRC or basename-derived segment IDs.",
+      "At an owner transition, fence new capture/replay admissions, cancel active replay, request capture stop, and wait for consumers, close workers and callbacks to leave the old generation before committing the new one. An error leaves old data isolated, not rebound.",
+      "Capture the tuple owner_scope/ownership_epoch/local_generation/WS_epoch/segment_id for begin, chunk, commit ACK and local deletion. Recheck at every state transition so a delayed old ACK cannot delete or finish a new-owner transaction.",
+      "Treat same-owner WSS migration and key rotation as auth/network transitions; reauthorize the new transport while retaining original scope and archived data.",
+      "For legacy data, migrate only with independently established original-owner proof or a deliberately authorized recovery process. Being the current bound user is insufficient. Unknown files stay quarantined without changing the original bytes.",
+      "Without any server ownership field, firmware can conservatively isolate data on explicit local unbind/claim boundaries, but cannot guarantee protection against undetectable silent account reassignment using unchanged credentials. This limitation must be explicit.",
+      "Cross-user isolation does not itself encrypt a removable SD card. Encryption/secure erase is a separate requirement if physical-card confidentiality is in scope."
+    ]
+  },
+  "interaction_recheck": [
+    {
+      "case": "Eight-hour limit",
+      "present": "Current code counts actual offline MIC-owner time; limit sets a latch and main:12717-12734 clears lease, identity and future automatic resume.",
+      "remaining": "End-user reason is not surfaced by this path; verify exactly-at-limit handoff, tail drain, delayed cloud enable ACK and no restart of the old session. Do not count healthy monitoring silence as failure."
+    },
+    {
+      "case": "Low battery versus normal shutdown",
+      "present": "Normal long-press fences storage/replay, stops capture and waits for the barrier (main:7030-7054,7120-7131; spool:2958-2985).",
+      "remaining": "Battery depletion is not proven to enter that sequence. RAM buffers and unsynced tail can be lost; recovery preserves valid .part prefix but does not prove zero loss. A board-tested low-power stop margin, bounded finalization and explicit incomplete outcome are needed if graceful low-battery recording is promised."
+    },
+    {
+      "case": "User stop and cloud pause",
+      "present": "Local disable cancels the lease and requests MIC stop. Monitoring cloud pause still permits local voice recording.",
+      "remaining": "Candidate state reducer must distinguish privacy OFF from upload PAUSE and from VAD silence; STOP generation must invalidate recovery/late ACKs."
+    },
+    {
+      "case": "Unbind/reprovision",
+      "present": "Cloud provision_required closes the current transport; the reprovision path clears lease and requests capture stop (main:34271-34275).",
+      "remaining": "No archive-owner migration/isolation in current format. The transition must finish old-generation consumers before new credentials may replay."
+    },
+    {
+      "case": "OTA",
+      "present": "Current admission checks controller owners, offline lease/capture/archive and formal replay (main:16601-16644); OTA returns audio_busy rather than intentionally updating during live recording.",
+      "remaining": "Do not report OTA-overwrites-active-recording as a new confirmed bug here. The false lease can also block OTA until user stop. Test stop-to-OTA with detached tails, pending footer, delayed commit ACK and owner change; preserve owner metadata across update."
+    },
+    {
+      "case": "Reboot",
+      "present": "Capture lease, resume session and offline time budget are RAM state; .part recovery reconstructs file prefixes.",
+      "remaining": "Do not equate file recovery with autonomous session resumption. A new durable status ledger needs boot boundaries and privacy-safe resume policy; old bindings must never be inferred from current credentials."
+    }
+  ],
+  "before_after_user_experience": [
+    {"case":"Online meeting loses network with no card", "before":"Mode can remain 运行中 while zero offline capture starts; only network recovery indicator and deferred diagnostics explain anything.", "after":"Mode displays recording interrupted with one concise cannot-save notice; explicit stop remains available. Recovery resumes only if intent/scope permit, and the missing interval remains visible."},
+    {"case":"Healthy brief network handoff", "before":"Lease preserves continuity intent.", "after":"Preserve bounded handoff/recovery display and retained PCM; no spurious error popup."},
+    {"case":"Monitoring becomes quiet or cloud upload pauses", "before":"Silence filtering/pause works with independent local voice archive.", "after":"Behavior stays active/armed; no storage-fault message merely because bytes are not being written."},
+    {"case":"Same owner changes Wi-Fi, rotates key or moves to WSS", "before":"Archives survive but lack explicit owner provenance.", "after":"Retain recordings and resume with a validated same-owner scope; no unnecessary deletion or ownership reset."},
+    {"case":"Device is transferred to another account with backlog", "before":"New authenticated connection may offer and upload old archives if cloud accepts.", "after":"Old recordings stay isolated; new owner starts fresh. Legacy unknown files are retained for authorized recovery, not silently exposed or erased."}
+  ],
+  "validation_plan": [
+    "Host: persistent no-card failure for meeting and monitoring; transient handoff control; valid online cloud-only path; media recovery preserving a sticky gap.",
+    "Host: real mirror overflow at 768 staged frames, writer queue/error and close deadline injection; admitted versus durably saved totals must differ correctly.",
+    "Host: monitoring healthy silence, explicit upload pause, speech resumption, MIC stall and storage fault are separate outcomes.",
+    "Host: stop, 8h expiry, low-power request, reprovision and OTA compete with delayed cloud ACK, capture restart and detached tail close; stop generation wins.",
+    "Owner tests: A records offline, B binds; key rotation for A; A Wi-Fi change; same-owner WSS migration; identical-secret cloud reassignment; unknown legacy file; stale A commit ACK after switching to B.",
+    "Power-cut tests: interrupt each owner-sidecar/data/footer/rename/ACK/delete transaction; no file is rebound or deleted without the matching verified commit.",
+    "Hardware: healthy card plus slow/full/read-only/removed/reinserted cards; continue recording long enough to exceed buffers, measure UI signal and exact retained/gap intervals.",
+    "Hardware/current release: eight hours with retained backlog and current formal endpoint, independent capture totals and boot-to-terminal logs, SD remaining count, cloud idempotent commits, APP visibility and privacy controls.",
+    "Hardware: low battery depletion, long press, actual rail loss and reboot at segment boundaries; quantify recoverable prefix and lost/unknown tail without promising a two-second maximum from the sync interval alone."
+  ]
+}

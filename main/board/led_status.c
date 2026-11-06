@@ -9,6 +9,7 @@
 static atomic_int s_status = ATOMIC_VAR_INIT(NUWAX_LED_STATUS_OFF);
 static bool s_sleeping_requested;
 static bool s_audio_rx_requested;
+static bool s_charging_requested;
 static nuwax_led_status_t s_base_status = NUWAX_LED_STATUS_OFF;
 static uint32_t s_sleep_breath_period_ms = 2000U;
 static bool s_initialized;
@@ -50,10 +51,16 @@ static esp_err_t apply_status(nuwax_led_status_t status)
 
 static nuwax_led_status_t resolve_status_locked(void)
 {
-    /* Audio activity is the short-lived visual overlay. Once it ends, a
-     * sleeping device returns to breathing instead of being left dark. */
+    /* Charging must neither erase other requests nor hide an error. */
+    if (s_base_status == NUWAX_LED_STATUS_ERROR ||
+        s_base_status == NUWAX_LED_STATUS_PROVISIONING) {
+        return s_base_status;
+    }
     if (s_audio_rx_requested) {
         return NUWAX_LED_STATUS_AUDIO_RX;
+    }
+    if (s_charging_requested) {
+        return NUWAX_LED_STATUS_CHARGING;
     }
     if (s_sleeping_requested) {
         return NUWAX_LED_STATUS_SLEEPING;
@@ -105,6 +112,7 @@ esp_err_t nuwax_led_status_init(const nuwax_led_status_config_t *config)
         s_base_status = NUWAX_LED_STATUS_OFF;
         s_sleeping_requested = false;
         s_audio_rx_requested = false;
+        s_charging_requested = false;
         s_initialized = true;
     }
     xSemaphoreGive(s_lock);
@@ -173,6 +181,22 @@ esp_err_t nuwax_led_status_set_audio_rx(bool active)
     return err;
 }
 
+esp_err_t nuwax_led_status_set_charging(bool active)
+{
+    if (!s_lock) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (!s_initialized) {
+        xSemaphoreGive(s_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_charging_requested = active;
+    const esp_err_t err = apply_resolved_status_locked();
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
 nuwax_led_status_t nuwax_led_status_get(void)
 {
     return (nuwax_led_status_t)atomic_load_explicit(&s_status,
@@ -197,6 +221,7 @@ esp_err_t nuwax_led_status_deinit(void)
         s_base_status = NUWAX_LED_STATUS_OFF;
         s_sleeping_requested = false;
         s_audio_rx_requested = false;
+        s_charging_requested = false;
     }
     xSemaphoreGive(s_lock);
     return err;

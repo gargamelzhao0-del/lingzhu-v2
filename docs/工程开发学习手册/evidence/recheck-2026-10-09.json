@@ -1,0 +1,71 @@
+{
+  "review_date": "2026-10-09",
+  "scope": "Second content/reading dependency audit; no firmware edits or deployment.",
+  "source_and_package": {
+    "baseline": "2026-10-09 / default 7.0.113 / current working tree",
+    "checkedFiles": 125,
+    "bundledSourceAssets": 126,
+    "configAllowlistKeys": 66,
+    "contentVersion": "2026.10.09.2",
+    "issues": [],
+    "firmwareBuiltOrTested": false,
+    "note": "Current source, packaged source and allowlisted configuration compared. Host policy checks are recorded separately; no device certification."
+  },
+  "content_validation": {
+    "issues": [],
+    "articles": 76,
+    "attachments": 161,
+    "handbook_profiles": 30,
+    "known_exclusions": []
+  },
+  "unit_tests": {
+    "command": "npx vitest run tests/contentIntegrity.test.ts tests/seed.test.ts",
+    "exit_code": 0,
+    "passed": 18
+  },
+  "mobile_browser_test": {
+    "command": "npx playwright test e2e/handbook.spec.ts --project=mobile",
+    "exit_code": 0,
+    "passed": 1,
+    "viewport": "360x780",
+    "offline_after_import": true,
+    "screenshot": "C:/Users/Administrator/Documents/work/TechVault/test-results/handbook-project-experimen-e9925-e-offline-on-a-narrow-phone-mobile/handbook-phone.png",
+    "limits": "Isolated browser with current seed intercepted; not Samsung S24 Android installation."
+  },
+  "production_policy_checks": [
+    {
+      "command": [
+        "gcc",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-I",
+        "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main",
+        "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\build-host-checks\\handbook-recheck\\transaction-boundaries.c",
+        "main/conversation/sleep_transaction.c",
+        "main/conversation/notification_playback.c",
+        "main/conversation/head_touch_control_policy.c",
+        "-o",
+        "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\build-host-checks\\handbook-recheck\\transaction-boundaries.exe"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\build-host-checks\\handbook-recheck\\transaction-boundaries.exe"
+      ],
+      "exit_code": 0,
+      "stdout": "PASS: production OTA power, sleep barriers, notification completion and head-touch decisions\n",
+      "stderr": ""
+    }
+  ],
+  "limits": [
+    "No APK build or release.",
+    "Teaching structure profiles are diagnostic only, not factual quality certification.",
+    "Source hashes do not prove absence of firmware defects.",
+    "Other chapter depth gaps remain as documented."
+  ]
+}

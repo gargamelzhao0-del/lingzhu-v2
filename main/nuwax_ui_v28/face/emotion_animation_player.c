@@ -15,8 +15,12 @@
 #include "miniz.h"
 #include "emotion_component_bridge_policy.h"
 #include "emotion_delta_format.h"
+#include "emotion_decode_schedule.h"
 #include "emotion_segment_policy.h"
 #include "nuwax_lvgl_port.h"
+#include "offline_audio_spool.h"
+#include "replay_ui_schedule.h"
+#include "rgb565_scene.h"
 
 #ifndef CONFIG_NUWAX_UI_DISPLAY_TEST_MODE
 #define CONFIG_NUWAX_UI_DISPLAY_TEST_MODE 0
@@ -58,6 +62,7 @@ static const char *TAG = "emotion_player";
 #define DECODE_TASK_CORE 0
 #define DECODE_TASK_STOP_TIMEOUT_MS 1000U
 #define DECODE_QUIESCE_TIMEOUT_MS 150U
+#define DECODE_COOPERATIVE_DELAY_THRESHOLD_US 25000U
 #define V2_DECODE_SLOT_COUNT 2U
 #define V2_SECOND_SLOT_PSRAM_RESERVE_BYTES (1024U * 1024U)
 #define COMPONENT_BRIDGE_PSRAM_RESERVE_BYTES (1024U * 1024U)
@@ -146,8 +151,7 @@ static lv_image_dsc_t s_image_dsc;
 #define COMPONENT_BRIDGE_FPS 40U
 #define COMPONENT_BRIDGE_MIN_FPS 30U
 #define COMPONENT_BRIDGE_PERIOD_US (1000000U / COMPONENT_BRIDGE_FPS)
-#define COMPONENT_BRIDGE_DIRECT_PRESENT_TIMEOUT_MS 2U
-#define COMPONENT_BRIDGE_FINAL_PRESENT_TIMEOUT_MS 8U
+#define COMPONENT_BRIDGE_TARGET_DECODE_STALL_US 150000U
 #define BRIDGE_REGION_WORK_CAPACITY 32U
 
 typedef struct {
@@ -198,10 +202,9 @@ typedef struct {
     uint64_t total_render_us;
     uint32_t max_render_us;
     uint32_t target_decode_us;
-    uint32_t direct_present_frames;
-    uint32_t fallback_present_frames;
-    uint64_t direct_present_total_us;
-    uint32_t direct_present_max_us;
+    uint32_t queued_present_frames;
+    uint64_t queued_present_pixels;
+    uint32_t pose_catchups;
 } component_bridge_t;
 
 typedef enum {
@@ -246,6 +249,10 @@ static esp_err_t load_asset(nuwax_emotion_asset_id_t asset_id);
 static void cancel_component_bridge(void);
 static esp_err_t start_segment(uint16_t segment_index);
 static void decode_worker_request(void);
+static void reset_dirty_areas(void);
+static void include_dirty_pixel(uint32_t pixel);
+static void include_dirty_run(uint32_t offset, uint32_t length);
+static uint32_t invalidate_dirty_regions(void);
 static esp_err_t decode_v4_handoff_frame(
     nuwax_emotion_asset_id_t asset_id, uint16_t segment_index,
     uint16_t target_frame_index, uint8_t *indices_out, uint16_t *rgb_out);
@@ -269,6 +276,7 @@ static atomic_bool s_decode_stop_requested;
 static atomic_bool s_decode_task_exited;
 static atomic_uint s_queued_asset_id;
 static bool s_background_decode;
+static atomic_bool s_decode_paused;
 static bool s_cleanup_pending;
 static int64_t s_cleanup_started_us;
 static int64_t s_cleanup_last_log_us;
@@ -323,6 +331,45 @@ static uint64_t s_last_health_decode_budget_overruns;
 static uint32_t s_last_health_decode_cooperative_blocks;
 static uint32_t s_last_health_decode_switch_aborts;
 
+/* Only the LVGL owner writes the policy or changes worker priority. Never
+ * change priorities from the worker: a late completion could undo a newer
+ * request or race a stop/reap. All cross-task hints/counters are atomic. */
+static emotion_decode_help_t s_decode_help;
+static atomic_bool s_decode_help_frame;
+static atomic_uint s_decode_help_serial;
+static uint32_t s_decode_help_grants, s_decode_help_ready, s_decode_help_expired;
+static uint32_t s_decode_help_max_us;
+static uint64_t s_decode_help_total_us;
+static atomic_uint s_decode_request_us, s_decode_request_wait_us;
+static atomic_bool s_decode_request_timed;
+static atomic_uint s_decode_request_count, s_decode_request_wait_max_us;
+static uint32_t s_decode_last_request_count, s_decode_last_request_wait_us;
+static int64_t s_decode_last_publish_us;
+static uint32_t s_decode_publish_gap_max_us, s_decode_publish_gaps_over50;
+static uint32_t s_decode_empty_due_ticks;
+
+static void decode_help_finish(int64_t now_us, emotion_decode_help_action_t action)
+{
+    const uint32_t elapsed = (uint32_t)(now_us - s_decode_help.started_us);
+    s_decode_help_total_us += elapsed;
+    if (elapsed > s_decode_help_max_us) s_decode_help_max_us = elapsed;
+    atomic_store_explicit(&s_decode_help_frame, false, memory_order_release);
+    nuwax_replay_ui_set_help_state(action == EMOTION_DECODE_HELP_READY
+        ? NUWAX_REPLAY_UI_HELP_READY : action == EMOTION_DECODE_HELP_EXPIRED
+        ? NUWAX_REPLAY_UI_HELP_EXPIRED : NUWAX_REPLAY_UI_HELP_CANCELLED, 0U);
+    if (s_decode_task) vTaskPrioritySet(s_decode_task, DECODE_TASK_PRIORITY);
+}
+
+static void decode_help_cancel(void)
+{
+    if (s_decode_help.active) decode_help_finish(esp_timer_get_time(), EMOTION_DECODE_HELP_CANCEL);
+    memset(&s_decode_help, 0, sizeof(s_decode_help));
+    nuwax_replay_ui_set_help_state(NUWAX_REPLAY_UI_HELP_CANCELLED, 0U);
+    atomic_store_explicit(&s_decode_help_frame, false, memory_order_release);
+    atomic_store_explicit(&s_decode_request_timed, false, memory_order_release);
+    s_decode_last_publish_us = 0;
+}
+
 static decode_frame_slot_t *find_free_decode_slot(void)
 {
     for (uint32_t i = 0U; i < s_decode_slot_count; ++i) {
@@ -369,6 +416,67 @@ static uint32_t ready_decode_slot_count(uint32_t generation)
     return count;
 }
 
+static void decode_help_service(int64_t now_us)
+{
+    const uint32_t generation = atomic_load_explicit(&s_decode_generation, memory_order_acquire);
+    const int state = atomic_load_explicit(&s_decode_worker_state, memory_order_acquire);
+    const bool busy = state == DECODE_WORKER_REQUESTED || state == DECODE_WORKER_RUNNING;
+    const bool eligible = s_ready && s_background_decode && s_decode_task && s_entry &&
+        !s_interaction_active && !s_holding_frame && !s_component_bridge.active &&
+        !s_segment_advance_pending &&
+        !atomic_load_explicit(&s_decode_paused, memory_order_acquire) &&
+        !atomic_load_explicit(&s_decode_stop_requested, memory_order_acquire) &&
+        atomic_load_explicit(&s_queued_asset_id, memory_order_acquire) == 0U &&
+        nuwax_emotion_asset_pack_abi() >= NUWAX_EMOTION_ASSET_PACK_ABI_V2 &&
+        nuwax_offline_audio_replay_running();
+    const uint32_t ready = ready_decode_slot_count(generation);
+    /* All supported animated packs run at >=40 FPS. Do not divide by an
+     * unchecked asset entry while a failed load is being recovered. */
+    const uint32_t fps = s_entry ? s_entry->fps : 0U;
+    const uint32_t period = fps >= MIN_ANIMATED_FPS && fps <= MAX_ANIMATED_FPS ? 1000000U / fps : 0U;
+    const emotion_decode_help_action_t action = emotion_decode_help_update(
+        &s_decode_help, now_us, s_next_frame_us, period, generation,
+        eligible && period != 0U, busy, ready);
+    if (action == EMOTION_DECODE_HELP_GRANT) {
+        s_decode_help_grants++;
+        atomic_fetch_add_explicit(&s_decode_help_serial, 1U, memory_order_release);
+        atomic_store_explicit(&s_decode_help_frame, true, memory_order_release);
+        vTaskPrioritySet(s_decode_task, EMOTION_DECODE_HELP_PRIORITY);
+        nuwax_replay_ui_set_help_state(NUWAX_REPLAY_UI_HELP_REQUESTED, (uint32_t)s_decode_help.until_us);
+    } else if (action != EMOTION_DECODE_HELP_NONE) {
+        if (action == EMOTION_DECODE_HELP_READY) s_decode_help_ready++;
+        if (action == EMOTION_DECODE_HELP_EXPIRED) s_decode_help_expired++;
+        decode_help_finish(now_us, action);
+    }
+}
+
+void nuwax_emotion_animation_player_service_decode(void)
+{
+    /* Called under the LVGL mutex before timer dispatch, including when the
+     * 5 ms player timer is not due. Never publish or advance the timeline here. */
+    if (!s_ready) return;
+    decode_help_service(esp_timer_get_time());
+    /* A helped batch stops after one frame. Prime the vacant second slot at
+     * BASE priority instead of waiting for that frame's display deadline.
+     * Also covers READY arriving just after a tick consumed its first slot.
+     * READY's acquire observes decoder metadata; only this owner can request
+     * more work. No decoder fields are inspected while it is RUNNING. */
+    if (s_background_decode && s_decode_task && !s_interaction_active &&
+        !s_holding_frame && !s_component_bridge.active && !s_segment_advance_pending &&
+        !atomic_load_explicit(&s_decode_paused, memory_order_acquire) &&
+        !atomic_load_explicit(&s_decode_stop_requested, memory_order_acquire) &&
+        atomic_load_explicit(&s_queued_asset_id, memory_order_acquire) == 0U &&
+        nuwax_offline_audio_replay_running() &&
+        nuwax_emotion_asset_pack_abi() >= NUWAX_EMOTION_ASSET_PACK_ABI_V2 &&
+        atomic_load_explicit(&s_decode_worker_state, memory_order_acquire) == DECODE_WORKER_READY &&
+        s_decoder.segment && s_decoder.frame_index < s_decoder.segment->frame_count &&
+        ready_decode_slot_count(atomic_load_explicit(&s_decode_generation, memory_order_acquire)) <
+            s_decode_slot_count) {
+        atomic_store_explicit(&s_decode_worker_state, DECODE_WORKER_IDLE, memory_order_release);
+        decode_worker_request();
+    }
+}
+
 static void release_decode_slot(decode_frame_slot_t *slot)
 {
     if (!slot) return;
@@ -378,6 +486,7 @@ static void release_decode_slot(decode_frame_slot_t *slot)
     slot->bootstrap_delta = false;
     slot->v4_frame = false;
     slot->absolute = false;
+    slot->regional_payload = false;
     slot->region_count = 0U;
     memset(slot->regions, 0, sizeof(slot->regions));
     atomic_store_explicit(&slot->state, DECODE_SLOT_FREE,
@@ -435,6 +544,17 @@ static void free_player_buffers(void)
 
 static void reset_player_state(void)
 {
+    decode_help_cancel();
+    s_decode_help_grants = s_decode_help_ready = s_decode_help_expired = 0U;
+    s_decode_help_max_us = 0U;
+    s_decode_help_total_us = 0U;
+    atomic_store(&s_decode_request_timed, false);
+    atomic_store(&s_decode_request_count, 0U);
+    atomic_store(&s_decode_request_wait_us, 0U);
+    atomic_store(&s_decode_request_wait_max_us, 0U);
+    s_decode_last_request_count = s_decode_last_request_wait_us = 0U;
+    s_decode_publish_gap_max_us = s_decode_publish_gaps_over50 = 0U;
+    s_decode_empty_due_ticks = 0U;
     cancel_component_bridge();
     free_player_buffers();
     nuwax_emotion_asset_pack_deinit();
@@ -526,6 +646,20 @@ static void init_image_descriptor(void)
         .data_size = FRAME_RGB_BYTES,
         .data = (const uint8_t *)s_rgb565,
     };
+}
+
+bool nuwax_emotion_animation_player_render_scene(lv_display_t *display,
+                                                lv_layer_t *layer)
+{
+    const bool rendered = s_ready && !s_interaction_active &&
+        nuwax_rgb565_scene_render(display, layer, s_image,
+            s_frame_patch_compositor, s_rgb565, FRAME_WIDTH, FRAME_HEIGHT);
+    static bool logged;
+    if (rendered && !logged) {
+        logged = true;
+        ESP_LOGI(TAG, "face RGB565 scene active overlays=lvgl ownership=shared");
+    }
+    return rendered;
 }
 
 static void frame_patch_event_cb(lv_event_t *event)
@@ -646,61 +780,21 @@ static uint32_t update_frame_patches(
     return invalidated_pixels;
 }
 
-static uint32_t present_frame_patches_direct(
-    const nuwax_emotion_asset_region_t *regions, uint8_t region_count,
-    uint32_t timeout_ms, bool *presented_directly, uint32_t *present_us,
-    esp_err_t *present_result)
+static uint32_t queue_frame_patches(
+    const nuwax_emotion_asset_region_t *regions, uint8_t region_count)
 {
-    if (presented_directly) *presented_directly = false;
-    if (present_us) *present_us = 0U;
-    if (present_result) *present_result = ESP_OK;
-
-    if (!s_image || !s_frame_patch_compositor) {
-        if (present_result) *present_result = ESP_ERR_INVALID_STATE;
-        return 0U;
-    }
-    if ((region_count > 0U && !regions) ||
+    if (!s_image || !s_frame_patch_compositor ||
+        (region_count > 0U && !regions) ||
         region_count > FRAME_PATCH_OBJECT_COUNT) {
-        if (present_result) *present_result = ESP_ERR_INVALID_ARG;
         return 0U;
     }
 
-    nuwax_emotion_asset_region_t damage[FRAME_PATCH_OBJECT_COUNT * 2U];
-    uint32_t invalidated_pixels = 0U;
-    const uint8_t damage_count = update_frame_patch_state(
-        regions, region_count, damage, &invalidated_pixels);
-    if (damage_count == 0U) {
-        if (presented_directly) *presented_directly = true;
-        return invalidated_pixels;
-    }
-
-    nuwax_lvgl_port_rgb565_region_t
-        direct_regions[FRAME_PATCH_OBJECT_COUNT];
-    for (uint8_t index = 0U; index < damage_count; ++index) {
-        direct_regions[index] = (nuwax_lvgl_port_rgb565_region_t){
-            .x = (int16_t)damage[index].x,
-            .y = (int16_t)damage[index].y,
-            .width = (int16_t)damage[index].width,
-            .height = (int16_t)damage[index].height,
-        };
-    }
-
-    const int64_t started_us = esp_timer_get_time();
-    const esp_err_t err = nuwax_lvgl_port_present_rgb565_regions(
-        s_rgb565, FRAME_WIDTH, direct_regions, damage_count,
-        timeout_ms);
-    if (present_result) *present_result = err;
-    if (err == ESP_OK) {
-        if (presented_directly) *presented_directly = true;
-        if (present_us) {
-            *present_us = (uint32_t)(esp_timer_get_time() - started_us);
-        }
-        return invalidated_pixels;
-    }
-
-    /* Busy or failed direct presentation remains a performance event only.
-     * LVGL redraws the exact same old/new damage union on this handler pass. */
-    invalidate_frame_patch_damage(damage, damage_count);
+    /* The LVGL task is the sole display owner.  Updating the patch map and
+     * waking that task keeps the producer bounded; a synchronous LCD write
+     * here can block the animation and conversation owners for hundreds of
+     * milliseconds when the SPI pipeline is busy. */
+    const uint32_t invalidated_pixels =
+        update_frame_patches(regions, region_count);
     nuwax_lvgl_port_wake();
     return invalidated_pixels;
 }
@@ -1237,10 +1331,12 @@ static bool commit_component_bridge_target(int64_t now_us)
 {
     component_bridge_t *bridge = &s_component_bridge;
     if (!bridge->active || !bridge->target_ready ||
+        !bridge->source_rgb565 ||
         !bridge->target_rgb565 ||
         !bridge->target_indices) return false;
     const nuwax_emotion_asset_id_t target = bridge->target_asset;
     const uint16_t target_frame_index = bridge->target_frame_index;
+    const uint16_t *source_rgb565 = bridge->source_rgb565;
     uint16_t *target_rgb565 = bridge->target_rgb565;
     uint8_t *target_indices = bridge->target_indices;
     const uint32_t frames = bridge->frames;
@@ -1254,41 +1350,34 @@ static bool commit_component_bridge_target(int64_t now_us)
         : 0U;
     const uint32_t average_render_us = frames > 0U
         ? (uint32_t)(bridge->total_render_us / frames) : 0U;
-    const uint32_t average_direct_present_us =
-        bridge->direct_present_frames > 0U
-            ? (uint32_t)(bridge->direct_present_total_us /
-                         bridge->direct_present_frames)
-            : 0U;
     if (frames > 1U && fps_x10 < COMPONENT_BRIDGE_MIN_FPS * 10U) {
         ESP_LOGW(TAG,
-                 "component bridge below minimum source=%u target=%u frames=%u fps=%u.%u max_gap_ms=%u avg_render_us=%u max_render_us=%u direct=%u fallback=%u direct_avg_us=%u direct_max_us=%u target_decode_us=%u minimum_fps=%u target_fps=%u",
+                 "component bridge below minimum source=%u target=%u frames=%u fps=%u.%u max_gap_ms=%u avg_render_us=%u max_render_us=%u queued=%u queued_pixels=%lu target_decode_us=%u catchups=%u minimum_fps=%u target_fps=%u",
                  (unsigned)bridge->source_asset, (unsigned)target,
                  (unsigned)frames, (unsigned)(fps_x10 / 10U),
                  (unsigned)(fps_x10 % 10U),
                  (unsigned)(bridge->max_gap_us / 1000U),
                  (unsigned)average_render_us,
                  (unsigned)bridge->max_render_us,
-                 (unsigned)bridge->direct_present_frames,
-                 (unsigned)bridge->fallback_present_frames,
-                 (unsigned)average_direct_present_us,
-                 (unsigned)bridge->direct_present_max_us,
+                 (unsigned)bridge->queued_present_frames,
+                 (unsigned long)bridge->queued_present_pixels,
                  (unsigned)bridge->target_decode_us,
+                 (unsigned)bridge->pose_catchups,
                  (unsigned)COMPONENT_BRIDGE_MIN_FPS,
                  (unsigned)COMPONENT_BRIDGE_FPS);
     } else {
         ESP_LOGI(TAG,
-                 "component bridge perf source=%u target=%u frames=%u fps=%u.%u max_gap_ms=%u avg_render_us=%u max_render_us=%u direct=%u fallback=%u direct_avg_us=%u direct_max_us=%u target_decode_us=%u minimum_fps=%u target_fps=%u",
+                 "component bridge perf source=%u target=%u frames=%u fps=%u.%u max_gap_ms=%u avg_render_us=%u max_render_us=%u queued=%u queued_pixels=%lu target_decode_us=%u catchups=%u minimum_fps=%u target_fps=%u",
                  (unsigned)bridge->source_asset, (unsigned)target,
                  (unsigned)frames, (unsigned)(fps_x10 / 10U),
                  (unsigned)(fps_x10 % 10U),
                  (unsigned)(bridge->max_gap_us / 1000U),
                  (unsigned)average_render_us,
                  (unsigned)bridge->max_render_us,
-                 (unsigned)bridge->direct_present_frames,
-                 (unsigned)bridge->fallback_present_frames,
-                 (unsigned)average_direct_present_us,
-                 (unsigned)bridge->direct_present_max_us,
+                 (unsigned)bridge->queued_present_frames,
+                 (unsigned long)bridge->queued_present_pixels,
                  (unsigned)bridge->target_decode_us,
+                 (unsigned)bridge->pose_catchups,
                  (unsigned)COMPONENT_BRIDGE_MIN_FPS,
                  (unsigned)COMPONENT_BRIDGE_FPS);
     }
@@ -1307,50 +1396,59 @@ static bool commit_component_bridge_target(int64_t now_us)
         s_decode_worker_error = ESP_FAIL;
         return false;
     }
-    memcpy(s_rgb565, target_rgb565, FRAME_RGB_BYTES);
-    memcpy(s_indices, target_indices, FRAME_PIXELS);
     atomic_store_explicit(&s_bridge_decode_state, BRIDGE_DECODE_IDLE,
                           memory_order_release);
     atomic_store_explicit(&s_bridge_source_ready, false,
                           memory_order_release);
     s_decoder.frame_index = (uint16_t)(target_frame_index + 1U);
-    const component_bounds_t target_bounds =
-        component_bounds_for_asset(target);
-    bool presented_directly = false;
-    uint32_t present_us = 0U;
-    esp_err_t present_result = ESP_OK;
-    const uint32_t invalidated_pixels = present_frame_patches_direct(
-        target_bounds.parts, target_bounds.part_count,
-        COMPONENT_BRIDGE_FINAL_PRESENT_TIMEOUT_MS,
-        &presented_directly, &present_us, &present_result);
-    if (invalidated_pixels == 0U && target_bounds.part_count > 0U) {
-        /* A valid target must damage at least one component. Force a bounded
-         * LVGL redraw if compositor state was unavailable or inconsistent. */
-        if (s_frame_patch_compositor) {
-            lv_obj_invalidate(s_frame_patch_compositor);
-        } else if (s_image) {
-            lv_obj_invalidate(s_image);
+    /* The bridge compositor may have drawn pixels outside the authored target
+     * bounds (for example during a reshape or a settling overshoot).  Compare
+     * the complete visible frame before replacing it so every stale pixel is
+     * included in the final LVGL damage, rather than assuming component bounds
+     * are a complete frame-difference description. */
+    hide_frame_patches();
+    reset_dirty_areas();
+    uint32_t changed_pixels = 0U;
+    for (uint32_t y = 0U; y < FRAME_HEIGHT; ++y) {
+        const uint32_t row_start = y * FRAME_WIDTH;
+        uint32_t changed_start = UINT32_MAX;
+        for (uint32_t x = 0U; x < FRAME_WIDTH; ++x) {
+            const uint32_t pixel = row_start + x;
+            const bool changed =
+                nuwax_emotion_component_bridge_pixel_needs_final_damage(
+                    s_rgb565[pixel], source_rgb565[pixel],
+                    target_rgb565[pixel]);
+            if (changed) {
+                changed_pixels++;
+                if (changed_start == UINT32_MAX) changed_start = pixel;
+            } else if (changed_start != UINT32_MAX) {
+                include_dirty_run(changed_start, pixel - changed_start);
+                changed_start = UINT32_MAX;
+            }
         }
-        nuwax_lvgl_port_wake();
-        ESP_LOGE(TAG,
-                 "component bridge target commit had no damage target=%u regions=%u present_err=%s; forced redraw",
-                 (unsigned)target,
-                 (unsigned)target_bounds.part_count,
-                 esp_err_to_name(present_result));
-    } else if (!presented_directly) {
-        ESP_LOGW(TAG,
-                 "component bridge target commit queued through LVGL target=%u pixels=%lu present_err=%s",
-                 (unsigned)target,
-                 (unsigned long)invalidated_pixels,
-                 esp_err_to_name(present_result));
-    } else {
-        ESP_LOGI(TAG,
-                 "component bridge target committed target=%u pixels=%lu direct_us=%lu",
-                 (unsigned)target,
-                 (unsigned long)invalidated_pixels,
-                 (unsigned long)present_us);
+        if (changed_start != UINT32_MAX) {
+            include_dirty_run(changed_start,
+                              row_start + FRAME_WIDTH - changed_start);
+        }
     }
-    s_next_frame_us = now_us + COMPONENT_BRIDGE_PERIOD_US;
+    memcpy(s_rgb565, target_rgb565, FRAME_RGB_BYTES);
+    memcpy(s_indices, target_indices, FRAME_PIXELS);
+    const uint32_t invalidated_pixels = invalidate_dirty_regions();
+    if (changed_pixels > 0U && invalidated_pixels == 0U) {
+        /* Keep a valid target visible even if the dirty-area collector or the
+         * compositor was unavailable during a lifecycle boundary. */
+        if (s_image) lv_obj_invalidate(s_image);
+        ESP_LOGW(TAG,
+                 "component bridge target commit forced full image redraw target=%u changed=%lu",
+                 (unsigned)target, (unsigned long)changed_pixels);
+    }
+    nuwax_lvgl_port_wake();
+    ESP_LOGI(TAG,
+             "component bridge target committed target=%u changed=%lu invalidated=%lu",
+             (unsigned)target,
+             (unsigned long)changed_pixels,
+             (unsigned long)invalidated_pixels);
+    s_next_frame_us = esp_timer_get_time() + COMPONENT_BRIDGE_PERIOD_US;
     if (s_background_decode) decode_worker_request();
     return true;
 }
@@ -1516,10 +1614,25 @@ static bool begin_component_bridge(nuwax_emotion_asset_id_t target_asset)
         target_segment = target_entry->completion_segment;
     }
     nuwax_emotion_asset_v4_frame_t target_frame;
-    const uint16_t target_frame_index =
-        nuwax_emotion_component_handoff_frame(target_asset);
     const nuwax_emotion_asset_segment_t *segment =
         nuwax_emotion_asset_pack_segment(target_segment);
+    /* Prefer the pack's own handoff record index. The fast decode path only
+     * hits when the requested index carries that record; a policy value that
+     * disagrees with the pack forces the legacy key-frame replay (one full
+     * decode plus every delta up to the target) and blows the 40 fps bridge
+     * budget. The policy value remains the fallback for packs without a
+     * handoff record. */
+    uint16_t target_frame_index =
+        nuwax_emotion_component_handoff_frame(target_asset);
+    const nuwax_emotion_asset_v4_segment_t *handoff_segment =
+        target_segment == NUWAX_EMOTION_ASSET_INVALID_SEGMENT
+            ? NULL
+            : nuwax_emotion_asset_pack_v4_segment(target_segment);
+    if (segment && handoff_segment &&
+        handoff_segment->handoff_frame_index != UINT16_MAX &&
+        handoff_segment->handoff_frame_index < segment->frame_count) {
+        target_frame_index = handoff_segment->handoff_frame_index;
+    }
     if (target_segment == NUWAX_EMOTION_ASSET_INVALID_SEGMENT ||
         !segment || target_frame_index >= segment->frame_count ||
         nuwax_emotion_asset_pack_v4_frame(target_segment, 0U,
@@ -1597,6 +1710,15 @@ static bool tick_component_bridge(int64_t now_us)
         if (!nuwax_emotion_component_bridge_ready_to_animate(
                 source_ready, bridge->target_ready)) {
             return true;
+        }
+        if (bridge->target_decode_us >
+            COMPONENT_BRIDGE_TARGET_DECODE_STALL_US) {
+            ESP_LOGW(TAG,
+                     "component bridge target decode exceeded motion budget asset=%u decode_us=%u budget_us=%u; committing target directly",
+                     (unsigned)bridge->target_asset,
+                     (unsigned)bridge->target_decode_us,
+                     (unsigned)COMPONENT_BRIDGE_TARGET_DECODE_STALL_US);
+            return commit_component_bridge_target(now_us);
         }
         /* Decode and palette expansion contend with LVGL for CPU0 and PSRAM.
          * Start the visual clock only when both immutable frames are ready so
@@ -1816,35 +1938,39 @@ static bool tick_component_bridge(int64_t now_us)
     }
     region_count = nuwax_emotion_component_regions_compact(
         regions, region_count, FRAME_PATCH_OBJECT_COUNT);
-    bool presented_directly = false;
-    uint32_t present_us = 0U;
-    (void)present_frame_patches_direct(regions, region_count,
-        COMPONENT_BRIDGE_DIRECT_PRESENT_TIMEOUT_MS,
-        &presented_directly, &present_us, NULL);
-    if (presented_directly) {
-        bridge->direct_present_frames++;
-        bridge->direct_present_total_us += present_us;
-        if (present_us > bridge->direct_present_max_us) {
-            bridge->direct_present_max_us = present_us;
-        }
-    } else {
-        bridge->fallback_present_frames++;
-    }
+    const uint32_t queued_pixels = queue_frame_patches(regions, region_count);
+    bridge->queued_present_frames++;
+    bridge->queued_present_pixels += queued_pixels;
+    const int64_t render_finished_us = esp_timer_get_time();
     const uint32_t render_us =
-        (uint32_t)(esp_timer_get_time() - render_started_us);
+        (uint32_t)(render_finished_us - render_started_us);
     bridge->total_render_us += render_us;
     if (render_us > bridge->max_render_us) {
         bridge->max_render_us = render_us;
     }
     bridge->frames++;
+    const uint32_t previous_elapsed_us = bridge->visual_elapsed_us;
+    const uint32_t scheduled_elapsed_us =
+        nuwax_emotion_component_bridge_next_elapsed_us(
+            previous_elapsed_us, duration_us,
+            COMPONENT_BRIDGE_PERIOD_US, previous_elapsed_us);
+    const int64_t observed_elapsed_i64 =
+        render_finished_us > bridge->started_us
+            ? render_finished_us - bridge->started_us
+            : 0LL;
+    const uint32_t observed_elapsed_us =
+        observed_elapsed_i64 > UINT32_MAX
+            ? UINT32_MAX
+            : (uint32_t)observed_elapsed_i64;
     bridge->visual_elapsed_us =
         nuwax_emotion_component_bridge_next_elapsed_us(
-            bridge->visual_elapsed_us, duration_us,
-            COMPONENT_BRIDGE_PERIOD_US);
-    /* Do not catch up by skipping visual poses after a long render. A late
-     * frame extends the transition but advances exactly one 40 FPS pose, which
-     * removes the visible position/scale jump reported on device. */
-    bridge->next_frame_us = render_started_us + COMPONENT_BRIDGE_PERIOD_US;
+            previous_elapsed_us, duration_us,
+            COMPONENT_BRIDGE_PERIOD_US, observed_elapsed_us);
+    if (bridge->visual_elapsed_us > scheduled_elapsed_us) {
+        bridge->pose_catchups++;
+    }
+    bridge->next_frame_us = bridge->started_us +
+                            bridge->visual_elapsed_us;
     return true;
 }
 
@@ -2556,13 +2682,68 @@ static esp_err_t decode_v4_frame_prepare(decode_frame_slot_t *slot)
         return ESP_ERR_INVALID_STATE;
     }
     nuwax_emotion_asset_v4_frame_t frame;
-    ESP_RETURN_ON_ERROR(
+    const esp_err_t metadata_err =
         nuwax_emotion_asset_pack_v4_frame(
-            s_decoder.segment_index, s_decoder.frame_index, &frame),
-        TAG, "emotion v4 frame metadata failed");
-    if (frame.compressed_size == 0U ||
-        frame.compressed_size > V4_MAX_COMPRESSED_FRAME_BYTES ||
+            s_decoder.segment_index, s_decoder.frame_index, &frame);
+    if (metadata_err != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "emotion v4 frame metadata invalid asset=%u segment=%u frame=%u/%u err=%s",
+                 (unsigned)s_asset_id,
+                 (unsigned)s_decoder.segment_index,
+                 (unsigned)s_decoder.frame_index,
+                 (unsigned)s_decoder.segment->frame_count,
+                 esp_err_to_name(metadata_err));
+        return metadata_err;
+    }
+
+    /* V4 regional streams may encode a legal hold frame without a payload.
+     * The pack generator uses this form for repeated poses at the end of a
+     * loop: no pixels change, so there is nothing to decompress or publish.
+     * Treat only the fully empty regional/delta form as a no-op; malformed
+     * zero-length absolute or full-frame records must still fail closed. */
+    if (frame.compressed_size == 0U) {
+        if (!frame.regional_payload || !frame.rle || frame.absolute ||
+            frame.changed_count != 0U || frame.region_count != 0U ||
+            frame.raw_size != 0U) {
+            ESP_LOGE(TAG,
+                     "emotion v4 empty frame contract invalid asset=%u segment=%u frame=%u/%u absolute=%d regional=%d raw=%lu changed=%lu regions=%u",
+                     (unsigned)s_asset_id,
+                     (unsigned)s_decoder.segment_index,
+                     (unsigned)s_decoder.frame_index,
+                     (unsigned)s_decoder.segment->frame_count,
+                     frame.absolute ? 1 : 0,
+                     frame.regional_payload ? 1 : 0,
+                     (unsigned long)frame.raw_size,
+                     (unsigned long)frame.changed_count,
+                     (unsigned)frame.region_count);
+            return ESP_ERR_INVALID_SIZE;
+        }
+        slot->size = 0U;
+        slot->encoded_pixels = 0U;
+        slot->source_segment_index = s_decoder.segment_index;
+        slot->source_frame_index = s_decoder.frame_index;
+        slot->source_frame_count = s_decoder.segment->frame_count;
+        slot->v4_frame = true;
+        slot->absolute = false;
+        slot->regional_payload = true;
+        slot->region_count = 0U;
+        memset(slot->regions, 0, sizeof(slot->regions));
+        s_decoder.frame_index++;
+        return ESP_OK;
+    }
+
+    if (frame.compressed_size > V4_MAX_COMPRESSED_FRAME_BYTES ||
         frame.region_count > NUWAX_EMOTION_ASSET_V4_MAX_REGIONS) {
+        ESP_LOGE(TAG,
+                 "emotion v4 frame contract invalid asset=%u segment=%u frame=%u/%u compressed=%u raw=%lu changed=%lu regions=%u",
+                 (unsigned)s_asset_id,
+                 (unsigned)s_decoder.segment_index,
+                 (unsigned)s_decoder.frame_index,
+                 (unsigned)s_decoder.segment->frame_count,
+                 (unsigned)frame.compressed_size,
+                 (unsigned long)frame.raw_size,
+                 (unsigned long)frame.changed_count,
+                 (unsigned)frame.region_count);
         return ESP_ERR_INVALID_SIZE;
     }
     uint8_t *compressed = slot->data + FRAME_PIXELS;
@@ -2784,7 +2965,10 @@ static esp_err_t publish_v4_frame(decode_frame_slot_t *slot)
         slot->region_count > NUWAX_EMOTION_ASSET_V4_MAX_REGIONS) {
         return ESP_ERR_INVALID_STATE;
     }
-    reset_dirty_areas();
+    /* Ordinary V4 patches invalidate their authored region union below.
+     * Per-row/band damage is only consumed by absolute/fallback publication. */
+    const bool track_dirty = slot->absolute || !s_frame_patch_compositor;
+    if (track_dirty) reset_dirty_areas();
     uint32_t changed_pixels = 0U;
     uint32_t payload_cursor = 0U;
     const uint8_t region_count = slot->absolute ? 1U : slot->region_count;
@@ -2809,7 +2993,7 @@ static esp_err_t publish_v4_frame(decode_frame_slot_t *slot)
                 const uint8_t encoded = slot->data[
                     slot->regional_payload ? payload_cursor++ : pixel];
                 if (!slot->absolute && encoded == 0U) {
-                    if (changed_start != UINT32_MAX) {
+                    if (track_dirty && changed_start != UINT32_MAX) {
                         include_dirty_run(changed_start, pixel - changed_start);
                         changed_start = UINT32_MAX;
                     }
@@ -2825,14 +3009,14 @@ static esp_err_t publish_v4_frame(decode_frame_slot_t *slot)
                 if (s_rgb565[pixel] != rgb) {
                     s_rgb565[pixel] = rgb;
                     changed_pixels++;
-                    if (changed_start == UINT32_MAX) changed_start = pixel;
-                } else if (changed_start != UINT32_MAX) {
+                    if (track_dirty && changed_start == UINT32_MAX) changed_start = pixel;
+                } else if (track_dirty && changed_start != UINT32_MAX) {
                     include_dirty_run(changed_start, pixel - changed_start);
                     changed_start = UINT32_MAX;
                 }
                 s_indices[pixel] = next;
             }
-            if (changed_start != UINT32_MAX) {
+            if (track_dirty && changed_start != UINT32_MAX) {
                 include_dirty_run(changed_start,
                                   row_start + region.width - changed_start);
             }
@@ -3034,8 +3218,21 @@ static void publish_decoded_frame(decode_frame_slot_t *slot)
                                   : publish_v2_frame(slot);
         if (err != ESP_OK) {
             s_decode_worker_error = err;
-            ESP_LOGE(TAG, "emotion frame publish failed: %s",
-                     esp_err_to_name(err));
+            ESP_LOGE(TAG,
+                     "emotion frame publish failed err=%s asset=%u segment=%u frame=%u/%u generation=%lu sequence=%lu v4=%d absolute=%d regional=%d regions=%u encoded_pixels=%lu decode_us=%lu",
+                     esp_err_to_name(err),
+                     (unsigned)s_asset_id,
+                     (unsigned)slot->source_segment_index,
+                     (unsigned)slot->source_frame_index,
+                     (unsigned)slot->source_frame_count,
+                     (unsigned long)slot->generation,
+                     (unsigned long)slot->sequence,
+                     slot->v4_frame ? 1 : 0,
+                     slot->absolute ? 1 : 0,
+                     slot->regional_payload ? 1 : 0,
+                     (unsigned)slot->region_count,
+                     (unsigned long)slot->encoded_pixels,
+                     (unsigned long)slot->decode_us);
             return;
         }
     } else if (s_changed_bits) {
@@ -3067,6 +3264,14 @@ static void publish_decoded_frame(decode_frame_slot_t *slot)
         invalidated_pixels = invalidate_dirty_regions();
     }
     s_frames_rendered++;
+    nuwax_replay_ui_frame_done();
+    const int64_t frame_published_us = esp_timer_get_time();
+    if (s_decode_last_publish_us != 0) {
+        const uint32_t gap = (uint32_t)(frame_published_us - s_decode_last_publish_us);
+        if (gap > s_decode_publish_gap_max_us) s_decode_publish_gap_max_us = gap;
+        if (gap > 50000U) s_decode_publish_gaps_over50++;
+    }
+    s_decode_last_publish_us = frame_published_us;
     s_decode_total_us += s_pending_decode_us;
     s_health_frames_total++;
     s_health_decode_total_us += s_pending_decode_us;
@@ -3100,11 +3305,28 @@ static void decode_worker_task(void *argument)
                                  memory_order_acquire)) {
             break;
         }
+        if (atomic_load_explicit(&s_decode_paused, memory_order_acquire)) {
+            /* Preserve REQUESTED, READY and FAILED. Resume delivers a new
+             * notification; overwriting state here can lose a pending bridge
+             * or a V1 frame when pause/resume races this worker. */
+            continue;
+        }
         int expected = DECODE_WORKER_REQUESTED;
         if (!atomic_compare_exchange_strong_explicit(
                 &s_decode_worker_state, &expected, DECODE_WORKER_RUNNING,
                 memory_order_acq_rel, memory_order_acquire)) {
             continue;
+        }
+
+        if (atomic_exchange_explicit(&s_decode_request_timed, false, memory_order_acq_rel)) {
+            const uint32_t waited = (uint32_t)esp_timer_get_time() -
+                atomic_load_explicit(&s_decode_request_us, memory_order_acquire);
+            atomic_fetch_add_explicit(&s_decode_request_wait_us, waited, memory_order_relaxed);
+            atomic_fetch_add_explicit(&s_decode_request_count, 1U, memory_order_relaxed);
+            unsigned previous = atomic_load_explicit(&s_decode_request_wait_max_us, memory_order_relaxed);
+            while (waited > previous && !atomic_compare_exchange_weak_explicit(
+                &s_decode_request_wait_max_us, &previous, waited,
+                memory_order_relaxed, memory_order_relaxed)) {}
         }
 
         int bridge_expected = BRIDGE_DECODE_REQUESTED;
@@ -3137,14 +3359,27 @@ static void decode_worker_task(void *argument)
             atomic_store_explicit(&s_decode_worker_state,
                                   DECODE_WORKER_READY,
                                   memory_order_release);
+            if (decode_us >= DECODE_COOPERATIVE_DELAY_THRESHOLD_US) {
+                /* One over-budget record has already missed a 40 FPS period.
+                 * Give the lower-priority control owner one scheduler tick
+                 * before decoding more data; normal in-budget frames keep the
+                 * two-slot pipeline free of this latency. */
+                (void)atomic_fetch_add_explicit(
+                    &s_health_decode_cooperative_blocks, 1U,
+                    memory_order_relaxed);
+                vTaskDelay(1);
+            }
             continue;
         }
 
         esp_err_t err = ESP_OK;
+        bool helped_frame = false;
         if (nuwax_emotion_asset_pack_abi() >=
             NUWAX_EMOTION_ASSET_PACK_ABI_V2) {
             uint32_t decoded_in_batch = 0U;
             while (!atomic_load_explicit(&s_decode_stop_requested,
+                                         memory_order_acquire) &&
+                   !atomic_load_explicit(&s_decode_paused,
                                          memory_order_acquire) &&
                    atomic_load_explicit(&s_queued_asset_id,
                                         memory_order_acquire) == 0U &&
@@ -3163,6 +3398,8 @@ static void decode_worker_task(void *argument)
                         memory_order_relaxed);
                     if (atomic_load_explicit(&s_decode_stop_requested,
                                              memory_order_acquire) ||
+                        atomic_load_explicit(&s_decode_paused,
+                                             memory_order_acquire) ||
                         atomic_load_explicit(&s_queued_asset_id,
                                              memory_order_acquire) != 0U) {
                         break;
@@ -3173,6 +3410,10 @@ static void decode_worker_task(void *argument)
                 slot->generation = atomic_load_explicit(
                     &s_decode_generation, memory_order_acquire);
                 slot->sequence = s_next_decode_sequence++;
+                const bool help_at_start = atomic_load_explicit(
+                    &s_decode_help_frame, memory_order_acquire);
+                const unsigned help_serial = atomic_load_explicit(
+                    &s_decode_help_serial, memory_order_acquire);
                 const int64_t started_us = esp_timer_get_time();
                 err = prepare_next_frame(slot);
                 slot->decode_us =
@@ -3202,6 +3443,23 @@ static void decode_worker_task(void *argument)
                 atomic_store_explicit(&slot->state, DECODE_SLOT_READY,
                                       memory_order_release);
                 decoded_in_batch++;
+                if (help_at_start || help_serial != atomic_load_explicit(
+                        &s_decode_help_serial, memory_order_acquire) || atomic_load_explicit(
+                        &s_decode_help_frame, memory_order_acquire)) {
+                    /* The elapsed decode time includes preemption. Publish one
+                     * needed frame, then block for the next owner request;
+                     * adding a 10 ms delay here only extends that starvation.
+                     * Do not fill the second slot at the elevated priority. */
+                    helped_frame = true;
+                    break;
+                }
+                if (slot->decode_us >=
+                    DECODE_COOPERATIVE_DELAY_THRESHOLD_US) {
+                    (void)atomic_fetch_add_explicit(
+                        &s_health_decode_cooperative_blocks, 1U,
+                        memory_order_relaxed);
+                    vTaskDelay(1);
+                }
                 /* A new emotion command is newest-wins. Finish the record
                  * already being decoded, then yield the shared decoder at a
                  * frame boundary instead of filling more old-asset slots. */
@@ -3215,6 +3473,13 @@ static void decode_worker_task(void *argument)
             err = prepare_next_frame(NULL);
             s_pending_decode_us =
                 (uint32_t)(esp_timer_get_time() - started_us);
+            if (s_pending_decode_us >=
+                DECODE_COOPERATIVE_DELAY_THRESHOLD_US) {
+                (void)atomic_fetch_add_explicit(
+                    &s_health_decode_cooperative_blocks, 1U,
+                    memory_order_relaxed);
+                vTaskDelay(1);
+            }
         }
         if (atomic_load_explicit(&s_decode_stop_requested,
                                  memory_order_acquire)) {
@@ -3225,6 +3490,7 @@ static void decode_worker_task(void *argument)
                               err == ESP_OK ? DECODE_WORKER_READY
                                             : DECODE_WORKER_FAILED,
                               memory_order_release);
+        if (helped_frame) nuwax_lvgl_port_wake();
     }
 
     atomic_store_explicit(&s_decode_task_exited, true, memory_order_release);
@@ -3253,6 +3519,7 @@ static esp_err_t decode_worker_init(void)
 
     atomic_store_explicit(&s_decode_worker_state, DECODE_WORKER_IDLE,
                           memory_order_release);
+    atomic_store_explicit(&s_decode_paused, false, memory_order_release);
     atomic_store_explicit(&s_decode_stop_requested, false,
                           memory_order_release);
     atomic_store_explicit(&s_decode_task_exited, false,
@@ -3274,6 +3541,7 @@ static esp_err_t decode_worker_init(void)
 
 static esp_err_t decode_worker_stop(void)
 {
+    decode_help_cancel();
     if (!s_decode_task) return ESP_OK;
     atomic_store_explicit(&s_decode_stop_requested, true,
                           memory_order_release);
@@ -3327,6 +3595,7 @@ static esp_err_t decode_worker_reap(void)
 
 static esp_err_t decode_worker_quiesce(void)
 {
+    decode_help_cancel();
     if (!s_background_decode) return ESP_OK;
     const int64_t deadline_us = esp_timer_get_time() +
         (int64_t)DECODE_QUIESCE_TIMEOUT_MS * 1000LL;
@@ -3354,11 +3623,17 @@ static esp_err_t decode_worker_quiesce(void)
 static void decode_worker_request(void)
 {
     if (!s_background_decode || !s_decode_task) return;
+    if (atomic_load_explicit(&s_decode_worker_state, memory_order_acquire) !=
+            DECODE_WORKER_IDLE) return;
+    atomic_store_explicit(&s_decode_request_us, (uint32_t)esp_timer_get_time(), memory_order_release);
+    atomic_store_explicit(&s_decode_request_timed, true, memory_order_release);
     int expected = DECODE_WORKER_IDLE;
     if (atomic_compare_exchange_strong_explicit(
             &s_decode_worker_state, &expected, DECODE_WORKER_REQUESTED,
             memory_order_acq_rel, memory_order_acquire)) {
         xTaskNotifyGive(s_decode_task);
+    } else {
+        atomic_store_explicit(&s_decode_request_timed, false, memory_order_release);
     }
 }
 
@@ -3593,11 +3868,39 @@ static void log_health_if_due(int64_t now_us)
     s_last_health_decode_budget_overruns = s_health_decode_budget_overruns;
     s_last_health_decode_cooperative_blocks = cooperative_blocks;
     s_last_health_decode_switch_aborts = switch_aborts;
+    const uint32_t request_count = atomic_load_explicit(&s_decode_request_count, memory_order_relaxed);
+    const uint32_t request_wait = atomic_load_explicit(&s_decode_request_wait_us, memory_order_relaxed);
+    const uint32_t requests = request_count - s_decode_last_request_count;
+    ESP_LOGI(TAG,
+             "decode schedule revision=135 base_priority=%u help_priority=%u lease_us=%u help_grants_total=%lu help_ready_total=%lu help_expired_total=%lu help_wall_ms_total=%llu help_max_us=%lu request_wait_avg_us=%lu request_wait_max_us=%u frame_gap_max_us=%lu frame_gaps_over50=%lu empty_due_ticks=%lu",
+             (unsigned)DECODE_TASK_PRIORITY, (unsigned)EMOTION_DECODE_HELP_PRIORITY,
+             (unsigned)EMOTION_DECODE_HELP_LEASE_US,
+             (unsigned long)s_decode_help_grants, (unsigned long)s_decode_help_ready,
+             (unsigned long)s_decode_help_expired, (unsigned long long)(s_decode_help_total_us / 1000U),
+             (unsigned long)s_decode_help_max_us,
+             (unsigned long)(requests ? (request_wait - s_decode_last_request_wait_us) / requests : 0U),
+             atomic_exchange_explicit(&s_decode_request_wait_max_us, 0U, memory_order_relaxed),
+             (unsigned long)s_decode_publish_gap_max_us, (unsigned long)s_decode_publish_gaps_over50,
+             (unsigned long)s_decode_empty_due_ticks);
+    s_decode_last_request_count = request_count;
+    s_decode_last_request_wait_us = request_wait;
+    s_decode_publish_gap_max_us = s_decode_publish_gaps_over50 = s_decode_empty_due_ticks = 0U;
 }
 
 esp_err_t nuwax_emotion_animation_player_init(lv_obj_t *parent)
 {
+    return nuwax_emotion_animation_player_init_with_initial_asset(
+        parent, NUWAX_EMOTION_ASSET_HAPPY);
+}
+
+esp_err_t nuwax_emotion_animation_player_init_with_initial_asset(
+    lv_obj_t *parent, nuwax_emotion_asset_id_t initial_asset)
+{
     if (!parent) return ESP_ERR_INVALID_ARG;
+    if (initial_asset < NUWAX_EMOTION_ASSET_DIZZINESS ||
+        initial_asset > NUWAX_EMOTION_ASSET_QUESTION) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (s_cleanup_pending) {
         const esp_err_t reap_err = nuwax_emotion_animation_player_reap();
         if (reap_err != ESP_OK) {
@@ -3655,6 +3958,7 @@ esp_err_t nuwax_emotion_animation_player_init(lv_obj_t *parent)
             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     }
     if ((pack_abi < NUWAX_EMOTION_ASSET_PACK_ABI_V2 && !s_indices) ||
+        (pack_abi == NUWAX_EMOTION_ASSET_PACK_ABI_V4 && !s_indices) ||
         !s_rgb565 ||
         !s_inflater ||
         (pack_abi < NUWAX_EMOTION_ASSET_PACK_ABI_V4 &&
@@ -3725,7 +4029,7 @@ esp_err_t nuwax_emotion_animation_player_init(lv_obj_t *parent)
     s_invalidated_pixels_total = 0;
     s_last_health_log_us = 0;
     s_last_health_frames = 0;
-    err = load_asset(NUWAX_EMOTION_ASSET_HAPPY);
+    err = load_asset(initial_asset);
     if (err != ESP_OK) {
         (void)nuwax_emotion_animation_player_deinit();
         return err;
@@ -3802,6 +4106,11 @@ esp_err_t nuwax_emotion_animation_player_reap(void)
     return ESP_OK;
 }
 
+bool nuwax_emotion_animation_player_transition_active(void) {
+    const unsigned queued = atomic_load_explicit(&s_queued_asset_id, memory_order_acquire);
+    return s_ready && (s_component_bridge.active || (queued && queued != (unsigned)s_asset_id));
+}
+
 esp_err_t nuwax_emotion_animation_player_set_asset(
     nuwax_emotion_asset_id_t asset_id)
 {
@@ -3825,6 +4134,51 @@ esp_err_t nuwax_emotion_animation_player_set_asset(
          * commit and all frame publication. */
         xTaskNotifyGive(s_decode_task);
     }
+    return ESP_OK;
+}
+
+esp_err_t nuwax_emotion_animation_player_set_asset_immediate(
+    nuwax_emotion_asset_id_t asset_id)
+{
+    if (!s_ready) return ESP_ERR_INVALID_STATE;
+    if (asset_id < NUWAX_EMOTION_ASSET_DIZZINESS ||
+        asset_id > NUWAX_EMOTION_ASSET_QUESTION) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* This path is reserved for the first lifecycle snapshot. Quiesce any
+     * decoder request before replacing the current timeline, and discard a
+     * queued bridge target so no stale transition can be published later. */
+    s_transient_active = false;
+    s_return_asset_id = 0;
+    cancel_component_bridge();
+    atomic_store_explicit(&s_queued_asset_id, 0U, memory_order_release);
+    return load_asset(asset_id);
+}
+
+esp_err_t nuwax_emotion_animation_player_recover(void)
+{
+    if (!s_ready || s_asset_id == 0U) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const nuwax_emotion_asset_id_t asset_id = s_asset_id;
+    /* A recovery is a clean key-frame restart.  It invalidates all queued
+     * generations before quiescing the worker, so no stale slot can be
+     * published after the restart. */
+    s_transient_active = false;
+    s_return_asset_id = 0;
+    atomic_store_explicit(&s_queued_asset_id, 0U, memory_order_release);
+    const esp_err_t err = load_asset(asset_id);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "emotion timeline recovery failed asset=%u err=%s",
+                 (unsigned)asset_id, esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "emotion timeline recovered asset=%u generation=%lu",
+             (unsigned)asset_id,
+             (unsigned long)atomic_load_explicit(&s_decode_generation,
+                                                 memory_order_acquire));
     return ESP_OK;
 }
 
@@ -3927,6 +4281,7 @@ esp_err_t nuwax_emotion_animation_player_tick(void)
 {
     if (!s_ready) return ESP_ERR_INVALID_STATE;
     const int64_t now_us = esp_timer_get_time();
+    decode_help_service(now_us);
     log_health_if_due(now_us);
     ESP_RETURN_ON_ERROR(apply_queued_asset_if_stable(), TAG,
                         "emotion asset switch failed");
@@ -3987,6 +4342,7 @@ esp_err_t nuwax_emotion_animation_player_tick(void)
                                      memory_order_acquire),
                 s_next_publish_sequence);
             if (!slot) {
+                s_decode_empty_due_ticks++;
                 if (state == DECODE_WORKER_IDLE ||
                     state == DECODE_WORKER_READY) {
                     atomic_store_explicit(&s_decode_worker_state,
@@ -4095,6 +4451,8 @@ void nuwax_emotion_animation_player_set_interaction_active(bool active)
 {
     if (!s_ready) return;
     if (active) {
+        decode_help_cancel();
+        atomic_store_explicit(&s_decode_paused, true, memory_order_release);
         if (s_component_bridge.active &&
             s_component_bridge.pause_started_us == 0) {
             s_component_bridge.pause_started_us = esp_timer_get_time();
@@ -4104,6 +4462,7 @@ void nuwax_emotion_animation_player_set_interaction_active(bool active)
     }
     if (!s_interaction_active) return;
     s_interaction_active = false;
+    atomic_store_explicit(&s_decode_paused, false, memory_order_release);
     const int64_t resumed_us = esp_timer_get_time();
     if (s_component_bridge.active &&
         s_component_bridge.pause_started_us > 0) {
@@ -4114,12 +4473,19 @@ void nuwax_emotion_animation_player_set_interaction_active(bool active)
         s_component_bridge.pause_started_us = 0;
     }
     s_next_frame_us = resumed_us;
+    /* A paused worker may have consumed its notification while retaining
+     * REQUESTED. Wake it without resetting the pipeline or the decoder. */
+    if (s_background_decode && s_decode_task) {
+        xTaskNotifyGive(s_decode_task);
+    }
 }
 
 esp_err_t nuwax_emotion_animation_player_freeze(void)
 {
     if (!s_ready || !s_image || !s_rgb565) return ESP_ERR_INVALID_STATE;
+    decode_help_cancel();
     s_interaction_active = true;
+    atomic_store_explicit(&s_decode_paused, true, memory_order_release);
     /* The worker only owns compressed decoder state and the publish patch; it
      * never mutates the visible RGB frame. Freezing therefore has no reason to
      * stall the LVGL owner while a low-priority decode finishes. */

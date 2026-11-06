@@ -1,0 +1,3 @@
+BASELINE REPRODUCED scenario=0 real_wait_iterations=6002 sends=1 simulated_ms=600000 capture=0 wake=0 late_turn_bootstrap=rejected late_cancel_ack=unmatched
+BASELINE REPRODUCED scenario=1 real_wait_iterations=6002 sends=1 simulated_ms=600000 capture=0 wake=0 late_turn_bootstrap=rejected late_cancel_ack=unmatched
+CONTROL PASSED send_failure: real_wait returns ESP_OK at simulated_ms=700 capture=1

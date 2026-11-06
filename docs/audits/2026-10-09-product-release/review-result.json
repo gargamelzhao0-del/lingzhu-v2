@@ -1,0 +1,16 @@
+{
+  "decision": "NO-GO",
+  "source_files_unchanged": 636,
+  "existing_core_suites_passed": 7,
+  "focused_suites_passed": 5,
+  "artifact_checks_passed": 20,
+  "hardware_validated": false,
+  "new_production_source_changes": false,
+  "shared_development_pop_redaction_check": "PASS",
+  "independent_reproductions": [
+    "greeting_timeout_recovery_stall",
+    "greeting_screen_cancel_ignored",
+    "false_recording_active_without_capture"
+  ],
+  "report_sha256": "c4ad70f45515f879c6bf5361524ed5272ee162b844f815ba1ce0916100f51ea3"
+}

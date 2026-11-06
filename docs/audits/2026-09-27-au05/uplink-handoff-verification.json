@@ -1,0 +1,13 @@
+{
+  "revision": "20260924-uplink-handoff-v1",
+  "elfSha256": "a0383b5a5d2a31bbaae1c805be8cdaac148529ba21f3456bfca1359cbc3edb9c",
+  "binSha256": "765e73dad876df448a6b6b7f3215256a46b0ce207e4d834648a7b3df804f1021",
+  "bytes": 3828400,
+  "hardwareValidated": false,
+  "sourceHashes": {
+    "main/conversation/audio_uplink.c": "76a488419b0373f268ab41fae136310001a0ea2fe6678e92d99281645b585096",
+    "main/conversation/audio_uplink.h": "4b55b5814b84d0d256cef07fe18cbbde68036d66fac5702bce040bf5e29ad449",
+    "tools/test-uplink-cleanup-handoff.py": "a275b9bde095c252f24ebb06befabd3bfd6e2992299a31d2b34f3c15d3901854",
+    "tools/fixtures/uplink-cleanup-before-au04.c": "5377496be66fd6e5b659239e2eb31062a883bc35a09b4af83ec539e521f29b97"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "sourceSha256": {
+    "main/app_shell.c": "db763004ec0166408dc0d387a03986e782eb336eac595ad2387cbe492a616f26",
+    "main/nuwax_ui_v28/nuwax_drawer.c": "7461212b4599fc30309e724d2339657a0c3a5587adb5465ab98bc5f3c30d8395",
+    "main/conversation/touch_gesture.c": "51940c7c2151c3043e8501553be82fe20b32c0c3db0dda7fef7d3eb5e11f69d3",
+    "main/touch_input.c": "49e7e6b201e4f618c2f47622ba5e1245e5c873782bd12d12be00fc849706168d",
+    "main/nuwax_ai_partner_main.c": "de04c6579680e46c4ed6184b36537fe325109aee8522ae4895866a46e11ab682",
+    "main/ws_transport.c": "39d8aefbd8148f86068699a9eb21795560ee85a053f76ee3e83445a5503de19c",
+    "main/session_protocol.c": "7870733c1bde7c637ecdde28d7b22e28b8e90fe91ad440442a28770db74e5711"
+  },
+  "notificationACK": [
+    "GENERIC_CAPTURE_ACK queued=1 synchronous=0 elapsed_ms=0",
+    "NOTIFICATION_REJECT_ACK queued=0 synchronous=1 wait_ms=500 capture_age_limit_ms=60"
+  ],
+  "rawTouch": [
+    "CAPTURED_OLD_SCENE routed=0",
+    "DELAYED_RAW_TAP old_page=status actual_page=menu sample_ms=1001 consumed_ms=1350 dispatched_meeting=1",
+    "RAW_FIFO_PRESS_EVICTED physical_start_x=250 interpreted_start_x=100 dropped_samples=7 dispatched_meeting=1",
+    "DELAYED_RAW_PULL pre_close_release_ms=1040 system_close_ms=1050 consumed_ms=1060 reopened=1"
+  ],
+  "hardwareValidated": false
+}

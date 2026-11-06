@@ -37,6 +37,11 @@ typedef struct {
 
 void nuwax_turn_guard_init(nuwax_turn_guard_t *guard);
 void nuwax_turn_guard_clear(nuwax_turn_guard_t *guard);
+bool nuwax_turn_guard_accepts_rx_rejection(const nuwax_turn_guard_t *guard,
+                                          uint32_t awake_generation,
+                                          const char *request_id,
+                                          const char *turn_id,
+                                          const char *playback_id);
 uint32_t nuwax_turn_guard_begin(nuwax_turn_guard_t *guard,
                                 uint32_t awake_generation,
                                 const char *request_id,

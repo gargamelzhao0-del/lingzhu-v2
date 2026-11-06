@@ -9,6 +9,8 @@
 #include "board/battery_service.h"
 #include "board/nuwax_power_ctrl.h"
 #include "cJSON.h"
+#include "json_resource_budget.h"
+#include "device_error_report.h"
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -24,6 +26,7 @@
 #include "nuwax_ota_power_policy.h"
 #include "nuwax_ota_manifest.h"
 #include "nuwax_ota_result_ack_policy.h"
+#include "wake_word_detector.h"
 #include "sdkconfig.h"
 
 #if !CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
@@ -47,6 +50,7 @@ static const char *TAG = "nuwax_ota_device";
 #define OTA_CONTEXT_FINGERPRINT_KEY   "manifest_fp"
 #define OTA_NOTIFY_CLOUD_READY        (1UL << 0)
 #define OTA_NOTIFY_RESULT_ACK         (1UL << 1)
+#define OTA_NOTIFY_BINDING_RECOVERY   (1UL << 2)
 #define OTA_HEALTH_PENDING_LOG_MS      5000U
 #define OTA_HEALTH_DETAIL_BYTES        128U
 #define OTA_TERMINAL_SEND_ATTEMPTS     3U
@@ -78,6 +82,7 @@ typedef enum {
     OTA_BOOT_DECISION_CLOUD_READY,
     OTA_BOOT_DECISION_TIMEOUT,
     OTA_BOOT_DECISION_LOCAL_HEALTH_FAILED,
+    OTA_BOOT_DECISION_REPROVISION,
     OTA_BOOT_DECISION_COMPLETE,
 } ota_boot_decision_owner_t;
 
@@ -100,10 +105,14 @@ static bool s_audio_blocked;
 static ota_terminal_report_state_t s_terminal_report_state;
 static bool s_terminal_delivery_ok;
 static bool s_boot_pending_verify;
+static bool s_boot_binding_recovery_requested;
+static uint32_t s_boot_binding_recovery_retry_ms;
 static ota_boot_decision_owner_t s_boot_decision_owner;
 static uint32_t s_boot_validation_deadline_ms;
 static bool s_cloud_ready_event_pending;
 static uint32_t s_cloud_ready_event_ms;
+static uint32_t s_boot_retry_count;
+static uint32_t s_boot_retry_log_ms;
 static bool s_health_pending_log_valid;
 static uint32_t s_health_pending_log_ms;
 static char s_health_pending_log_detail[OTA_HEALTH_DETAIL_BYTES];
@@ -141,7 +150,8 @@ static bool cloud_authenticated_for_epoch_locked(uint32_t connection_epoch)
 
 static void log_controller_stack_watermark(const char *stage)
 {
-    /* ESP-IDF reports task stack depth and high-water marks in bytes. */
+    /* ESP-IDF's FreeRTOS port reports this high-water mark in bytes, matching
+     * the byte-based task stack sizes used by the project. */
     const size_t free_bytes =
         (size_t)uxTaskGetStackHighWaterMark(NULL);
     const size_t internal_free = heap_caps_get_free_size(
@@ -464,6 +474,7 @@ static esp_err_t emit_result_reliably(const char *status,
         if (err == ESP_OK) {
             err = wait_for_result_ack();
             if (err == ESP_OK) {
+                ESP_LOGI(TAG, "OTA result acknowledged stage=%s attempt=%u", status, attempt + 1U);
                 return ESP_OK;
             }
         }
@@ -476,6 +487,8 @@ static esp_err_t emit_result_reliably(const char *status,
                 OTA_TERMINAL_RETRY_BASE_MS << attempt));
         }
     }
+    (void)nuwax_device_error_report_enqueue(
+        "error", "ota", "result_delivery", err, "ota", 0U, NULL);
     return err;
 }
 
@@ -602,9 +615,23 @@ static void request_firmware_metadata_refresh(void)
 
 static esp_err_t persist_report_context(const ota_report_context_t *context)
 {
+    if (!context) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const esp_err_t guard_err =
+        nuwax_wake_word_detector_begin_flash_operation(500U);
+    if (guard_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "OTA context persistence deferred while wake detector is active: %s",
+                 esp_err_to_name(guard_err));
+        return guard_err;
+    }
     nvs_handle_t handle;
     esp_err_t err = nvs_open(OTA_CONTEXT_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        nuwax_wake_word_detector_end_flash_operation();
+        return err;
+    }
     err = nvs_set_str(handle, OTA_CONTEXT_REQUEST_KEY, context->request_id);
     if (err == ESP_OK) err = nvs_set_str(handle, OTA_CONTEXT_UPDATE_KEY,
                                          context->update_id);
@@ -620,14 +647,26 @@ static esp_err_t persist_report_context(const ota_report_context_t *context)
                                          context->manifest_fingerprint);
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
+    nuwax_wake_word_detector_end_flash_operation();
     return err;
 }
 
 static esp_err_t clear_report_context(void)
 {
+    const esp_err_t guard_err =
+        nuwax_wake_word_detector_begin_flash_operation(500U);
+    if (guard_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "OTA context cleanup deferred while wake detector is active: %s",
+                 esp_err_to_name(guard_err));
+        return guard_err;
+    }
     nvs_handle_t handle;
     esp_err_t err = nvs_open(OTA_CONTEXT_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        nuwax_wake_word_detector_end_flash_operation();
+        return err;
+    }
     err = nvs_erase_all(handle);
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
@@ -636,6 +675,7 @@ static esp_err_t clear_report_context(void)
         memset(&s_report, 0, sizeof(s_report));
         portEXIT_CRITICAL(&s_lock);
     }
+    nuwax_wake_word_detector_end_flash_operation();
     return err;
 }
 
@@ -727,13 +767,12 @@ static const char *battery_preflight_code(void)
     nuwax_battery_service_snapshot_t battery = {0};
     const bool snapshot_available =
         nuwax_battery_service_get_snapshot(&battery) == ESP_OK;
-    const nuwax_ota_power_result_t result = nuwax_ota_power_evaluate(
+    const nuwax_ota_power_result_t result = nuwax_ota_power_evaluate_admission(
         snapshot_available && battery.sample_available,
         battery.stale,
         battery.battery_present,
-        battery.power_state == NUWAX_BATTERY_POWER_EXTERNAL,
         battery.valid,
-        battery.low,
+        battery.hard_low_voltage,
         battery.percent,
         CONFIG_NUWAX_OTA_MIN_BATTERY_PERCENT);
     return nuwax_ota_power_result_code(result);
@@ -772,6 +811,16 @@ static void release_queued_command(void)
     refresh_interlocks();
 }
 
+/* Pure admission check: run before reserving audio, persisting context or
+ * showing progress. The transport repeats this check as a final fence. */
+static bool ota_version_is_newer(const nuwax_ota_manifest_t *manifest)
+{
+    const esp_app_desc_t *running = esp_app_get_description();
+    return running != NULL &&
+           nuwax_ota_manifest_version_compare(manifest->version,
+                                              running->version) > 0;
+}
+
 static bool accept_queued_update(const ota_command_item_t *item)
 {
     if (!nuwax_ota_device_cloud_authenticated(item->connection_epoch)) {
@@ -792,6 +841,14 @@ static bool accept_queued_update(const ota_command_item_t *item)
         release_queued_command();
         (void)emit_ack(item->request_id, item->update_id, false, false,
                        "rejected", "bad_request", "invalid OTA manifest");
+        return false;
+    }
+
+    if (!ota_version_is_newer(&manifest)) {
+        release_queued_command();
+        (void)emit_ack(item->request_id, item->update_id, false, false,
+                       "rejected", "version_not_newer",
+                       "update version must be newer than running firmware");
         return false;
     }
 
@@ -823,7 +880,7 @@ static bool accept_queued_update(const ota_command_item_t *item)
         release_queued_command();
         (void)emit_ack(item->request_id, item->update_id, false, false,
                        "rejected", "audio_busy",
-                       "stop meeting or monitoring mode first");
+                       "recording, provisioning or audio resources are busy");
         return false;
     }
     const char *power_code = battery_preflight_code();
@@ -845,6 +902,21 @@ static bool accept_queued_update(const ota_command_item_t *item)
     context.manifest_fingerprint = item->manifest_fingerprint;
     context.target_partition_address = target_partition->address;
     err = persist_report_context(&context);
+    if (err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+        /* The diagnostic queue is best-effort and shares the small NVS
+         * partition with the OTA transaction.  Releasing only that queue is
+         * safe for user credentials and gives the durable OTA context one
+         * bounded retry instead of rejecting an otherwise valid update. */
+        const esp_err_t release_err =
+            nuwax_device_error_report_release_persisted_storage();
+        if (release_err == ESP_OK) {
+            err = persist_report_context(&context);
+        } else {
+            ESP_LOGW(TAG,
+                     "OTA context retry could not release diagnostic NVS err=%s",
+                     esp_err_to_name(release_err));
+        }
+    }
     if (err != ESP_OK) {
         release_queued_command();
         (void)emit_ack(item->request_id, item->update_id, false, false,
@@ -1106,6 +1178,81 @@ static esp_err_t execute_timeout_rollback(void)
                                  "cloud and local health gates did not pass before deadline");
 }
 
+/* The controller is the only executor of boot decisions. A cloud-ready handler
+ * already in flight finishes before this runs; a confirmed image is never
+ * rolled back by a delayed rebind request. NVS failure retains the original
+ * timeout, and no successful OTA result is fabricated for a revoked binding. */
+static void process_boot_binding_recovery(void)
+{
+    const uint32_t now = monotonic_ms();
+    bool claimed = false;
+    portENTER_CRITICAL(&s_lock);
+    if (!s_boot_pending_verify) s_boot_binding_recovery_requested = false;
+    if (s_boot_binding_recovery_requested && s_boot_pending_verify &&
+        !s_cloud_authenticated && !s_command_pending && !s_active &&
+        s_boot_decision_owner == OTA_BOOT_DECISION_NONE &&
+        (s_boot_binding_recovery_retry_ms == 0U ||
+         deadline_reached(now, s_boot_binding_recovery_retry_ms))) {
+        s_boot_decision_owner = OTA_BOOT_DECISION_REPROVISION;
+        s_cloud_ready_event_pending = false;
+        claimed = true;
+    }
+    portEXIT_CRITICAL(&s_lock);
+    if (!claimed) return;
+
+    const esp_err_t err = s_callbacks.prepare_reprovision_boot
+        ? s_callbacks.prepare_reprovision_boot(s_callbacks.ctx) : ESP_ERR_INVALID_STATE;
+    if (err == ESP_OK) {
+        ESP_LOGW(TAG, "OTA binding recovery revision=178 durable rebind saved; rolling back directly into provisioning");
+        (void)execute_boot_rollback(OTA_BOOT_DECISION_REPROVISION,
+            "binding_recovery", "cloud binding rejected while image pending; rebind record persisted");
+    } else {
+        portENTER_CRITICAL(&s_lock);
+        if (s_boot_decision_owner == OTA_BOOT_DECISION_REPROVISION)
+            s_boot_decision_owner = OTA_BOOT_DECISION_NONE;
+        portEXIT_CRITICAL(&s_lock);
+        ESP_LOGW(TAG, "OTA binding recovery persistence deferred err=%s; original validation deadline retained",
+                 esp_err_to_name(err));
+    }
+    portENTER_CRITICAL(&s_lock);
+    s_boot_binding_recovery_retry_ms = monotonic_ms() + 1000U;
+    portEXIT_CRITICAL(&s_lock);
+}
+
+/* A cloud-ready event is consumed before validation. Metadata access can lose
+ * the shared Flash guard to the firmware-report worker even before hashing.
+ * Preserve that event on temporary failure; the controller's 100 ms queue
+ * wait bounds retries. Never extend the boot deadline or bypass validation. */
+static esp_err_t process_cloud_ready_with_retry(uint32_t ready_ms)
+{
+    const esp_err_t err = process_cloud_ready_event(ready_ms);
+    if (err != ESP_ERR_INVALID_STATE && err != ESP_ERR_TIMEOUT &&
+        err != ESP_ERR_NOT_FINISHED) {
+        return err;
+    }
+    const uint32_t now = monotonic_ms();
+    bool log_retry = false;
+    uint32_t attempt = 0U;
+    portENTER_CRITICAL(&s_lock);
+    if (s_boot_pending_verify && s_cloud_authenticated &&
+        s_boot_decision_owner == OTA_BOOT_DECISION_NONE &&
+        !deadline_reached(now, s_boot_validation_deadline_ms) &&
+        !s_cloud_ready_event_pending) {
+        s_cloud_ready_event_pending = true;
+        s_cloud_ready_event_ms = ready_ms;
+        attempt = ++s_boot_retry_count;
+        log_retry = attempt == 1U ||
+            (uint32_t)(now - s_boot_retry_log_ms) >= OTA_HEALTH_PENDING_LOG_MS;
+        if (log_retry) s_boot_retry_log_ms = now;
+    }
+    portEXIT_CRITICAL(&s_lock);
+    if (log_retry) {
+        ESP_LOGW(TAG, "OTA boot validation retry revision=boot-retry-v1 err=%s attempt=%lu; original deadline retained",
+                 esp_err_to_name(err), (unsigned long)attempt);
+    }
+    return err;
+}
+
 static void ota_controller_task(void *arg)
 {
     (void)arg;
@@ -1124,6 +1271,7 @@ static void ota_controller_task(void *arg)
 
         uint32_t notifications = 0;
         (void)xTaskNotifyWait(0U, UINT32_MAX, &notifications, 0);
+        process_boot_binding_recovery();
         bool inspect_cloud_ready =
             (notifications & OTA_NOTIFY_CLOUD_READY) != 0U;
         portENTER_CRITICAL(&s_lock);
@@ -1140,14 +1288,22 @@ static void ota_controller_task(void *arg)
             }
             portEXIT_CRITICAL(&s_lock);
             if (event_pending) {
-                esp_err_t ready_err = process_cloud_ready_event(ready_ms);
-                if (ready_err != ESP_OK &&
+                esp_err_t ready_err = process_cloud_ready_with_retry(ready_ms);
+                portENTER_CRITICAL(&s_lock);
+                const bool validation_retry_pending =
+                    s_boot_pending_verify && s_cloud_ready_event_pending;
+                portEXIT_CRITICAL(&s_lock);
+                if (!validation_retry_pending && ready_err != ESP_OK &&
                     ready_err != ESP_ERR_INVALID_STATE &&
                     ready_err != ESP_ERR_NOT_FINISHED) {
                     ESP_LOGE(TAG, "deferred cloud-ready handling failed: %s",
                              esp_err_to_name(ready_err));
                 }
-                log_controller_stack_watermark("cloud_ready_complete");
+                /* Retry diagnostics are rate limited above. Avoid walking
+                 * the stack/heap and flooding UART on every retry tick. */
+                if (!validation_retry_pending) {
+                    log_controller_stack_watermark("cloud_ready_complete");
+                }
             }
         }
 
@@ -1162,6 +1318,8 @@ static void rollback_device_init_interlocks(void)
 {
     portENTER_CRITICAL(&s_lock);
     s_boot_pending_verify = false;
+    s_boot_binding_recovery_requested = false;
+    s_boot_binding_recovery_retry_ms = 0U;
     s_boot_decision_owner = OTA_BOOT_DECISION_NONE;
     s_boot_validation_deadline_ms = 0U;
     s_cloud_ready_event_pending = false;
@@ -1218,6 +1376,8 @@ esp_err_t nuwax_ota_device_init(const nuwax_ota_device_callbacks_t *callbacks)
     portENTER_CRITICAL(&s_lock);
     s_boot_pending_verify = pending;
     s_boot_decision_owner = OTA_BOOT_DECISION_NONE;
+    s_boot_retry_count = 0U;
+    s_boot_retry_log_ms = 0U;
     s_health_pending_log_valid = false;
     s_health_pending_log_ms = 0;
     s_health_pending_log_detail[0] = '\0';
@@ -1246,6 +1406,8 @@ esp_err_t nuwax_ota_device_init(const nuwax_ota_device_callbacks_t *callbacks)
     }
     s_initialized = true;
     ESP_LOGI(TAG, "ready pending_verify=%d", pending ? 1 : 0);
+    ESP_LOGI(TAG, "OTA power admission revision=percent-v1 min_percent=%d profile_required=0 hard_voltage_guard=1",
+             CONFIG_NUWAX_OTA_MIN_BATTERY_PERCENT);
     return ESP_OK;
 }
 
@@ -1257,7 +1419,7 @@ bool nuwax_ota_device_handle_text(const char *payload, int len,
     }
 
     const char *parse_end = NULL;
-    cJSON *root = cJSON_ParseWithLengthOpts(payload, (size_t)len,
+    cJSON *root = nuwax_json_parse_with_length_opts(payload, (size_t)len,
                                             &parse_end, false);
     if (root == NULL || !cJSON_IsObject(root)) {
         cJSON_Delete(root);
@@ -1366,13 +1528,24 @@ bool nuwax_ota_device_handle_text(const char *payload, int len,
     if (callbacks.continuous_audio_busy != NULL &&
         callbacks.continuous_audio_busy(callbacks.ctx)) {
         (void)emit_ack(request_id, update_id, false, false, "rejected",
-                       "audio_busy", "stop meeting or monitoring mode first");
+                       "audio_busy", "recording, provisioning or audio resources are busy");
         return true;
     }
     const char *power_code = battery_preflight_code();
     if (power_code != NULL) {
         (void)emit_ack(request_id, update_id, false, false, "rejected",
                        power_code, "battery state is not safe for OTA");
+        return true;
+    }
+
+    /* Keep duplicate/in-flight result handling above this check. Rejected
+     * versions must never acquire the power/audio reservation below. */
+    if (!ota_version_is_newer(&manifest)) {
+        ESP_LOGI(TAG, "OTA rejected before audio reservation: version_not_newer version=%s",
+                 manifest.version);
+        (void)emit_ack(request_id, update_id, false, false, "rejected",
+                       "version_not_newer",
+                       "update version must be newer than running firmware");
         return true;
     }
 
@@ -1447,6 +1620,21 @@ bool nuwax_ota_device_is_active(void)
     active = s_command_pending || s_active || s_boot_pending_verify;
     portEXIT_CRITICAL(&s_lock);
     return active;
+}
+
+bool nuwax_ota_device_request_binding_recovery(void)
+{
+    TaskHandle_t controller = NULL;
+    portENTER_CRITICAL(&s_lock);
+    if (s_boot_pending_verify && !s_cloud_authenticated &&
+        !s_command_pending && !s_active && s_controller_task &&
+        s_callbacks.prepare_reprovision_boot) {
+        s_boot_binding_recovery_requested = true;
+        controller = s_controller_task;
+    }
+    portEXIT_CRITICAL(&s_lock);
+    if (controller) (void)xTaskNotify(controller, OTA_NOTIFY_BINDING_RECOVERY, eSetBits);
+    return controller != NULL;
 }
 
 bool nuwax_ota_device_worker_idle(void)
@@ -1596,10 +1784,24 @@ static esp_err_t process_cloud_ready_event(uint32_t ready_ms)
             portENTER_CRITICAL(&s_lock);
             if (s_boot_decision_owner == OTA_BOOT_DECISION_CLOUD_READY) {
                 s_boot_decision_owner = OTA_BOOT_DECISION_NONE;
+                if (err == ESP_ERR_NOT_FINISHED) {
+                    s_cloud_ready_event_pending = true;
+                    s_cloud_ready_event_ms = ready_ms;
+                }
             }
             portEXIT_CRITICAL(&s_lock);
             return err == ESP_OK ? ESP_ERR_INVALID_CRC : err;
         }
+
+        /* Hashing may yield for seconds. Recheck the absolute boot deadline
+         * before publishing success or marking the image valid. */
+        if (deadline_reached(monotonic_ms(), s_boot_validation_deadline_ms)) {
+            portENTER_CRITICAL(&s_lock);
+            s_boot_decision_owner = OTA_BOOT_DECISION_TIMEOUT;
+            portEXIT_CRITICAL(&s_lock);
+            return execute_timeout_rollback();
+        }
+        ESP_LOGI(TAG, "OTA boot identity verified revision=ota-identity-v1");
 
         /* The old image may have rebooted after a successful local write but
          * before the gateway durably observed staged. Replaying staged is
@@ -1624,6 +1826,13 @@ static esp_err_t process_cloud_ready_event(uint32_t ready_ms)
             request_reconnect_after_terminal_failure(err);
             return err;
         }
+        if (deadline_reached(monotonic_ms(), s_boot_validation_deadline_ms)) {
+            complete_terminal_report(ESP_ERR_TIMEOUT);
+            portENTER_CRITICAL(&s_lock);
+            s_boot_decision_owner = OTA_BOOT_DECISION_TIMEOUT;
+            portEXIT_CRITICAL(&s_lock);
+            return execute_timeout_rollback();
+        }
         err = nuwax_ota_main_confirm_running_image();
         if (err != ESP_OK) {
             complete_terminal_report(err);
@@ -1641,6 +1850,7 @@ static esp_err_t process_cloud_ready_event(uint32_t ready_ms)
             request_reconnect_after_terminal_failure(err);
             return err;
         }
+        ESP_LOGI(TAG, "OTA running image confirmed valid; rollback cancelled");
         err = emit_result_reliably("committed", "health gate passed");
         complete_terminal_report(err);
         if (err == ESP_OK) (void)clear_report_context();
@@ -1650,6 +1860,8 @@ static esp_err_t process_cloud_ready_event(uint32_t ready_ms)
         s_boot_decision_owner = OTA_BOOT_DECISION_COMPLETE;
         portEXIT_CRITICAL(&s_lock);
         refresh_interlocks();
+        ESP_LOGI(TAG, "OTA boot verification finished committed_ack=%d audio_blocked=%d",
+                 err == ESP_OK ? 1 : 0, nuwax_ota_device_blocks_audio() ? 1 : 0);
         if (err == ESP_OK) {
             /* The connection hello was built while this image was still
              * pending verification. Reconnect once after the durable commit

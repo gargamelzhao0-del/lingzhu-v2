@@ -1,0 +1,9 @@
+BUILD wake_greeting_touch
+
+REPRODUCED: current production touch policy cancels SPEAKING but ignores LISTENING (wake greeting playback state)
+
+BUILD wake_timeout_recovery
+
+REPRODUCED phase=1 timeout=15000: after 100 idle minutes state=SLEEPING awake=active/paused capture=0 wake_rearm=0 websocket_close=0
+REPRODUCED phase=2 timeout=30000: after 100 idle minutes state=SLEEPING awake=active/paused capture=0 wake_rearm=0 websocket_close=0
+CONTROL PASSED: the same timeout starting in an awake state schedules listening

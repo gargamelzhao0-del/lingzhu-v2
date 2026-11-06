@@ -1,3 +1,4 @@
+#include "test_controls.h"
 #include "wifi_manager.h"
 
 #include <stdio.h>
@@ -10,11 +11,13 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs.h"
+#include "wake_word_detector.h"
 #include "wifi_saved_network_list_internal.h"
 
 #define WIFI_CONNECTED_BIT BIT0
@@ -22,6 +25,8 @@
 #define WIFI_FALLBACK_BIT BIT2
 #define WIFI_SCAN_DONE_BIT BIT3
 #define WIFI_RECONNECT_BIT BIT4
+#define WIFI_STA_STOPPED_BIT BIT5
+#define WIFI_STA_STARTED_BIT BIT6
 #define MAX_WIFI_RETRY 8
 #define WIFI_CONNECT_TIMEOUT_MS 30000
 #define WIFI_ONLINE_SCAN_ACTIVE_MIN_MS 20U
@@ -46,13 +51,23 @@
 #define WIFI_NVS_KEY_SAVED_PREFIX "saved_"
 #define WIFI_NVS_KEY_SAVED_SSID_SUFFIX "_ssid"
 #define WIFI_NVS_KEY_SAVED_PASSWORD_SUFFIX "_pwd"
+#define WIFI_NVS_FLASH_GUARD_TIMEOUT_MS 500U
 
 static const char *TAG = "nuwax_wifi";
 static EventGroupHandle_t s_wifi_event_group;
 static SemaphoreHandle_t s_wifi_operation_mutex;
 static atomic_int s_wifi_retry_count = ATOMIC_VAR_INIT(0);
+/* Only the synchronous operation owner may consume this one-shot refresh.
+ * Event callbacks signal it; they never reconfigure the driver or touch NVS. */
+static atomic_bool s_join_refresh_allowed;
+static atomic_bool s_join_refresh_pending;
+static atomic_uint s_join_failure_streak;
 static bool s_wifi_initialized;
 static atomic_bool s_wifi_connect_requested = ATOMIC_VAR_INIT(false);
+static atomic_bool s_wifi_driver_connecting = ATOMIC_VAR_INIT(false);
+static atomic_bool s_sta_restart_needs_start = ATOMIC_VAR_INIT(false);
+static atomic_uint s_wifi_intent_revision = ATOMIC_VAR_INIT(0U);
+static atomic_bool s_wifi_simulated_offline = ATOMIC_VAR_INIT(false);
 static atomic_int s_active_ssid_index = ATOMIC_VAR_INIT(0);
 static atomic_bool s_fallback_in_progress = ATOMIC_VAR_INIT(false);
 static atomic_bool s_synchronous_connect_active = ATOMIC_VAR_INIT(false);
@@ -79,6 +94,48 @@ static atomic_uint s_deferred_reconnect_driver_failures = ATOMIC_VAR_INIT(0U);
 
 static void wifi_fallback_watcher_task(void *arg);
 static esp_err_t nuwax_wifi_run_fallback(void);
+
+/* Driver attempts are shared by event retries, the watcher and recovery.
+ * Publish before esp_wifi_connect: callbacks may arrive before it returns. */
+static esp_err_t wifi_driver_connect_once(void) {
+    if (nuwax_wifi_provisioning_active() ||
+        atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire)) return ESP_ERR_INVALID_STATE;
+    if (nuwax_wifi_is_connected()) return ESP_OK;
+    if (atomic_exchange_explicit(&s_wifi_driver_connecting, true, memory_order_acq_rel)) return ESP_OK;
+    const esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_CONN)
+        atomic_store_explicit(&s_wifi_driver_connecting, false, memory_order_release);
+    return err == ESP_ERR_WIFI_CONN ? ESP_OK : err;
+}
+
+static esp_err_t wifi_driver_disconnect(void) {
+    atomic_store_explicit(&s_wifi_driver_connecting, false, memory_order_release);
+    if (s_wifi_event_group) {
+        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+    memset(s_current_ip, 0, sizeof(s_current_ip));
+    return esp_wifi_disconnect();
+}
+
+/* Exclude missing AP and explicit authentication rejection: resetting those
+ * cannot repair credentials or radio coverage. Eligible transient join errors
+ * are accumulated within one bounded join. Missing-AP scans between two
+ * authentication timeouts do not erase evidence that this AP was heard. */
+static bool wifi_join_refresh_needed(int reason) {
+    if (reason == WIFI_REASON_NO_AP_FOUND || reason == WIFI_REASON_STA_LEAVING) {
+        return false;
+    }
+    bool transient = reason == WIFI_REASON_AUTH_EXPIRE ||
+                     reason == WIFI_REASON_DISASSOC_DUE_TO_INACTIVITY ||
+                     reason == WIFI_REASON_ASSOC_FAIL ||
+                     reason == WIFI_REASON_CONNECTION_FAIL;
+    if (!transient) {
+        atomic_store_explicit(&s_join_failure_streak, 0U, memory_order_release);
+        return false;
+    }
+    unsigned count = atomic_fetch_add_explicit(&s_join_failure_streak, 1U, memory_order_acq_rel) + 1U;
+    return count >= 2U && atomic_exchange_explicit(&s_join_refresh_allowed, false, memory_order_acq_rel);
+}
 
 static uint32_t wifi_reconnect_backoff_ms(uint32_t failure_count) {
     uint32_t delay_ms = WIFI_RECONNECT_BACKOFF_BASE_MS;
@@ -114,6 +171,35 @@ static void wifi_operation_unlock(void) {
     }
 }
 
+/* NVS is backed by the same flash cache used by the wake model.  Every
+ * runtime NVS handle in this module therefore owns one detector guard level;
+ * the guard is re-entrant for helpers such as history-save -> history-load.
+ */
+static esp_err_t wifi_nvs_open(nvs_open_mode_t mode, nvs_handle_t *out_handle)
+{
+    if (out_handle == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const esp_err_t guard_err =
+        nuwax_wake_word_detector_begin_flash_operation(
+            WIFI_NVS_FLASH_GUARD_TIMEOUT_MS);
+    if (guard_err != ESP_OK) {
+        return guard_err;
+    }
+    const esp_err_t err =
+        nvs_open(WIFI_NVS_NAMESPACE, mode, out_handle);
+    if (err != ESP_OK) {
+        nuwax_wake_word_detector_end_flash_operation();
+    }
+    return err;
+}
+
+static void wifi_nvs_close(nvs_handle_t handle)
+{
+    nvs_close(handle);
+    nuwax_wake_word_detector_end_flash_operation();
+}
+
 static esp_err_t wifi_load_saved_credentials(char *ssid, size_t ssid_size, char *password, size_t password_size) {
     if (!ssid || ssid_size == 0 || !password || password_size == 0) {
         return ESP_ERR_INVALID_ARG;
@@ -122,7 +208,7 @@ static esp_err_t wifi_load_saved_credentials(char *ssid, size_t ssid_size, char 
     password[0] = '\0';
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READONLY, &handle);
+    esp_err_t err = wifi_nvs_open(NVS_READONLY, &handle);
     if (err != ESP_OK) {
         return err;
     }
@@ -130,7 +216,7 @@ static esp_err_t wifi_load_saved_credentials(char *ssid, size_t ssid_size, char 
     size_t required = ssid_size;
     err = nvs_get_str(handle, WIFI_NVS_KEY_SSID, ssid, &required);
     if (err != ESP_OK || ssid[0] == '\0') {
-        nvs_close(handle);
+        wifi_nvs_close(handle);
         return err == ESP_OK ? ESP_ERR_NOT_FOUND : err;
     }
 
@@ -140,7 +226,7 @@ static esp_err_t wifi_load_saved_credentials(char *ssid, size_t ssid_size, char 
         password[0] = '\0';
         err = ESP_OK;
     }
-    nvs_close(handle);
+    wifi_nvs_close(handle);
     return err;
 }
 
@@ -150,9 +236,11 @@ static esp_err_t wifi_save_credentials(const char *ssid, const char *password) {
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = wifi_nvs_open(NVS_READWRITE, &handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "open Wi-Fi NVS failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG,
+                 "Wi-Fi credential persistence deferred/open failed: %s",
+                 esp_err_to_name(err));
         return err;
     }
 
@@ -163,7 +251,7 @@ static esp_err_t wifi_save_credentials(const char *ssid, const char *password) {
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
-    nvs_close(handle);
+    wifi_nvs_close(handle);
 
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Saved Wi-Fi credentials SSID: %s", ssid);
@@ -190,7 +278,7 @@ static esp_err_t wifi_load_saved_network_list(void) {
         return ESP_OK;
     }
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READONLY, &handle);
+    esp_err_t err = wifi_nvs_open(NVS_READONLY, &handle);
     if (err != ESP_OK) {
         return err;
     }
@@ -198,7 +286,7 @@ static esp_err_t wifi_load_saved_network_list(void) {
     uint8_t saved_count = 0;
     err = nvs_get_u8(handle, WIFI_NVS_KEY_SAVED_COUNT, &saved_count);
     if (err != ESP_OK) {
-        nvs_close(handle);
+        wifi_nvs_close(handle);
         return err;
     }
     if (saved_count > NUWAX_WIFI_MAX_SAVED_NETWORKS) {
@@ -232,7 +320,7 @@ static esp_err_t wifi_load_saved_network_list(void) {
                 ssid, password);
         }
     }
-    nvs_close(handle);
+    wifi_nvs_close(handle);
     return ESP_OK;
 }
 
@@ -242,9 +330,11 @@ static esp_err_t wifi_save_network_name(const char *ssid, const char *password) 
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = wifi_nvs_open(NVS_READWRITE, &handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "open saved network NVS failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG,
+                 "save Wi-Fi history deferred/open failed: %s",
+                 esp_err_to_name(err));
         return err;
     }
 
@@ -291,13 +381,29 @@ static esp_err_t wifi_save_network_name(const char *ssid, const char *password) 
         }
     }
 
-    nvs_close(handle);
+    wifi_nvs_close(handle);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Saved Wi-Fi history SSID: %s slot=%d", ssid, existing);
     } else {
         ESP_LOGW(TAG, "save Wi-Fi history failed: %s", esp_err_to_name(err));
     }
     return err;
+}
+
+static void wifi_persist_last_working_index(uint8_t index) {
+    nvs_handle_t handle = 0;
+    esp_err_t err = wifi_nvs_open(NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, WIFI_NVS_KEY_LAST_WORKING, index);
+        if (err == ESP_OK) {
+            err = nvs_commit(handle);
+        }
+        wifi_nvs_close(handle);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "last-working Wi-Fi index persistence failed: %s",
+                 esp_err_to_name(err));
+    }
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
@@ -311,20 +417,46 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         if (s_wifi_event_group) {
             xEventGroupSetBits(s_wifi_event_group, WIFI_SCAN_DONE_BIT);
         }
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_STOP) {
+        atomic_store_explicit(&s_wifi_driver_connecting, false, memory_order_release);
+        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_STA_STARTED_BIT);
+        xEventGroupSetBits(s_wifi_event_group, WIFI_STA_STOPPED_BIT);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        if (atomic_load_explicit(&s_wifi_connect_requested,
+        xEventGroupClearBits(s_wifi_event_group, WIFI_STA_STOPPED_BIT);
+        xEventGroupSetBits(s_wifi_event_group, WIFI_STA_STARTED_BIT);
+        if (!atomic_load_explicit(&s_wifi_simulated_offline,
+                                  memory_order_acquire) &&
+            atomic_load_explicit(&s_wifi_connect_requested,
                                  memory_order_acquire)) {
-            esp_wifi_connect();
+            wifi_driver_connect_once();
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
+        /* A queued local disconnect can arrive after a new connect is armed.
+         * Its owner already cleared link state; never consume a new attempt
+         * or clear its driver latch from that obsolete notification. */
+        if (event && event->reason == WIFI_REASON_STA_LEAVING &&
+            !nuwax_wifi_provisioning_active()) {
+            ESP_LOGI(TAG, "Wi-Fi local disconnect completed; retry budget unchanged");
+            return;
+        }
+        atomic_store_explicit(&s_wifi_driver_connecting, false, memory_order_release);
+        const bool connect_requested = atomic_load_explicit(
+            &s_wifi_connect_requested, memory_order_acquire);
+        if (event) {
+            ESP_LOGW(TAG, "Wi-Fi link failure reason=%u rssi=%d bssid=%02x:%02x:%02x:%02x:%02x:%02x driver_pending=%d",
+                     event->reason, event->rssi, event->bssid[0], event->bssid[1],
+                     event->bssid[2], event->bssid[3], event->bssid[4], event->bssid[5],
+                     connect_requested);
+        }
         memset(s_current_ip, 0, sizeof(s_current_ip));
         if (s_wifi_event_group) {
             xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         }
-        if (!nuwax_wifi_provisioning_active() &&
-            atomic_load_explicit(&s_wifi_connect_requested,
-                                 memory_order_acquire) &&
+        if (!atomic_load_explicit(&s_wifi_simulated_offline,
+                                  memory_order_acquire) &&
+            !nuwax_wifi_provisioning_active() &&
+            connect_requested &&
             atomic_load_explicit(&s_wifi_retry_count,
                                  memory_order_acquire) < MAX_WIFI_RETRY) {
             const int retry_count = atomic_fetch_add_explicit(
@@ -337,7 +469,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                      event ? event->reason : -1,
                      retry_count,
                      MAX_WIFI_RETRY);
-            if (atomic_load_explicit(&s_wifi_scan_in_progress,
+            if (atomic_load_explicit(&s_synchronous_connect_active, memory_order_acquire) &&
+                !atomic_load_explicit(&s_wifi_scan_in_progress, memory_order_acquire) &&
+                wifi_join_refresh_needed(event ? event->reason : -1)) {
+                atomic_store_explicit(&s_wifi_connect_requested, false, memory_order_release);
+                atomic_store_explicit(&s_join_refresh_pending, true, memory_order_release);
+                ESP_LOGW(TAG, "Wi-Fi transient join stalled; requesting one STA restart reason=%d", event ? event->reason : -1);
+                xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            } else if (atomic_load_explicit(&s_wifi_scan_in_progress,
                                      memory_order_acquire)) {
                 atomic_store_explicit(&s_reconnect_after_scan,
                                       true,
@@ -345,11 +484,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                 ESP_LOGI(TAG,
                          "Wi-Fi reconnect deferred until active scan completes");
             } else {
-                esp_wifi_connect();
+                wifi_driver_connect_once();
             }
-        } else if (!nuwax_wifi_provisioning_active() &&
-                   atomic_load_explicit(&s_wifi_connect_requested,
-                                        memory_order_acquire) &&
+        } else if (!atomic_load_explicit(&s_wifi_simulated_offline,
+                                         memory_order_acquire) &&
+                   !nuwax_wifi_provisioning_active() &&
+                   connect_requested &&
                    s_wifi_event_group) {
             ESP_LOGE(TAG,
                      "Wi-Fi disconnected reason=%d, retries exhausted",
@@ -364,7 +504,18 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                 xEventGroupSetBits(s_wifi_event_group, WIFI_FALLBACK_BIT);
             }
         }
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        atomic_store_explicit(&s_join_failure_streak, 0U, memory_order_release);
+        const wifi_event_sta_connected_t *event = event_data;
+        if (event) {
+            ESP_LOGI(TAG, "Wi-Fi associated channel=%u authmode=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x; waiting for DHCP",
+                     event->channel, (unsigned)event->authmode,
+                     event->bssid[0], event->bssid[1], event->bssid[2],
+                     event->bssid[3], event->bssid[4], event->bssid[5]);
+        }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        atomic_store_explicit(&s_join_refresh_allowed, false, memory_order_release);
+        atomic_store_explicit(&s_wifi_driver_connecting, false, memory_order_release);
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         atomic_store_explicit(&s_wifi_retry_count, 0, memory_order_release);
         atomic_store_explicit(&s_fallback_in_progress,
@@ -385,6 +536,23 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
 static esp_err_t wifi_init_once(void) {
     if (s_wifi_initialized) {
+        if (atomic_load_explicit(&s_sta_restart_needs_start, memory_order_acquire)) {
+            ESP_RETURN_ON_ERROR(wifi_operation_lock(), TAG, "STA restart recovery owner busy");
+            esp_err_t err = ESP_OK;
+            if (atomic_load_explicit(&s_sta_restart_needs_start, memory_order_acquire)) {
+                if (nuwax_wifi_provisioning_active() ||
+                    atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire)) {
+                    err = ESP_ERR_INVALID_STATE;
+                } else {
+                    err = esp_wifi_start();
+                    if (err == ESP_OK) {
+                        atomic_store_explicit(&s_sta_restart_needs_start, false, memory_order_release);
+                    }
+                }
+            }
+            wifi_operation_unlock();
+            return err;
+        }
         return ESP_OK;
     }
 
@@ -543,7 +711,9 @@ static void wifi_fallback_watcher_task(void *arg) {
             pdFALSE,
             pdMS_TO_TICKS(1000));
         if (bits & WIFI_RECONNECT_BIT) {
-            if (nuwax_wifi_provisioning_active() ||
+            if (atomic_load_explicit(&s_wifi_simulated_offline,
+                                     memory_order_acquire) ||
+                nuwax_wifi_provisioning_active() ||
                 !atomic_load_explicit(&s_wifi_connect_requested,
                                       memory_order_acquire) ||
                 nuwax_wifi_is_connected()) {
@@ -555,7 +725,9 @@ static void wifi_fallback_watcher_task(void *arg) {
                 wifi_operation_lock_for(WIFI_RECONNECT_LOCK_TIMEOUT_MS);
             if (owner_err != ESP_OK) {
                 vTaskDelay(pdMS_TO_TICKS(WIFI_RECONNECT_RETRY_MS));
-                if (!nuwax_wifi_provisioning_active() &&
+                if (!atomic_load_explicit(&s_wifi_simulated_offline,
+                                          memory_order_acquire) &&
+                    !nuwax_wifi_provisioning_active() &&
                     atomic_load_explicit(&s_wifi_connect_requested,
                                          memory_order_acquire) &&
                     !nuwax_wifi_is_connected() &&
@@ -566,11 +738,13 @@ static void wifi_fallback_watcher_task(void *arg) {
             }
             bool retry_driver_connect = false;
             uint32_t retry_delay_ms = 0U;
-            if (!nuwax_wifi_provisioning_active() &&
+            if (!atomic_load_explicit(&s_wifi_simulated_offline,
+                                      memory_order_acquire) &&
+                !nuwax_wifi_provisioning_active() &&
                 atomic_load_explicit(&s_wifi_connect_requested,
                                      memory_order_acquire) &&
                 !nuwax_wifi_is_connected()) {
-                const esp_err_t reconnect_err = esp_wifi_connect();
+                const esp_err_t reconnect_err = wifi_driver_connect_once();
                 if (reconnect_err != ESP_OK &&
                     reconnect_err != ESP_ERR_WIFI_CONN) {
                     const uint32_t failures = atomic_fetch_add_explicit(
@@ -597,13 +771,15 @@ static void wifi_fallback_watcher_task(void *arg) {
                         &s_deferred_reconnect_driver_failures, 0U,
                         memory_order_release);
                     ESP_LOGI(TAG,
-                             "deferred reconnect started after BLE provisioning cancellation");
+                             "deferred STA reconnect started or joined");
                 }
             }
             wifi_operation_unlock();
             if (retry_driver_connect) {
                 vTaskDelay(pdMS_TO_TICKS(retry_delay_ms));
-                if (!nuwax_wifi_provisioning_active() &&
+                if (!atomic_load_explicit(&s_wifi_simulated_offline,
+                                          memory_order_acquire) &&
+                    !nuwax_wifi_provisioning_active() &&
                     atomic_load_explicit(&s_wifi_connect_requested,
                                          memory_order_acquire) &&
                     !nuwax_wifi_is_connected() &&
@@ -616,7 +792,9 @@ static void wifi_fallback_watcher_task(void *arg) {
                 }
             }
         } else if (bits & WIFI_FALLBACK_BIT) {
-            if (nuwax_wifi_provisioning_active()) {
+            if (atomic_load_explicit(&s_wifi_simulated_offline,
+                                     memory_order_acquire) ||
+                nuwax_wifi_provisioning_active()) {
                 ESP_LOGI(TAG,
                          "Wi-Fi fallback suppressed while BLE provisioning owns STA");
                 atomic_store_explicit(&s_fallback_in_progress,
@@ -660,6 +838,7 @@ esp_err_t nuwax_wifi_start_fallback_watcher(void) {
 }
 
 void nuwax_wifi_request_provisioning_handoff(void) {
+    atomic_fetch_add_explicit(&s_wifi_intent_revision, 1U, memory_order_acq_rel);
     atomic_store_explicit(&s_deferred_reconnect_driver_failures, 0U,
                           memory_order_release);
     int expected = WIFI_PROVISIONING_NONE;
@@ -693,6 +872,7 @@ bool nuwax_wifi_cancel_provisioning_handoff(void) {
     if (atomic_compare_exchange_strong_explicit(
         &s_provisioning_state, &expected, WIFI_PROVISIONING_NONE,
         memory_order_acq_rel, memory_order_acquire)) {
+        atomic_fetch_add_explicit(&s_wifi_intent_revision, 1U, memory_order_acq_rel);
         const bool reconnect_armed = atomic_exchange_explicit(
             &s_provisioning_saved_connect_requested, false,
             memory_order_acq_rel);
@@ -742,6 +922,7 @@ esp_err_t nuwax_wifi_set_provisioning_active(bool active) {
     } else {
         atomic_store_explicit(&s_provisioning_state, WIFI_PROVISIONING_NONE,
                               memory_order_release);
+        atomic_fetch_add_explicit(&s_wifi_intent_revision, 1U, memory_order_acq_rel);
         atomic_store_explicit(&s_provisioning_saved_connect_requested, false,
                               memory_order_release);
     }
@@ -774,7 +955,7 @@ esp_err_t nuwax_wifi_set_provisioning_active(bool active) {
         atomic_store_explicit(&s_wifi_connect_requested, reconnect_armed,
                               memory_order_release);
         if (reconnect_armed && !nuwax_wifi_is_connected()) {
-            const esp_err_t reconnect_err = esp_wifi_connect();
+            const esp_err_t reconnect_err = wifi_driver_connect_once();
             if (reconnect_err != ESP_OK &&
                 reconnect_err != ESP_ERR_WIFI_CONN) {
                 ESP_LOGW(TAG,
@@ -809,9 +990,112 @@ bool nuwax_wifi_provisioning_owner_active(void) {
            WIFI_PROVISIONING_OWNER;
 }
 
+/* Protected by s_wifi_operation_mutex. Remember driver normalization after a
+ * write, but verify current driver state before reuse (BLE can replace it). */
+static wifi_config_t s_last_requested_wifi_config;
+static wifi_config_t s_last_applied_wifi_config;
+static bool s_last_wifi_config_valid;
+
+static esp_err_t wifi_set_config_guarded(wifi_config_t *config) {
+    /* Reconnect is not a credential update. Compare the complete driver config
+     * after accounting for the SDK's documented automatic auth threshold.
+     * A conservative mismatch still takes the existing Flash safety fence. */
+    wifi_config_t current = {0};
+    if (esp_wifi_get_config(WIFI_IF_STA, &current) == ESP_OK) {
+        if (s_last_wifi_config_valid &&
+            memcmp(config, &s_last_requested_wifi_config, sizeof(*config)) == 0 &&
+            memcmp(&current, &s_last_applied_wifi_config, sizeof(current)) == 0) {
+            ESP_LOGI(TAG, "Wi-Fi STA configuration unchanged; reuse without Flash fence");
+            return ESP_OK;
+        }
+        wifi_config_t expected = *config;
+        if (expected.sta.threshold.authmode == WIFI_AUTH_OPEN &&
+            strnlen((const char *)expected.sta.password,
+                    sizeof(expected.sta.password)) >= 8U) {
+            expected.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        }
+        if (memcmp(&current, config, sizeof(current)) == 0 ||
+            memcmp(&current, &expected, sizeof(current)) == 0) {
+            ESP_LOGI(TAG, "Wi-Fi STA configuration unchanged; reuse without Flash fence");
+            return ESP_OK;
+        }
+    }
+    /* Driver storage may still be WIFI_STORAGE_FLASH after provisioning.
+     * esp_wifi_set_config() can therefore write NVS without wifi_nvs_open().
+     * Use the same stop fence as explicit NVS writes, including busy retries. */
+    const esp_err_t guard_err = nuwax_wake_word_detector_begin_flash_operation(
+        WIFI_NVS_FLASH_GUARD_TIMEOUT_MS);
+    if (guard_err != ESP_OK) return guard_err;
+    const esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, config);
+    nuwax_wake_word_detector_end_flash_operation();
+    s_last_wifi_config_valid = false;
+    if (err == ESP_OK) {
+        memset(&s_last_applied_wifi_config, 0, sizeof(s_last_applied_wifi_config));
+        if (esp_wifi_get_config(WIFI_IF_STA, &s_last_applied_wifi_config) == ESP_OK) {
+            s_last_requested_wifi_config = *config;
+            s_last_wifi_config_valid = true;
+        }
+    }
+    return err;
+}
+
+static void wifi_make_station_config(wifi_config_t *config,
+                                     const char *ssid, const char *password)
+{
+    memset(config, 0, sizeof(*config));
+    strlcpy((char *)config->sta.ssid, ssid, sizeof(config->sta.ssid));
+    strlcpy((char *)config->sta.password, password ? password : "",
+            sizeof(config->sta.password));
+    config->sta.scan_method = WIFI_FAST_SCAN;
+    config->sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+#if CONFIG_ESP_WIFI_ENABLE_WPA3_SAE
+    config->sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+#endif
+#if defined(CONFIG_ESP_WIFI_WPA3_COMPATIBLE_SUPPORT) && \
+    ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+    config->sta.disable_wpa3_compatible_mode = 1;
+#endif
+}
+
+esp_err_t nuwax_wifi_prepare_boot_config(void)
+{
+    ESP_RETURN_ON_ERROR(wifi_init_once(), TAG, "wifi init failed");
+    ESP_RETURN_ON_ERROR(wifi_operation_lock(), TAG, "Wi-Fi prepare owner busy");
+    esp_err_t err = ESP_OK;
+    if (!nuwax_wifi_provisioning_active() && !nuwax_wifi_is_connected() &&
+        !atomic_load_explicit(&s_wifi_connect_requested, memory_order_acquire) &&
+        !atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire)) {
+        wifi_config_t current = {0};
+        err = esp_wifi_get_config(WIFI_IF_STA, &current);
+        if (err == ESP_OK && current.sta.ssid[0] != '\0') {
+            /* SSID/password arrays in the SDK need not be NUL terminated. */
+            char ssid[33] = {0}, password[65] = {0};
+            memcpy(ssid, current.sta.ssid, sizeof(current.sta.ssid));
+            memcpy(password, current.sta.password, sizeof(current.sta.password));
+            wifi_config_t desired;
+            wifi_make_station_config(&desired, ssid, password);
+            err = wifi_set_config_guarded(&desired);
+        }
+    }
+    wifi_operation_unlock();
+    ESP_LOGI(TAG, "boot STA configuration prepared before wake err=%s",
+             esp_err_to_name(err));
+    return err;
+}
+
 static esp_err_t wifi_connect_with_credentials_locked(const char *ssid,
-                                                       const char *password) {
-    if (nuwax_wifi_provisioning_active()) {
+                                                       const char *password,
+                                                       int64_t deadline_us,
+                                                       unsigned intent_revision) {
+    if (nuwax_wifi_provisioning_active() ||
+        atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire) ||
+        atomic_load_explicit(&s_wifi_intent_revision, memory_order_acquire) != intent_revision ||
+        esp_timer_get_time() >= deadline_us) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (atomic_load_explicit(&s_wifi_simulated_offline,
+                             memory_order_acquire)) {
+        ESP_LOGI(TAG, "Wi-Fi connect suppressed while simulated offline is active");
         return ESP_ERR_INVALID_STATE;
     }
     if (!ssid || strlen(ssid) == 0) {
@@ -822,43 +1106,38 @@ static esp_err_t wifi_connect_with_credentials_locked(const char *ssid,
     ESP_LOGI(TAG, "Wi-Fi init complete, configuring SSID: %s", ssid);
 
     wifi_config_t wifi_config = {0};
-    strlcpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
-    strlcpy((char *)wifi_config.sta.password, password ? password : "", sizeof(wifi_config.sta.password));
-    wifi_config.sta.scan_method = WIFI_FAST_SCAN;
-    wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-#if CONFIG_ESP_WIFI_ENABLE_WPA3_SAE
-    wifi_config.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
-#endif
-#if defined(CONFIG_ESP_WIFI_WPA3_COMPATIBLE_SUPPORT) && \
-    ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
-    /* Match the proven provisioning policy for WPA2/WPA3 transition APs. */
-    wifi_config.sta.disable_wpa3_compatible_mode = 1;
-#endif
+    wifi_make_station_config(&wifi_config, ssid, password);
 
     xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
     atomic_store_explicit(&s_wifi_retry_count, 0, memory_order_release);
     atomic_store_explicit(&s_wifi_connect_requested, false,
                           memory_order_release);
-    if (nuwax_wifi_provisioning_active()) {
+    if (nuwax_wifi_provisioning_active() ||
+        atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire) ||
+        atomic_load_explicit(&s_wifi_intent_revision, memory_order_acquire) != intent_revision ||
+        esp_timer_get_time() >= deadline_us) {
         ESP_LOGI(TAG,
                  "Wi-Fi connect aborted before driver reconfiguration: provisioning handoff pending");
         return ESP_ERR_INVALID_STATE;
     }
     memset(s_current_ssid, 0, sizeof(s_current_ssid));
     memset(s_current_ip, 0, sizeof(s_current_ip));
-    esp_err_t err = esp_wifi_disconnect();
+    esp_err_t err = wifi_driver_disconnect();
     if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_CONNECT) {
         ESP_LOGW(TAG, "wifi disconnect before reconnect failed: %s", esp_err_to_name(err));
     }
 
     esp_err_t cfg_err = ESP_OK;
     for (int attempt = 0; attempt < 10; attempt++) {
-        if (nuwax_wifi_provisioning_active()) {
+        if (nuwax_wifi_provisioning_active() ||
+        atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire) ||
+        atomic_load_explicit(&s_wifi_intent_revision, memory_order_acquire) != intent_revision ||
+        esp_timer_get_time() >= deadline_us) {
             ESP_LOGI(TAG,
                      "Wi-Fi connect aborted during driver reconfiguration: provisioning handoff pending");
             return ESP_ERR_INVALID_STATE;
         }
-        cfg_err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+        cfg_err = wifi_set_config_guarded(&wifi_config);
         if (cfg_err == ESP_OK) {
             break;
         }
@@ -870,33 +1149,52 @@ static esp_err_t wifi_connect_with_credentials_locked(const char *ssid,
     }
     ESP_RETURN_ON_ERROR(cfg_err, TAG, "set wifi config failed");
     ESP_LOGI(TAG, "Wi-Fi config set SSID: %s", ssid);
-    if (nuwax_wifi_provisioning_active()) {
+    if (nuwax_wifi_provisioning_active() ||
+        atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire) ||
+        atomic_load_explicit(&s_wifi_intent_revision, memory_order_acquire) != intent_revision ||
+        esp_timer_get_time() >= deadline_us) {
         ESP_LOGI(TAG,
                  "Wi-Fi connect aborted before STA connect: provisioning handoff pending");
         return ESP_ERR_INVALID_STATE;
     }
     atomic_store_explicit(&s_wifi_connect_requested, true,
                           memory_order_release);
-    ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "wifi connect failed");
-    if (nuwax_wifi_provisioning_active()) {
+    ESP_RETURN_ON_ERROR(wifi_driver_connect_once(), TAG, "wifi connect failed");
+    if (nuwax_wifi_provisioning_active() ||
+        atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire) ||
+        atomic_load_explicit(&s_wifi_intent_revision, memory_order_acquire) != intent_revision ||
+        esp_timer_get_time() >= deadline_us) {
         atomic_store_explicit(&s_wifi_connect_requested, false,
                               memory_order_release);
-        (void)esp_wifi_disconnect();
+        (void)wifi_driver_disconnect();
         ESP_LOGI(TAG,
                  "Wi-Fi connect cancelled after STA start: provisioning handoff pending");
         return ESP_ERR_INVALID_STATE;
     }
 
     ESP_LOGI(TAG, "Connecting to Wi-Fi SSID: %s", ssid);
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE,
-                                           pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
+    EventBits_t bits = 0;
+    while (esp_timer_get_time() < deadline_us) {
+        if (nuwax_wifi_provisioning_active() ||
+            atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire) ||
+            atomic_load_explicit(&s_wifi_intent_revision, memory_order_acquire) != intent_revision) {
+            atomic_store_explicit(&s_wifi_connect_requested, false, memory_order_release);
+            (void)wifi_driver_disconnect();
+            return ESP_ERR_INVALID_STATE;
+        }
+        int64_t left_ms = (deadline_us - esp_timer_get_time()) / 1000;
+        if (left_ms <= 0) break;
+        bits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                  pdFALSE, pdFALSE, pdMS_TO_TICKS(left_ms < 100 ? left_ms : 100));
+        if (bits & (WIFI_CONNECTED_BIT | WIFI_FAIL_BIT)) break;
+    }
 
     if (bits & WIFI_CONNECTED_BIT) {
         strlcpy(s_current_ssid, ssid, sizeof(s_current_ssid));
         ESP_LOGI(TAG, "Wi-Fi connect complete SSID: %s IP: %s", s_current_ssid, s_current_ip);
         return ESP_OK;
     }
-    if (bits == 0) {
+    if (!(bits & WIFI_FAIL_BIT)) {
         ESP_LOGE(TAG, "Wi-Fi connect timed out after %d ms SSID: %s", WIFI_CONNECT_TIMEOUT_MS, ssid);
         atomic_store_explicit(&s_wifi_connect_requested, false,
                               memory_order_release);
@@ -908,6 +1206,31 @@ static esp_err_t wifi_connect_with_credentials_locked(const char *ssid,
     return ESP_FAIL;
 }
 
+/* Called only under the operation mutex with retries disarmed. Drain STOP
+ * and START events before admitting a new attempt; never wait in callbacks. */
+static esp_err_t wifi_restart_sta_locked(int64_t deadline_us) {
+    atomic_store_explicit(&s_wifi_connect_requested, false, memory_order_release);
+    atomic_store_explicit(&s_wifi_driver_connecting, false, memory_order_release);
+    xEventGroupClearBits(s_wifi_event_group,
+                        WIFI_STA_STOPPED_BIT | WIFI_STA_STARTED_BIT | WIFI_CONNECTED_BIT);
+    esp_err_t err = esp_wifi_stop();
+    if (err != ESP_OK) return err;
+    atomic_store_explicit(&s_sta_restart_needs_start, true, memory_order_release);
+    EventBits_t stopped = xEventGroupWaitBits(s_wifi_event_group,
+        WIFI_STA_STOPPED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(1000));
+    /* Restore the interface even if the event loop was slow. Handoff to BLE
+     * may have arrived while stopping; START must never auto-connect here. */
+    err = esp_wifi_start();
+    if (err != ESP_OK) return err;
+    atomic_store_explicit(&s_sta_restart_needs_start, false, memory_order_release);
+    EventBits_t started = xEventGroupWaitBits(s_wifi_event_group,
+        WIFI_STA_STARTED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(1000));
+    if (!(stopped & WIFI_STA_STOPPED_BIT) || !(started & WIFI_STA_STARTED_BIT) ||
+        esp_timer_get_time() >= deadline_us) return ESP_ERR_TIMEOUT;
+    ESP_LOGI(TAG, "Wi-Fi STA stop/start completed with event fences");
+    return ESP_OK;
+}
+
 static esp_err_t wifi_connect_with_credentials(const char *ssid,
                                                const char *password) {
     ESP_RETURN_ON_ERROR(wifi_init_once(), TAG, "wifi init failed");
@@ -916,7 +1239,27 @@ static esp_err_t wifi_connect_with_credentials(const char *ssid,
     atomic_store_explicit(&s_synchronous_connect_active,
                           true,
                           memory_order_release);
-    const esp_err_t err = wifi_connect_with_credentials_locked(ssid, password);
+    const int64_t started_us = esp_timer_get_time();
+    const int64_t deadline_us = started_us + (int64_t)WIFI_CONNECT_TIMEOUT_MS * 1000;
+    const unsigned intent_revision = atomic_load_explicit(&s_wifi_intent_revision, memory_order_acquire);
+    atomic_store_explicit(&s_join_failure_streak, 0U, memory_order_release);
+    atomic_store_explicit(&s_join_refresh_pending, false, memory_order_release);
+    atomic_store_explicit(&s_join_refresh_allowed, true, memory_order_release);
+    esp_err_t err = wifi_connect_with_credentials_locked(ssid, password, deadline_us, intent_revision);
+    if (err != ESP_OK && atomic_exchange_explicit(&s_join_refresh_pending, false, memory_order_acq_rel) &&
+        !nuwax_wifi_provisioning_active() &&
+        !atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire) &&
+        atomic_load_explicit(&s_wifi_intent_revision, memory_order_acquire) == intent_revision &&
+        esp_timer_get_time() + 2000000 < deadline_us) {
+        ESP_LOGI(TAG, "Wi-Fi STA restart elapsed_ms=%lu", (unsigned long)((esp_timer_get_time() - started_us) / 1000));
+        err = wifi_restart_sta_locked(deadline_us);
+        if (err == ESP_OK) {
+            err = wifi_connect_with_credentials_locked(ssid, password, deadline_us, intent_revision);
+        }
+    }
+    atomic_store_explicit(&s_join_refresh_allowed, false, memory_order_release);
+    atomic_store_explicit(&s_join_refresh_pending, false, memory_order_release);
+    ESP_LOGI(TAG, "Wi-Fi join finished elapsed_ms=%lu err=%s", (unsigned long)((esp_timer_get_time() - started_us) / 1000), esp_err_to_name(err));
     atomic_store_explicit(&s_synchronous_connect_active,
                           false,
                           memory_order_release);
@@ -926,6 +1269,10 @@ static esp_err_t wifi_connect_with_credentials(const char *ssid,
 
 esp_err_t nuwax_wifi_connect(void) {
     ESP_RETURN_ON_ERROR(wifi_init_once(), TAG, "wifi init failed");
+    if (atomic_load_explicit(&s_wifi_simulated_offline,
+                             memory_order_acquire)) {
+        return ESP_ERR_INVALID_STATE;
+    }
     ESP_RETURN_ON_ERROR(wifi_operation_lock(), TAG,
                         "Wi-Fi connect owner busy");
     esp_err_t result = ESP_FAIL;
@@ -965,14 +1312,14 @@ esp_err_t nuwax_wifi_connect(void) {
     /* Load last-working SSID index (0 = primary, 1 = backup) from NVS.
      * On a fresh device this defaults to primary. */
     nvs_handle_t h = 0;
-    if (nvs_open(WIFI_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+    if (wifi_nvs_open(NVS_READONLY, &h) == ESP_OK) {
         uint8_t idx = 0;
         if (nvs_get_u8(h, WIFI_NVS_KEY_LAST_WORKING, &idx) == ESP_OK && idx <= 1) {
             atomic_store_explicit(&s_active_ssid_index,
                                   idx,
                                   memory_order_release);
         }
-        nvs_close(h);
+        wifi_nvs_close(h);
     }
     int active_index = atomic_load_explicit(&s_active_ssid_index,
                                             memory_order_acquire);
@@ -1009,12 +1356,7 @@ esp_err_t nuwax_wifi_connect(void) {
         ESP_LOGI(TAG, "Trying Wi-Fi SSID: %s (index=%d)", ssid, active_index);
         result = wifi_connect_with_credentials(ssid, password);
         if (result == ESP_OK) {
-            nvs_handle_t nh = 0;
-            if (nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nh) == ESP_OK) {
-                nvs_set_u8(nh, WIFI_NVS_KEY_LAST_WORKING, (uint8_t)active_index);
-                nvs_commit(nh);
-                nvs_close(nh);
-            }
+            wifi_persist_last_working_index((uint8_t)active_index);
             atomic_store_explicit(&s_fallback_in_progress,
                                   false,
                                   memory_order_release);
@@ -1041,6 +1383,10 @@ esp_err_t nuwax_wifi_connect(void) {
 /* Fallback kicker used by the event handler when retries are exhausted:
  *  flips the active slot and re-runs the connect path with a fresh retry budget. */
 esp_err_t nuwax_wifi_run_fallback(void) {
+    if (atomic_load_explicit(&s_wifi_simulated_offline,
+                             memory_order_acquire)) {
+        return ESP_ERR_INVALID_STATE;
+    }
     esp_err_t err = wifi_init_once();
     if (err != ESP_OK) {
         atomic_store_explicit(&s_fallback_in_progress,
@@ -1086,12 +1432,7 @@ esp_err_t nuwax_wifi_run_fallback(void) {
                           memory_order_release);
     /* Persist the flip to NVS so nuwax_wifi_connect()'s entry-time NVS read
      * doesn't snap the index back to 0. */
-    nvs_handle_t h = 0;
-    if (nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u8(h, WIFI_NVS_KEY_LAST_WORKING, (uint8_t)target_index);
-        nvs_commit(h);
-        nvs_close(h);
-    }
+    wifi_persist_last_working_index((uint8_t)target_index);
     atomic_store_explicit(&s_wifi_retry_count, 0, memory_order_release);
     atomic_store_explicit(&s_fallback_in_progress,
                           true,
@@ -1110,7 +1451,9 @@ esp_err_t nuwax_wifi_run_fallback(void) {
  *  Distinguishes "PC may be on a different LAN than this SSID" — flip to the
  *  other slot. Threshold mirrors the cloud-side ws_recover backoff: 3 calls. */
 esp_err_t nuwax_wifi_notify_cloud_unreachable(void) {
-    if (nuwax_wifi_provisioning_active()) {
+    if (atomic_load_explicit(&s_wifi_simulated_offline,
+                             memory_order_acquire) ||
+        nuwax_wifi_provisioning_active()) {
         return ESP_ERR_INVALID_STATE;
     }
     static int s_unreachable_count;
@@ -1188,11 +1531,126 @@ bool nuwax_wifi_saved_credentials_match(const char *ssid, const char *password) 
 }
 
 esp_err_t nuwax_wifi_recover(void) {
+    if (atomic_load_explicit(&s_wifi_simulated_offline,
+                             memory_order_acquire)) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (nuwax_wifi_is_connected()) {
         return ESP_OK;
     }
-    ESP_LOGW(TAG, "Wi-Fi recovery requested");
-    return nuwax_wifi_connect();
+    ESP_RETURN_ON_ERROR(wifi_init_once(), TAG, "Wi-Fi recovery init failed");
+    ESP_RETURN_ON_ERROR(wifi_operation_lock(), TAG, "Wi-Fi recovery owner busy");
+    const unsigned intent_revision = atomic_load_explicit(&s_wifi_intent_revision, memory_order_acquire);
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (nuwax_wifi_provisioning_active() ||
+        atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire)) goto done;
+    if (nuwax_wifi_is_connected()) { result = ESP_OK; goto done; }
+    if (atomic_load_explicit(&s_wifi_connect_requested, memory_order_acquire) &&
+        !(xEventGroupGetBits(s_wifi_event_group) & WIFI_FAIL_BIT)) {
+        /* Join a running or queued attempt. Do not disconnect/set_config while
+         * authentication, association or DHCP is already in progress. */
+        xEventGroupClearBits(s_wifi_event_group, WIFI_RECONNECT_BIT);
+        atomic_store_explicit(&s_synchronous_connect_active, true, memory_order_release);
+        result = wifi_driver_connect_once();
+        if (result == ESP_OK) {
+            ESP_LOGI(TAG, "Wi-Fi recovery joining current STA attempt");
+            result = ESP_ERR_TIMEOUT;
+            const TickType_t started = xTaskGetTickCount();
+            while ((TickType_t)(xTaskGetTickCount() - started) < pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS)) {
+                if (nuwax_wifi_provisioning_active() ||
+                    atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire)) {
+                    result = ESP_ERR_INVALID_STATE; break;
+                }
+                const EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+                    WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(100));
+                if (atomic_load_explicit(&s_wifi_intent_revision, memory_order_acquire) != intent_revision) {
+                    result = ESP_ERR_INVALID_STATE; break;
+                }
+                if (bits & WIFI_CONNECTED_BIT) { result = ESP_OK; break; }
+                if (bits & WIFI_FAIL_BIT) { result = ESP_FAIL; break; }
+            }
+        }
+        atomic_store_explicit(&s_synchronous_connect_active, false, memory_order_release);
+        if (atomic_load_explicit(&s_wifi_intent_revision, memory_order_acquire) != intent_revision)
+            result = ESP_ERR_INVALID_STATE;
+        if (result != ESP_OK && result != ESP_ERR_INVALID_STATE) {
+            /* A stalled driver must not leave an immortal join flag. A later
+             * recovery can start a fresh configuration after this bounded wait. */
+            atomic_store_explicit(&s_wifi_connect_requested, false, memory_order_release);
+            atomic_store_explicit(&s_wifi_driver_connecting, false, memory_order_release);
+        }
+    } else {
+        ESP_LOGI(TAG, "Wi-Fi recovery restarting STA with current credentials");
+        result = nuwax_wifi_connect(); // The operation mutex is recursive.
+    }
+done:
+    wifi_operation_unlock();
+    return result;
+}
+
+bool nuwax_wifi_simulated_offline(void) {
+#if NUWAX_TEST_NETWORK_ENABLED
+    return atomic_load_explicit(&s_wifi_simulated_offline, memory_order_acquire);
+#else
+    return false;
+#endif
+}
+
+esp_err_t nuwax_wifi_set_simulated_offline(bool enabled) {
+#if !NUWAX_TEST_NETWORK_ENABLED
+    (void)enabled;
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!s_wifi_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const bool previous = atomic_exchange_explicit(
+        &s_wifi_simulated_offline, enabled, memory_order_acq_rel);
+    if (previous == enabled) {
+        return ESP_OK;
+    }
+    atomic_fetch_add_explicit(&s_wifi_intent_revision, 1U, memory_order_acq_rel);
+    atomic_store_explicit(&s_wifi_retry_count, 0, memory_order_release);
+    atomic_store_explicit(&s_fallback_in_progress, false,
+                          memory_order_release);
+    atomic_store_explicit(&s_deferred_reconnect_driver_failures, 0U,
+                          memory_order_release);
+    if (enabled) {
+        /* Keep the STA association alive so the host and replay gateway stay
+         * on the same LAN; only cloud reconnect work is fenced. */
+        atomic_store_explicit(&s_wifi_connect_requested, false,
+                              memory_order_release);
+        atomic_store_explicit(&s_reconnect_after_scan, false,
+                              memory_order_release);
+        if (s_wifi_event_group) {
+            xEventGroupClearBits(s_wifi_event_group,
+                                 WIFI_FAIL_BIT | WIFI_FALLBACK_BIT |
+                                     WIFI_RECONNECT_BIT);
+        }
+        ESP_LOGI(TAG,
+                 "simulated offline enabled; physical Wi-Fi remains associated=%d",
+                 nuwax_wifi_is_connected() ? 1 : 0);
+    } else {
+        wifi_config_t config = {0};
+        const bool has_credentials =
+            esp_wifi_get_config(WIFI_IF_STA, &config) == ESP_OK &&
+            config.sta.ssid[0] != '\0';
+        atomic_store_explicit(&s_wifi_connect_requested, has_credentials,
+                              memory_order_release);
+        if (s_wifi_event_group) {
+            xEventGroupClearBits(s_wifi_event_group,
+                                 WIFI_FAIL_BIT | WIFI_FALLBACK_BIT);
+            if (has_credentials && !nuwax_wifi_is_connected()) {
+                xEventGroupSetBits(s_wifi_event_group, WIFI_RECONNECT_BIT);
+            }
+        }
+        ESP_LOGI(TAG,
+                 "simulated offline disabled; Wi-Fi recovery rearmed credentials=%d connected=%d",
+                 has_credentials ? 1 : 0,
+                 nuwax_wifi_is_connected() ? 1 : 0);
+    }
+    return ESP_OK;
+#endif
 }
 
 esp_err_t nuwax_wifi_get_saved_networks(nuwax_wifi_saved_network_t *results, int max_results, int *out_count) {
@@ -1352,7 +1810,7 @@ esp_err_t nuwax_wifi_scan(nuwax_wifi_scan_result_t *results,
         atomic_load_explicit(&s_wifi_connect_requested,
                              memory_order_acquire) &&
         !nuwax_wifi_provisioning_active()) {
-        const esp_err_t reconnect_err = esp_wifi_connect();
+        const esp_err_t reconnect_err = wifi_driver_connect_once();
         if (reconnect_err != ESP_OK && reconnect_err != ESP_ERR_WIFI_CONN) {
             ESP_LOGW(TAG,
                      "deferred reconnect after scan failed: %s",

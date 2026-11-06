@@ -13,12 +13,16 @@ typedef struct {
     int16_t *stereo_buffer;
     size_t stereo_capacity;
     uint8_t volume_percent;
+    /* Accepted frames of the startup envelope. Leading digital silence does
+     * not consume it; only a successful physical stop resets it. */
+    uint32_t startup_fade_position;
     nuwax_audio_board_lease_t board_lease;
+    nuwax_audio_board_ref_t board_ref;
     bool initialized;
     bool muted;
-    /* True only after the complete DMA-silence/PA-mute settling sequence.
-     * Keeping this separate from muted is required for the shared ES8311 TX,
-     * whose channel remains enabled and plays preloaded silence while idle. */
+    /* True only after physical PA mute AND the complete DMA-silence settling
+     * sequence. Shared ES8311 TX keeps clocking silence while PA is off;
+     * muted alone does not prove DMA contents are safe for the next start. */
     bool stop_settled;
     bool vocat_shared_tx; /* P2: tx_handle is audio_board's shared TX (release, not delete) */
     bool software_ref_required;

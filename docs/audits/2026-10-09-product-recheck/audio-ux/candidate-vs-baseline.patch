@@ -1,0 +1,392 @@
+--- audit/real_wait_baseline.c
++++ audit/real_wait_candidate.c
+@@ -1,5 +1,8 @@
+ 
+ #include <assert.h>
++#include "candidate_policy.h"
++static unsigned dynamic_epoch=1;
++static bool transport_closed, menu_open, mode_owner, mode_pending;
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include <stdio.h>
+@@ -43,8 +46,8 @@
+ static int64_t esp_timer_get_time(void) { return (int64_t)now * 1000; }
+ static int conversation_state_current(void) { return state; }
+ static bool local_power_transition_active(void) { return false; }
+-static bool exclusive_audio_mode_blocks_normal_audio(void) { return false; }
+-static bool nuwax_app_shell_blocks_auto_followup(void) { return false; }
++static bool exclusive_audio_mode_blocks_normal_audio(void) { return mode_pending||mode_owner; }
++static bool nuwax_app_shell_blocks_auto_followup(void) { return menu_open; }
+ static bool sleep_transaction_blocks_new_audio(void) { return false; }
+ static bool meeting_or_monitoring_mode_blocks_sleep(void) { return false; }
+ static bool ota_blocks_wake_detector(void) { return false; }
+@@ -67,7 +70,7 @@
+ static bool nuwax_speaker_playback_expire_metadata_only_session(const char *a,const char *b,uint32_t t) { (void)a;(void)b;(void)t;return false; }
+ 
+ static void wake_greeting_metrics_cancel(const char *r) { (void)r; }
+-static uint32_t nuwax_ws_connection_epoch(void *p) { (void)p;return 1; }
++static uint32_t nuwax_ws_connection_epoch(void *p) { (void)p;return dynamic_epoch; }
+ static uint32_t update_normal_downlink_admission(bool b) { (void)b;return 1; }
+ static int nuwax_session_send_cancel_turn_until_if_epoch(void *p,const char *a,const char *b,const char *c,int64_t t,uint32_t e) { (void)p;(void)a;(void)b;(void)c;(void)t;(void)e;return 0; }
+ static bool nuwax_ws_request_close_if_epoch(void *p,uint32_t e) { (void)p;(void)e;close_requests++;return true; }
+@@ -119,10 +122,10 @@
+ static int send_result,scenario;
+ static uint32_t harness_end_ms;
+ static void check_conversation_turn_timeout(nuwax_ws_client_t *ws);
+-static uint32_t active_ws_epoch_snapshot(void) { return 1; }
++static uint32_t active_ws_epoch_snapshot(void) { return dynamic_epoch; }
+ static void clear_head_touch_agent_intent(const char *r) { (void)r; }
+ static void clear_touch_cancel_recovery(const char *r) { (void)r; }
+-static void clear_ws_reconnect_audio_recovery(void) {}
++static void clear_ws_reconnect_audio_recovery(void);
+ static void clear_sleep_request(void) { s_sleep_request_pending=false; }
+ static void nuwax_state_bridge_cancel_touch(void) {}
+ static void inhibit_sleep_wake_word_detector(const char *r) { (void)r;wake_desired=false; }
+@@ -140,7 +143,7 @@
+ static void app_task_watchdog_checkpoint(void) { real_loop_iterations++; }
+ static void service_power_key_events(void *ws) { (void)ws; }
+ static bool service_music_url_test(bool b) { (void)b;return false; }
+-static bool nuwax_ws_is_connected(void *ws) { (void)ws;return now<harness_end_ms; }
++static bool nuwax_ws_is_connected(void *ws) { (void)ws;return !transport_closed && now<harness_end_ms; }
+ static void complete_during_playback_wake_stop(void) {}
+ static void service_ota_wake_detector_recovery(void) {}
+ static bool nuwax_sleep_transaction_requires_local_sleep_reconcile(void *t,bool sleeping) { (void)t;(void)sleeping;return false; }
+@@ -156,7 +159,7 @@
+ static void nuwax_sleep_transaction_reset_for_wake(void *t) { (void)t;s_sleep_transaction.state=NUWAX_SLEEP_TRANSACTION_IDLE; }
+ static void wake_greeting_metrics_begin(const char *w,uint32_t t) { (void)w;s_wake_greeting_metrics.wake_detected_ms=t; }
+ static void wake_greeting_metrics_mark_sent(const char *r,int e) { (void)r;(void)e; }
+-static int nuwax_session_send_text_request_with_timeout_if_epoch(void *ws,const char *r,const char *t,uint32_t ms,uint32_t e) { (void)ws;(void)r;(void)t;assert(ms==250&&e==1);sends++;return send_result; }
++static int nuwax_session_send_text_request_with_timeout_if_epoch(void *ws,const char *r,const char *t,uint32_t ms,uint32_t e) { (void)ws;(void)r;(void)t;assert(ms==250&&e==dynamic_epoch);sends++;return send_result; }
+ static int conversation_live_aec_pool_init(void) { return ESP_OK; }
+ static void restart_if_post_reprovision_aec_failed(const char *r) { (void)r; }
+ static bool take_deferred_shell_listen_action(void *p) { (void)p;return false; }
+@@ -606,6 +609,24 @@
+ #endif
+ }
+ 
++
++static wg_ticket_t pending_greeting_recovery;
++static bool ota_active;
++static bool candidate_service_recovery(nuwax_ws_client_t *ws) {
++    (void)ws;
++    const wg_action_t action=wg_decide(&pending_greeting_recovery,dynamic_epoch,
++        s_awake_session.generation,s_turn_guard.epoch,s_turn_guard.active,
++        !transport_closed,s_awake_session.active,
++        s_sleep_transaction.active||s_sleep_transaction.state==NUWAX_SLEEP_TRANSACTION_SLEEPING||s_sleep_request_pending||s_deferred_sleep_intent.active,
++        s_power_shutdown_requested,ota_active,atomic_load(&s_reprovision_quiesce_requested),false,mode_owner||mode_pending);
++    if(action==WG_ROTATE_EPOCH) {
++        assert(wg_candidate_close_admits(WG_CLOSE_UNRESOLVED_GREETING,true));
++        close_requests++;transport_closed=true;pending_greeting_recovery.valid=false;return true;
++    }
++    if(action==WG_YIELD_NEW_OWNER)pending_greeting_recovery.valid=false;
++    return action==WG_DEFER_OTA||action==WG_YIELD_NEW_OWNER;
++}
++
+ static void check_conversation_turn_timeout(nuwax_ws_client_t *ws) {
+     const uint32_t now_ms = monotonic_ms();
+     if (recover_post_end_cloud_response_timeout(ws, now_ms)) {
+@@ -675,6 +696,11 @@
+         return;
+     }
+ 
++    const wg_failure_t recovery_failure = first_pcm_timeout ? WG_FAILURE_FIRST_PCM_TIMEOUT :
++        s_turn_guard.phase==NUWAX_TURN_PHASE_WAIT_TEXT ? WG_FAILURE_TEXT_TIMEOUT :
++        s_turn_guard.phase==NUWAX_TURN_PHASE_WAIT_TTS ? WG_FAILURE_TTS_TIMEOUT : WG_FAILURE_NONE;
++    const wg_ticket_t greeting_ticket=wg_capture(&s_visual_round,&s_turn_guard,
++        active_ws_epoch_snapshot(),s_awake_session.generation,recovery_failure);
+     const uint32_t epoch = s_turn_guard.epoch;
+     const uint32_t speaker_generation = s_turn_guard.speaker_generation;
+     const nuwax_turn_phase_t phase = s_turn_guard.phase;
+@@ -803,6 +829,10 @@
+     } else {
+         clear_active_turn_guard(timeout_reason);
+         nuwax_speaker_playback_request_fade_cancel(timeout_reason, 0U);
++        if(greeting_ticket.valid) {
++            pending_greeting_recovery=greeting_ticket;
++            if(candidate_service_recovery(ws))return;
++        }
+         recover_normal_conversation_after_playback_abort(
+             timeout_reason);
+     }
+@@ -927,6 +957,7 @@
+          * loop; otherwise the outer loop cannot run until a wake or another
+          * lifecycle event breaks this wait. */
+         service_ota_wake_detector_recovery();
++        (void)candidate_service_recovery(ws);
+ #if CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE
+         /* The control-center test switch must be serviced while the normal
+          * conversation owner is waiting for a wake word as well as during an
+@@ -1144,23 +1175,257 @@
+     real_loop_iterations=sends=0;capture_starts=wake_rearms=cleared=status_updates=close_requests=0;
+     s_sleep_transaction.state=NUWAX_SLEEP_TRANSACTION_SLEEPING;
+ }
++#define portENTER_CRITICAL(x) ((void)(x))
++#define portEXIT_CRITICAL(x) ((void)(x))
++#define NUWAX_AWAKE_WS_RESUME_GRACE_MS 30000
++#define NUWAX_WS_RECONNECT_AUDIO_RECOVERY_TIMEOUT_MS 5000
++typedef enum {NUWAX_WS_RECOVERY_CONVERGED,NUWAX_WS_RECOVERY_WAIT_MODE_QUEUE,
++ NUWAX_WS_RECOVERY_TRANSFERRED_TO_OWNER,NUWAX_WS_RECOVERY_MENU_BLOCKED,
++ NUWAX_WS_RECOVERY_FALLBACK_SLEEP} nuwax_ws_recovery_result_t;
++static struct {bool pending;uint32_t ws_epoch,awake_generation,deadline_ms;} s_ws_audio_recovery;
++static bool s_during_playback_handoff_pending,s_during_playback_handoff_playback_started,s_during_playback_handoff_seamless;
++static bool s_during_playback_wake_stop_pending,s_during_playback_wake_stop_playback_started;
++static int s_wake_stop_handoff_lock;
++static bool exclusive_audio_owner_active(void){return mode_owner;}
++static void clear_awake_session(const char *r){(void)r;nuwax_awake_session_state_clear(&s_awake_session);clear_ws_reconnect_audio_recovery();}
++static void pause_awake_waiting(const char *reason) {
++    if (!nuwax_awake_session_state_is_waiting(&s_awake_session)) {
++        return;
++    }
++    const uint32_t now_ms = monotonic_ms();
++    nuwax_awake_session_state_pause(&s_awake_session, now_ms);
++    ESP_LOGI(TAG,
++             "conversation awake idle timer paused reason=%s remaining_ms=%lu generation=%lu",
++             reason ? reason : "-",
++             (unsigned long)nuwax_awake_session_state_remaining_ms(
++                 &s_awake_session, now_ms),
++             (unsigned long)nuwax_awake_session_state_generation(
++                 &s_awake_session));
++}
++
++static void clear_ws_reconnect_audio_recovery(void) {
++    memset(&s_ws_audio_recovery, 0, sizeof(s_ws_audio_recovery));
++}
++
++static bool preserve_awake_session_for_ws_reconnect(const char *reason) {
++    if (!nuwax_awake_session_state_is_active(&s_awake_session)) {
++        return false;
++    }
++    const uint32_t now_ms = monotonic_ms();
++    if (nuwax_awake_session_state_is_expired(&s_awake_session, now_ms) ||
++        nuwax_awake_session_state_remaining_ms(&s_awake_session, now_ms) == 0U) {
++        return false;
++    }
++    pause_awake_waiting(reason ? reason : "ws_disconnect");
++    clear_head_touch_agent_intent(reason ? reason : "ws_disconnect");
++    clear_active_turn_guard(reason ? reason : "ws_disconnect");
++    clear_last_listen_resume();
++    clear_auto_followup(reason ? reason : "ws_disconnect");
++    s_during_playback_handoff_pending = false;
++    s_during_playback_handoff_playback_started = false;
++    s_during_playback_handoff_seamless = false;
++    portENTER_CRITICAL(&s_wake_stop_handoff_lock);
++    s_during_playback_wake_stop_pending = false;
++    s_during_playback_wake_stop_playback_started = false;
++    portEXIT_CRITICAL(&s_wake_stop_handoff_lock);
++    s_post_playback_resume_pending = false;
++    clear_ws_reconnect_audio_recovery();
++    nuwax_prelisten_state_clear(&s_prelisten);
++    s_awake_resume_after_ws_reconnect = true;
++    s_awake_disconnect_ms = now_ms;
++    ESP_LOGI(TAG,
++             "conversation awake session preserved for WebSocket reconnect reason=%s remaining_ms=%lu generation=%lu grace_ms=%u",
++             reason ? reason : "ws_disconnect",
++             (unsigned long)nuwax_awake_session_state_remaining_ms(
++                 &s_awake_session, now_ms),
++             (unsigned long)nuwax_awake_session_state_generation(
++                 &s_awake_session),
++             (unsigned)NUWAX_AWAKE_WS_RESUME_GRACE_MS);
++    return true;
++}
++
++static bool arm_ws_reconnect_audio_recovery(nuwax_ws_client_t *ws,
++                                            const char *reason) {
++    if (!ws || !nuwax_ws_is_connected(ws) ||
++        !nuwax_awake_session_state_is_active(&s_awake_session)) {
++        clear_ws_reconnect_audio_recovery();
++        return false;
++    }
++    const uint32_t ws_epoch = nuwax_ws_connection_epoch(ws);
++    const uint32_t active_epoch = active_ws_epoch_snapshot();
++    const uint32_t awake_generation =
++        nuwax_awake_session_state_generation(&s_awake_session);
++    if (ws_epoch == 0U || ws_epoch != active_epoch ||
++        awake_generation == 0U) {
++        clear_ws_reconnect_audio_recovery();
++        ESP_LOGE(TAG,
++                 "WebSocket reconnect audio recovery arm rejected reason=%s ws_epoch=%lu active_epoch=%lu awake_generation=%lu",
++                 reason ? reason : "-",
++                 (unsigned long)ws_epoch,
++                 (unsigned long)active_epoch,
++                 (unsigned long)awake_generation);
++        return false;
++    }
++    s_ws_audio_recovery.pending = true;
++    s_ws_audio_recovery.ws_epoch = ws_epoch;
++    s_ws_audio_recovery.awake_generation = awake_generation;
++    s_ws_audio_recovery.deadline_ms =
++        monotonic_ms() + NUWAX_WS_RECONNECT_AUDIO_RECOVERY_TIMEOUT_MS;
++    ESP_LOGI(TAG,
++             "WebSocket reconnect audio recovery armed reason=%s epoch=%lu awake_generation=%lu deadline_ms=%lu",
++             reason ? reason : "-",
++             (unsigned long)ws_epoch,
++             (unsigned long)awake_generation,
++             (unsigned long)s_ws_audio_recovery.deadline_ms);
++    return true;
++}
++
++static nuwax_ws_recovery_result_t
++recover_awake_conversation_after_ws_reconnect(nuwax_ws_client_t *ws,
++                                               const char *reason) {
++#if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
++    const uint32_t now_ms = monotonic_ms();
++    const uint32_t ws_epoch = ws ? nuwax_ws_connection_epoch(ws) : 0U;
++    const uint32_t active_epoch = active_ws_epoch_snapshot();
++    const uint32_t awake_generation =
++        nuwax_awake_session_state_generation(&s_awake_session);
++    if (!s_ws_audio_recovery.pending || !ws ||
++        !nuwax_ws_is_connected(ws) || ws_epoch == 0U ||
++        ws_epoch != active_epoch || ws_epoch != s_ws_audio_recovery.ws_epoch ||
++        awake_generation != s_ws_audio_recovery.awake_generation ||
++        !nuwax_awake_session_state_is_active(&s_awake_session) ||
++        nuwax_awake_session_state_remaining_ms(&s_awake_session, now_ms) ==
++            0U) {
++        ESP_LOGE(TAG,
++                 "WebSocket reconnect audio recovery context mismatch reason=%s pending=%d ws_epoch=%lu active_epoch=%lu bound_epoch=%lu awake_generation=%lu bound_generation=%lu awake_active=%d",
++                 reason ? reason : "-",
++                 s_ws_audio_recovery.pending ? 1 : 0,
++                 (unsigned long)ws_epoch,
++                 (unsigned long)active_epoch,
++                 (unsigned long)s_ws_audio_recovery.ws_epoch,
++                 (unsigned long)awake_generation,
++                 (unsigned long)s_ws_audio_recovery.awake_generation,
++                 nuwax_awake_session_state_is_active(&s_awake_session) ? 1 : 0);
++        return NUWAX_WS_RECOVERY_FALLBACK_SLEEP;
++    }
++    if (exclusive_audio_owner_active()) {
++        ESP_LOGI(TAG,
++                 "WebSocket reconnect recovery transferred to exclusive audio owner reason=%s meeting_state=%d monitoring_state=%d",
++                 reason ? reason : "-",
++                 (int)nuwax_meeting_mode_state(&s_meeting_mode),
++                 (int)nuwax_monitoring_mode_state(&s_monitoring_mode));
++        clear_awake_session("ws_reconnect_handoff_to_exclusive");
++        return NUWAX_WS_RECOVERY_TRANSFERRED_TO_OWNER;
++    }
++    if (exclusive_audio_mode_blocks_normal_audio()) {
++        return NUWAX_WS_RECOVERY_WAIT_MODE_QUEUE;
++    }
++    if (nuwax_app_shell_blocks_auto_followup()) {
++        clear_ws_reconnect_audio_recovery();
++        set_state(NUWAX_APP_STATE_IDLE);
++        ESP_LOGI(TAG,
++                 "WebSocket reconnect recovery deferred by menu reason=%s remaining_ms=%lu",
++                 reason ? reason : "-",
++                 (unsigned long)nuwax_awake_session_state_remaining_ms(
++                     &s_awake_session, now_ms));
++        return NUWAX_WS_RECOVERY_MENU_BLOCKED;
++    }
++
++    /* A disconnect may race a speaker stop or capture cleanup. Never trust a
++     * pending/capture flag that was owned by the old connection epoch. */
++    nuwax_prelisten_state_clear(&s_prelisten);
++    clear_last_listen_resume();
++    s_post_playback_resume_pending = false;
++    s_during_playback_handoff_pending = false;
++    s_during_playback_handoff_playback_started = false;
++    s_during_playback_handoff_seamless = false;
++
++    const uint32_t window_ms = awake_session_listen_window_ms(now_ms);
++    start_prelisten_window("awake_session", window_ms, 0U);
++    if (!s_prelisten.pending && !s_prelisten.capture_active) {
++        ESP_LOGE(TAG,
++                 "WebSocket reconnect recovery failed to arm awake capture reason=%s",
++                 reason ? reason : "-");
++        return NUWAX_WS_RECOVERY_FALLBACK_SLEEP;
++    }
++    if (conversation_state_current() != NUWAX_APP_STATE_LISTENING) {
++        ESP_LOGE(TAG,
++                 "WebSocket reconnect recovery armed capture without LISTENING state reason=%s state=%s",
++                 reason ? reason : "-",
++                 nuwax_app_state_name(conversation_state_current()));
++        return NUWAX_WS_RECOVERY_FALLBACK_SLEEP;
++    }
++    clear_ws_reconnect_audio_recovery();
++    ESP_LOGI(TAG,
++             "WebSocket reconnect recovery converged target=awake_prelisten reason=%s window_ms=%lu state=%s",
++             reason ? reason : "-",
++             (unsigned long)window_ms,
++             nuwax_app_state_name(conversation_state_current()));
++    return NUWAX_WS_RECOVERY_CONVERGED;
++#else
++    (void)ws;
++    (void)reason;
++    return NUWAX_WS_RECOVERY_FALLBACK_SLEEP;
++#endif
++}
++static void candidate_reset(int scenario) {
++    transport_closed=menu_open=mode_owner=mode_pending=ota_active=false;dynamic_epoch=1;
++    pending_greeting_recovery=(wg_ticket_t){0};reset(scenario);
++}
++static void reconnect_on_new_epoch(void) { transport_closed=false;dynamic_epoch=2;now+=1000; }
+ int main(void) {
+     int ws=0;
+-    for(int kind=0;kind<3;kind++) {
+-        reset(kind);
+-        const int result=wait_for_mic_start_action(&ws);
+-        assert(sends==1);
+-        if(kind<2) {
+-            assert(result==ESP_ERR_INVALID_STATE&&now==harness_end_ms);
+-            assert(state==NUWAX_APP_STATE_SLEEPING&&s_awake_session.active&&!s_awake_session.waiting);
+-            assert(!s_turn_guard.active&&!s_prelisten.pending&&!s_prelisten.capture_active&&!wake_desired&&!capture_starts&&!wake_rearms);
+-            assert(!nuwax_listen_resume_state_can_bootstrap_cloud_turn(&s_listen_resume,s_awake_session.generation,1,false));
+-            assert(nuwax_playback_terminal_guard_apply_cancel_ack(&s_playback_terminal_guard,1,"late_cancel","old_turn","old_play",true)==NUWAX_PLAYBACK_CANCEL_ACK_UNMATCHED);
+-            printf("BASELINE REPRODUCED scenario=%d real_wait_iterations=%u sends=%u simulated_ms=600000 capture=0 wake=0 late_turn_bootstrap=rejected late_cancel_ack=unmatched\n",kind,real_loop_iterations,sends);
+-        } else {
+-            assert(result==ESP_OK&&s_prelisten.capture_active&&state==NUWAX_APP_STATE_LISTENING);
+-            printf("CONTROL PASSED send_failure: real_wait returns ESP_OK at simulated_ms=%lu capture=1\n",(unsigned long)(now-100));
+-        }
+-    }
++    assert(!nuwax_ws_close_policy_admits(NUWAX_WS_CLOSE_CAUSE_BUSINESS_RECOVERY,true));
++    assert(!nuwax_ws_close_policy_admits(NUWAX_WS_CLOSE_CAUSE_BUSINESS_STALLED,true));
++    assert(wg_candidate_close_admits(WG_CLOSE_UNRESOLVED_GREETING,true));
++    puts("PASS generic close stays suppressed with healthy heartbeat; new scoped cause is required");
++    for(int scenario=0;scenario<2;scenario++) {
++        candidate_reset(scenario);
++        assert(wait_for_mic_start_action(&ws)==ESP_ERR_INVALID_STATE);
++        assert(close_requests==1&&transport_closed&&capture_starts==0);
++        const uint32_t elapsed=now-100;
++        assert(elapsed==((scenario==0)?15100U:31100U));
++        assert(preserve_awake_session_for_ws_reconnect("candidate_epoch_rotation"));
++        assert(s_awake_resume_after_ws_reconnect&&s_awake_session.active&&!s_awake_session.waiting);
++        reconnect_on_new_epoch();
++        assert(arm_ws_reconnect_audio_recovery(&ws,"candidate"));
++        assert(recover_awake_conversation_after_ws_reconnect(&ws,"candidate")==NUWAX_WS_RECOVERY_CONVERGED);
++        assert(s_prelisten.pending&&state==NUWAX_APP_STATE_LISTENING);
++        printf("CANDIDATE scenario=%d real_wait_ms=%lu requests_one_epoch_rotation; original preserve+reconnect functions arm listening on epoch=2\n",scenario,(unsigned long)elapsed);
++    }
++    candidate_reset(0);assert(wait_for_mic_start_action(&ws)==ESP_ERR_INVALID_STATE);
++    assert(preserve_awake_session_for_ws_reconnect("menu"));reconnect_on_new_epoch();menu_open=true;
++    assert(arm_ws_reconnect_audio_recovery(&ws,"menu"));
++    assert(recover_awake_conversation_after_ws_reconnect(&ws,"menu")==NUWAX_WS_RECOVERY_MENU_BLOCKED);
++    assert(state==NUWAX_APP_STATE_IDLE&&!s_prelisten.pending);menu_open=false;maybe_enter_idle_sleep();
++    assert(s_prelisten.pending);puts("PASS reconnect preserves open menu; closing menu resumes via original idle code");
++
++    candidate_reset(0);begin_awake_session("policy");assert(begin_active_turn_guard("wake_99",NULL,15000,"policy"));
++    assert(begin_conversation_visual_round(NUWAX_VISUAL_ROUND_WAKE_GREETING,"wake_99","policy"));
++    wg_ticket_t t=wg_capture(&s_visual_round,&s_turn_guard,1,s_awake_session.generation,WG_FAILURE_TEXT_TIMEOUT);
++    assert(t.valid);s_visual_round.first_pcm_seen=true;
++    assert(!wg_capture(&s_visual_round,&s_turn_guard,1,s_awake_session.generation,WG_FAILURE_TEXT_TIMEOUT).valid);
++    assert(wg_decide(&t,2,t.awake_generation,t.turn_epoch,false,true,true,false,false,false,false,false,false)==WG_YIELD_NEW_OWNER);
++    assert(wg_decide(&t,1,t.awake_generation+1,t.turn_epoch,false,true,true,false,false,false,false,false,false)==WG_YIELD_NEW_OWNER);
++    assert(wg_decide(&t,1,t.awake_generation,t.turn_epoch+1,false,true,true,false,false,false,false,false,false)==WG_YIELD_NEW_OWNER);
++    assert(wg_decide(&t,1,t.awake_generation,t.turn_epoch,false,true,true,true,false,false,false,false,false)==WG_YIELD_NEW_OWNER);
++    assert(wg_decide(&t,1,t.awake_generation,t.turn_epoch,false,true,true,false,true,false,false,false,false)==WG_YIELD_NEW_OWNER);
++    assert(wg_decide(&t,1,t.awake_generation,t.turn_epoch,false,true,true,false,false,true,false,false,false)==WG_DEFER_OTA);
++    assert(wg_decide(&t,1,t.awake_generation,t.turn_epoch,false,true,true,false,false,false,true,false,false)==WG_YIELD_NEW_OWNER);
++    assert(wg_decide(&t,1,t.awake_generation,t.turn_epoch,false,true,true,false,false,false,false,true,false)==WG_YIELD_NEW_OWNER);
++    assert(wg_decide(&t,1,t.awake_generation,t.turn_epoch,false,true,true,false,false,false,false,false,true)==WG_YIELD_NEW_OWNER);
++    assert(wg_decide(&t,1,t.awake_generation,t.turn_epoch,false,false,true,false,false,false,false,false,false)==WG_YIELD_NEW_OWNER);
++    puts("PASS ticket identity/first-PCM/active sleep/shutdown/OTA/reprovision/notification/exclusive/disconnect policy fences");
++    assert(!nuwax_ws_close_requested_for_epoch(2,1));
++    puts("PASS an old-epoch close does not affect the replacement connection");
++    candidate_reset(0);assert(wait_for_mic_start_action(&ws)==ESP_ERR_INVALID_STATE);
++    assert(preserve_awake_session_for_ws_reconnect("grace_failure"));
++    now=s_awake_disconnect_ms+30001;
++    /* Exact outer-owner condition at production lines 34314-34320.
++       enter_sleeping stub models its state/wake intent, not hardware readiness. */
++    if(s_awake_resume_after_ws_reconnect&&elapsed_ms(now,s_awake_disconnect_ms+NUWAX_AWAKE_WS_RESUME_GRACE_MS))
++        enter_sleeping_conversation_state("ws_reconnect_grace_expired");
++    assert(!s_awake_session.active&&state==NUWAX_APP_STATE_SLEEPING&&wake_rearms==1);
++    puts("PASS reconnect grace expiry condition releases awake owner and requests wake-ready sleep (hardware wake startup not simulated)");
+     return 0;
+ }

@@ -13,6 +13,55 @@ and the custom `device-info` / `vox-config` endpoints. `vox-config` receives
 the dynamic `{deviceId, gatewayUrl, deviceSecret}` values inside the Security
 2 session before Wi-Fi is applied. No SoftAP fallback is implemented.
 
+## Rebind after cloud unbinding
+
+The current formal-cloud connection's exact close pair `1008` / `device binding
+changed`, an existing binding rejection message, or HTTP 401/403 latches a rebind
+request. Other close reasons keep their normal reconnect behavior. RX only
+publishes an epoch-bound request; it never writes NVS or restarts the device.
+
+The connection owner stops new audio admission, asks the SD writer to finish
+normally, and services meeting/monitoring controllers until they are disabled.
+It also waits for replay ownership to end before acknowledging the handoff.
+Existing capture errors remain incomplete. No upload or cloud ACK is required
+to seal a local file. The configured controlled reboot into BLE is retained.
+
+The existing durable rollback record carries the binding-required flag. Known
+rejections prohibit saved-Wi-Fi success, cancellation to that pair, and the
+runtime inactivity rollback. BLE remains available for the APP to deliver its
+normal `vox-config` and Wi-Fi transaction. A complete replacement commit clears
+the latch; application activity still validates the new cloud connection. Wi-Fi
+GOT_IP and WebSocket 101 alone cannot clear a rejected binding. Manual network
+changes without a known binding rejection retain their existing rollback path.
+
+Both initial provisioning and rebind use a complete Wi-Fi/cloud transaction
+journal in `nuwax_reprov/commit_pending`. After the APP candidate reaches GOT_IP
+and passes owner/AP checks, the full target pair, transaction ID and CRC are
+persisted before modifying the application's saved Wi-Fi or active cloud key.
+The owner writes the driver/application Wi-Fi, cloud configuration and verified
+marker, then reads back all of them. Only after they agree does it erase the
+rollback request, erase the journal last, and publish success. A storage error
+keeps the target fenced against cancellation, APP cleanup and old-Wi-Fi recovery.
+The supervisor retries with bounded backoff; after its existing failure limit it
+restarts with the recovery evidence retained.
+
+On boot the journal is recovered before manager initialization or candidate
+cleanup, even if the rollback request or cloud pending key is already absent.
+Recovery reapplies the same pair without requiring another BLE session or a new
+GOT_IP. A legacy Wi-Fi-only marker cannot prove which cloud key committed; an
+incomplete/corrupt marker or rollback record therefore requires a fresh APP pair.
+Healthy upgrades with no interrupted transaction keep their saved pair. No
+APP/cloud message format, Security 2 configuration or SD gateway route changes.
+
+Regression: `python tools/test-binding-reprovision.py` exercises production
+functions with NVS faults/power cuts, exact close payloads and stale epochs,
+plus the real meeting/monitoring controllers across the stop/seal boundary.
+`python tools/test-provision-pair-transaction.py` separately compiles the actual
+cloud/journal modules and production finalizer, startup recovery and cleanup.
+It exercises repeated resets, individual durable key boundaries, storage errors,
+legacy migration and negative mutants. Physical APP/BLE and power-cut acceptance
+on the target remain necessary; host fault injection is not a hardware result.
+
 ## Frozen BLE contract
 
 | Item | Value |
@@ -25,15 +74,17 @@ the dynamic `{deviceId, gatewayUrl, deviceSecret}` values inside the Security
 | Wi-Fi milestone | `IP_EVENT_STA_GOT_IP` / `WIFI_READY` |
 | Wi-Fi provisioning success | `WIFI_READY`; cloud state is reported separately |
 | Focused BLE-only window | 300 seconds |
-| Advertising lifetime | Continuous until new Wi-Fi commits or saved Wi-Fi recovers |
+| Advertising lifetime | Continuous until the new pair commits or a saved pair without a known binding rejection recovers |
 | Status wait after credentials | 30 seconds |
 | BLE after success | retained for 15 seconds, then stopped by firmware |
 | Transport cleanup after explicit stop | 1 second |
 | SoftAP | unsupported |
 
 The first 300 seconds are dedicated to APP provisioning. After that boundary,
-BLE advertising remains active while firmware periodically tries the saved
-pre-reprovision Wi-Fi configuration. A BLE GATT connection immediately pauses
+BLE advertising remains active. If the saved pair has no known binding rejection
+or unresolved pair transaction,
+firmware periodically tries its pre-reprovision Wi-Fi configuration; a rejected
+binding continues waiting for a replacement from the APP. A BLE GATT connection immediately pauses
 saved-Wi-Fi recovery; a 15-second Security 2 deadline prevents an unauthenticated
 client from holding that ownership forever. If the APP disconnects or an
 attempt fails, BLE advertising resumes and saved-Wi-Fi recovery becomes eligible
@@ -133,6 +184,13 @@ The provisioning manager owns Wi-Fi connection attempts while BLE provisioning
 is active. The regular Kconfig/fallback connection path starts only after the
 manager has stopped. Subsequent boots prefer the STA configuration stored by
 the official manager over build-time SSID values.
+
+For a configured device, runtime rebind persists the verified Wi-Fi/cloud
+rollback record and reboots into the clean provisioning boot profile before
+starting BLE (`CONFIG_NUWAX_PROVISION_RUNTIME_REBOOT_ENABLE=y`). This avoids
+reinitializing the NimBLE controller after normal audio/UI/WebSocket operation.
+The older in-process rebind path remains available only when that diagnostic
+option is explicitly disabled.
 
 ## APP sequence
 

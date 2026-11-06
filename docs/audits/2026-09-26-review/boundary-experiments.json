@@ -1,0 +1,10 @@
+{
+  "reaper": "heartbeat=0 elapsed_ms=90100 closes=1 restarts=1 cancellation_notifications=901\nheartbeat=1 elapsed_ms=100000 closes=0 restarts=0 cancellation_notifications=1000",
+  "wideJson": "payload_bytes=16025 array_elements=8000 accepted=1 host_cjson_size=64 peak_allocated_bytes=512213 allocations=16006 live_after_delete=0",
+  "hardwareValidated": false,
+  "sources": {
+    "main/conversation/audio_uplink.c": "b108674c4fae56747c5497e0323289944567685e4461612f274b0f3e44ddfe41",
+    "main/session_protocol.c": "867688b83dc7f84495750def49a89d13926b856f127e850b840681f9b49187fa",
+    "main/ws_transport.c": "35786a0431339b0d77d7e51f14462c017ee2c1ea4a2c84ca3e317835fa82a525"
+  }
+}

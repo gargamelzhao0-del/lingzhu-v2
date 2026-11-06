@@ -1,5 +1,6 @@
 #include "speaker_output.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -8,6 +9,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "device_error_report.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -57,6 +59,10 @@
 #define NUWAX_SPEAKER_INIT_RETRY_DELAY_MS 20
 #define NUWAX_SPEAKER_INIT_RETRIES 2
 #define NUWAX_SPEAKER_OUTPUT_LOCK_TIMEOUT_MS 250U
+#define NUWAX_SPEAKER_STARTUP_FADE_MS 15U
+#define NUWAX_SPEAKER_STARTUP_FADE_FRAMES \
+    ((uint32_t)CONFIG_NUWAX_VOICE_OUTPUT_SAMPLE_RATE * NUWAX_SPEAKER_STARTUP_FADE_MS / 1000U)
+#define NUWAX_SPEAKER_GAIN_ONE_Q15 32768U
 #define NUWAX_SPEAKER_STOP_LOCK_TIMEOUT_MS \
     ((uint32_t)CONFIG_NUWAX_SPEAKER_WRITE_TIMEOUT_MS + 250U)
 
@@ -64,6 +70,19 @@ static const char *TAG = "nuwax_speaker";
 
 static uint8_t clamp_volume_percent(uint8_t volume_percent) {
     return volume_percent > 100 ? 100 : volume_percent;
+}
+
+/* Smoothstep has zero slope at both ends. Fixed-point math is used only
+ * during the initial 15 ms; normal playback keeps its original scaling. */
+static uint32_t speaker_output_startup_gain_q15(uint32_t position) {
+    if (NUWAX_SPEAKER_STARTUP_FADE_FRAMES < 2U ||
+        position >= NUWAX_SPEAKER_STARTUP_FADE_FRAMES - 1U) {
+        return NUWAX_SPEAKER_GAIN_ONE_Q15;
+    }
+    const uint32_t t = (uint32_t)(((uint64_t)position * NUWAX_SPEAKER_GAIN_ONE_Q15) /
+                                (NUWAX_SPEAKER_STARTUP_FADE_FRAMES - 1U));
+    return (uint32_t)(((uint64_t)t * t * (3U * NUWAX_SPEAKER_GAIN_ONE_Q15 - 2U * t)) /
+                      ((uint64_t)NUWAX_SPEAKER_GAIN_ONE_Q15 * NUWAX_SPEAKER_GAIN_ONE_Q15));
 }
 
 static bool speaker_output_lock(SemaphoreHandle_t lock, uint32_t timeout_ms) {
@@ -200,7 +219,9 @@ esp_err_t nuwax_speaker_output_init(nuwax_speaker_output_t *speaker) {
     if (!speaker) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (speaker->initialized && speaker->tx_handle && speaker->lock) {
+    if (speaker->initialized && speaker->tx_handle && speaker->lock &&
+        (!speaker->vocat_shared_tx ||
+         (speaker->board_ref.token && speaker->board_lease.token))) {
         return ESP_OK;
     }
 
@@ -229,9 +250,9 @@ esp_err_t nuwax_speaker_output_init(nuwax_speaker_output_t *speaker) {
     /* P2: Miaopan V2.0 plays through ES8311 on the shared single-I2S bus.
      * Do NOT create a second (port-1) I2S channel; that targets the wrong
      * hardware and fails with ESP_ERR_NO_MEM once the shared codec holds DMA.
-     * Acquire the shared TX from audio_board (ES8311 + PA already brought up). */
+     * Acquire shared TX with the codec running and PA held off. */
     {
-        esp_err_t board_err = nuwax_audio_board_init();
+        esp_err_t board_err = nuwax_audio_board_init(&speaker->board_ref);
         if (board_err != ESP_OK) {
             vSemaphoreDelete(lock);
             ESP_LOGE(TAG, "vocat audio board init failed: %s", esp_err_to_name(board_err));
@@ -240,7 +261,7 @@ esp_err_t nuwax_speaker_output_init(nuwax_speaker_output_t *speaker) {
         void *tx = NULL;
         esp_err_t acq = nuwax_audio_board_acquire_tx(&tx, &speaker->board_lease);
         if (acq != ESP_OK || !tx) {
-            const esp_err_t board_cleanup_err = nuwax_audio_board_deinit();
+            const esp_err_t board_cleanup_err = nuwax_audio_board_deinit(&speaker->board_ref);
             vSemaphoreDelete(lock);
             ESP_LOGE(TAG, "vocat shared TX acquire failed: %s", esp_err_to_name(acq));
             if (board_cleanup_err != ESP_OK) {
@@ -270,11 +291,24 @@ esp_err_t nuwax_speaker_output_init(nuwax_speaker_output_t *speaker) {
             }
             return ref_err;
         }
+        /* Prove the complete DMA ring silent before any first PCM can open
+         * PA. This also covers reacquiring TX while a microphone board ref
+         * kept the codec alive after an earlier playback owner released it. */
+        const esp_err_t quiet_err = nuwax_speaker_output_stop(speaker);
+        if (quiet_err != ESP_OK) {
+            const esp_err_t cleanup_err = nuwax_speaker_output_deinit(speaker);
+            if (cleanup_err != ESP_OK) {
+                ESP_LOGE(TAG, "speaker cleanup after quiet init failed: %s",
+                         esp_err_to_name(cleanup_err));
+            }
+            return quiet_err;
+        }
         ESP_LOGI(TAG,
-                 "I2S speaker (vocat shared TX via ES8311) ready sample_rate=%d volume=%u%% software_ref=%s",
+                 "I2S speaker (vocat shared TX via ES8311) ready sample_rate=%d volume=%u%% software_ref=%s startup_fade_ms=%u revision=startup-fade-v1",
                  CONFIG_NUWAX_VOICE_OUTPUT_SAMPLE_RATE,
                  (unsigned)speaker->volume_percent,
-                 speaker->software_ref_ready ? "ready" : "degraded");
+                 speaker->software_ref_ready ? "ready" : "degraded",
+                 (unsigned)NUWAX_SPEAKER_STARTUP_FADE_MS);
         return ESP_OK;
     }
 #else
@@ -361,6 +395,24 @@ esp_err_t nuwax_speaker_output_init(nuwax_speaker_output_t *speaker) {
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        char result_detail[NUWAX_DEVICE_ERROR_RESULT_BYTES];
+        snprintf(result_detail,
+                 sizeof(result_detail),
+                 "%s;attempt=%d;dma=%u/%u;internal=%u/%u",
+                 esp_err_to_name(err),
+                 attempt + 1,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        (void)nuwax_device_warning_report_enqueue_detail(
+            "speaker",
+            "i2s_init_retry",
+            err,
+            result_detail,
+            "speaker_init",
+            0U,
+            NULL);
         vTaskDelay(pdMS_TO_TICKS(NUWAX_SPEAKER_INIT_RETRY_DELAY_MS));
     }
     if (err != ESP_OK) {
@@ -419,6 +471,9 @@ esp_err_t nuwax_speaker_output_set_volume_percent(nuwax_speaker_output_t *speake
     SemaphoreHandle_t lock = (SemaphoreHandle_t)speaker->lock;
     if (!speaker_output_lock(lock, NUWAX_SPEAKER_OUTPUT_LOCK_TIMEOUT_MS)) {
         ESP_LOGW(TAG, "speaker volume update skipped: output lock timeout");
+        (void)nuwax_device_warning_report_enqueue(
+            "speaker", "volume_lock_timeout", ESP_ERR_TIMEOUT,
+            "speaking", 0U, NULL);
         return ESP_ERR_TIMEOUT;
     }
     speaker->volume_percent = next;
@@ -468,19 +523,6 @@ esp_err_t nuwax_speaker_output_write_pcm16(nuwax_speaker_output_t *speaker,
         xSemaphoreGive(lock);
         return ESP_ERR_INVALID_STATE;
     }
-    /* From this point a playback attempt may change the codec, PA or DMA
-     * state. Invalidate the previous quieting proof before any operation that
-     * can fail so the recovery path is never skipped after a partial start. */
-    speaker->stop_settled = false;
-    if (speaker->vocat_shared_tx && speaker->muted) {
-        const esp_err_t prepare_err =
-            nuwax_audio_board_prepare_speaker_playback();
-        if (prepare_err != ESP_OK) {
-            xSemaphoreGive(lock);
-            return prepare_err;
-        }
-        speaker->muted = false;
-    }
     if (sample_count > speaker->stereo_capacity) {
         int16_t *next = (int16_t *)heap_caps_realloc(speaker->stereo_buffer,
                                                      sample_count * 2 * sizeof(int16_t),
@@ -495,13 +537,42 @@ esp_err_t nuwax_speaker_output_write_pcm16(nuwax_speaker_output_t *speaker,
         speaker->stereo_capacity = sample_count;
     }
     const uint8_t volume_percent = clamp_volume_percent(speaker->volume_percent);
+    const uint32_t fade_start = speaker->muted ? 0U :
+        (speaker->startup_fade_position < NUWAX_SPEAKER_STARTUP_FADE_FRAMES
+             ? speaker->startup_fade_position : NUWAX_SPEAKER_STARTUP_FADE_FRAMES);
+    uint32_t fade_position = fade_start;
+    size_t leading_silence = 0U;
     for (size_t i = 0; i < sample_count; i++) {
         int16_t scaled = samples[i];
         if (volume_percent != 100) {
             scaled = (int16_t)(((int32_t)samples[i] * (int32_t)volume_percent) / 100);
         }
+        if (fade_position < NUWAX_SPEAKER_STARTUP_FADE_FRAMES) {
+            if (fade_position == 0U && scaled == 0) {
+                ++leading_silence;
+            } else {
+                scaled = (int16_t)(((int64_t)scaled * speaker_output_startup_gain_q15(fade_position)) /
+                                   NUWAX_SPEAKER_GAIN_ONE_Q15);
+                ++fade_position;
+            }
+        }
         speaker->stereo_buffer[i * 2] = scaled;
         speaker->stereo_buffer[i * 2 + 1] = scaled;
+    }
+    /* Allocate/prepare PCM while still muted. With the DMA ring already
+     * silent, let PA settle BEFORE submitting the first speech sample; doing
+     * this after the write would play the first syllable into a muted PA. */
+    speaker->stop_settled = false;
+    if (speaker->vocat_shared_tx && speaker->muted) {
+        speaker->shared_tx_recovery_required = true;
+        const esp_err_t prepare_err =
+            nuwax_audio_board_prepare_speaker_playback();
+        if (prepare_err != ESP_OK) {
+            xSemaphoreGive(lock);
+            return prepare_err;
+        }
+        speaker->muted = false;
+        speaker->shared_tx_recovery_required = false;
     }
 #if CONFIG_NUWAX_SPEAKER_SD_GPIO >= 0
     if (!speaker->vocat_shared_tx && speaker->muted) {
@@ -600,6 +671,13 @@ esp_err_t nuwax_speaker_output_write_pcm16(nuwax_speaker_output_t *speaker,
             err = ESP_ERR_INVALID_SIZE;
         }
     }
+    /* Preparation/PA failures return before here. A partial I2S write may
+     * consume only a prefix; never advance the envelope for unsent samples. */
+    const size_t fade_written = frames_written_total > leading_silence
+                                   ? frames_written_total - leading_silence : 0U;
+    speaker->startup_fade_position =
+        fade_written >= NUWAX_SPEAKER_STARTUP_FADE_FRAMES - fade_start
+            ? NUWAX_SPEAKER_STARTUP_FADE_FRAMES : fade_start + (uint32_t)fade_written;
 #if CONFIG_NUWAX_SPEAKER_SD_GPIO >= 0
     if (err != ESP_OK && !speaker->vocat_shared_tx) {
         /* A failed/short write can leave stale samples in the DMA ring. Mute
@@ -617,10 +695,10 @@ esp_err_t nuwax_speaker_output_write_pcm16(nuwax_speaker_output_t *speaker,
     }
 #endif
     if (err != ESP_OK && speaker->vocat_shared_tx) {
+        speaker->shared_tx_recovery_required = true;
         const esp_err_t mute_err = nuwax_audio_board_force_speaker_mute();
         if (mute_err == ESP_OK) {
             speaker->muted = true;
-            speaker->shared_tx_recovery_required = true;
         } else {
             ESP_LOGE(TAG,
                      "shared speaker physical mute after write failure failed: %s",
@@ -731,6 +809,18 @@ esp_err_t nuwax_speaker_output_stop(nuwax_speaker_output_t *speaker) {
     }
     speaker->stop_settled = false;
     i2s_chan_handle_t tx_handle = (i2s_chan_handle_t)speaker->tx_handle;
+
+    if (speaker->vocat_shared_tx) {
+        /* PA must be physically quiet before resetting shared TX. RX stays
+         * enabled; only the existing TX DMA-silence sequence follows. */
+        speaker->shared_tx_recovery_required = true;
+        const esp_err_t mute_err = nuwax_audio_board_force_speaker_mute();
+        if (mute_err != ESP_OK) {
+            xSemaphoreGive(lock);
+            return mute_err;
+        }
+        speaker->muted = true;
+    }
 
 #if CONFIG_NUWAX_SPEAKER_SD_GPIO >= 0
     if (!speaker->vocat_shared_tx) {
@@ -871,6 +961,7 @@ esp_err_t nuwax_speaker_output_stop(nuwax_speaker_output_t *speaker) {
     }
     if (preload_err == ESP_OK) {
         speaker->stop_settled = true;
+        speaker->startup_fade_position = 0U;
     }
 
     if (lock) {
@@ -878,7 +969,7 @@ esp_err_t nuwax_speaker_output_stop(nuwax_speaker_output_t *speaker) {
     }
     ESP_LOGI(TAG,
              "I2S speaker stopped, DMA reset, quieting=%s silence_preload_bytes=%u settle_ms=%u preload_result=%s ref_timeline=%s",
-             speaker->vocat_shared_tx ? "dma_silence" : "pa_muted",
+             speaker->vocat_shared_tx ? "pa_muted_dma_silence" : "pa_muted",
              (unsigned)preload_bytes,
              (unsigned)settle_ms,
              esp_err_to_name(preload_err),
@@ -905,6 +996,8 @@ esp_err_t nuwax_speaker_output_deinit(nuwax_speaker_output_t *speaker) {
     if (speaker->vocat_shared_tx) {
         /* shared TX owned by audio_board: release + drop refcount, never delete/disable
          * (the codec/board owns the channel lifecycle). */
+        speaker->initialized = false;
+        speaker->software_ref_ready = false;
         if (speaker->board_lease.token != 0) {
             const esp_err_t release_err =
                 nuwax_audio_board_release(&speaker->board_lease);
@@ -915,8 +1008,10 @@ esp_err_t nuwax_speaker_output_deinit(nuwax_speaker_output_t *speaker) {
                 return release_err;
             }
         }
-        const esp_err_t board_err = nuwax_audio_board_deinit();
-        if (board_err != ESP_OK) {
+        const esp_err_t board_err = nuwax_audio_board_deinit(&speaker->board_ref);
+        if (speaker->board_ref.token != 0) {
+            /* Logical release was rejected: retain the cleanup handle, but
+             * never present partially released output as ready for playback. */
             if (lock) {
                 xSemaphoreGive(lock);
             }

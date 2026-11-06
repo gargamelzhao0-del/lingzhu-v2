@@ -36,9 +36,10 @@ int main(void) {
     assert(nuwax_ws_send_failure_requires_disconnect(
         false, 0U, false, false, true));
 
-    assert(nuwax_ws_inflight_drain_budget_ms(5000U, 0U) == 5000U);
-    assert(nuwax_ws_inflight_drain_budget_ms(5000U, 3000U) == 5000U);
-    assert(nuwax_ws_inflight_drain_budget_ms(5000U, 42000U) == 42000U);
+    assert(nuwax_ws_inflight_drain_budget_ms(1000U, 0U) == 1000U);
+    assert(nuwax_ws_inflight_drain_budget_ms(5000U, 3000U) == 3000U);
+    assert(nuwax_ws_inflight_drain_budget_ms(5000U, 42000U) == 5000U);
+    assert(nuwax_ws_inflight_drain_budget_ms(0U, 42000U) == 0U);
     assert(!nuwax_ws_write_probe_should_defer(1, true, false));
     assert(nuwax_ws_write_probe_should_defer(0, false, false));
     assert(nuwax_ws_write_probe_should_defer(1, false, false));

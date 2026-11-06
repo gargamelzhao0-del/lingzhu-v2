@@ -1,0 +1,63 @@
+{
+  "date": "2026-09-27",
+  "productionChangedThisReview": false,
+  "rebuildPerformed": false,
+  "recordedBuildSourceFiles": 60,
+  "buildSourceMismatches": [],
+  "sourceSnapshotEntries": 454,
+  "changesSinceSept26": [
+    "main/conversation/audio_uplink.c"
+  ],
+  "checks": [
+    {
+      "script": "run-wifi-recovery-host-checks.ps1",
+      "exitCode": 0
+    },
+    {
+      "script": "run-wifi-background-host-checks.ps1",
+      "exitCode": 0
+    },
+    {
+      "script": "run-provisioning-host-checks.ps1",
+      "exitCode": 0
+    },
+    {
+      "script": "run-meeting-host-checks.ps1",
+      "exitCode": 0
+    },
+    {
+      "script": "run-monitoring-host-checks.ps1",
+      "exitCode": 0
+    },
+    {
+      "script": "run-audio-lifecycle-host-checks.ps1",
+      "exitCode": 0
+    },
+    {
+      "script": "run-offline-audio-host-checks.ps1",
+      "exitCode": 0
+    },
+    {
+      "script": "test-uplink-reaper-budget.py",
+      "exitCode": 0
+    },
+    {
+      "script": "test-uplink-cleanup-handoff.py",
+      "exitCode": 0
+    },
+    {
+      "script": "test-qmi-poll.py",
+      "exitCode": 0
+    },
+    {
+      "script": "test-board-power-boundaries.py",
+      "exitCode": 0
+    },
+    {
+      "script": "audit-remaining-boundaries.py",
+      "exitCode": 0
+    }
+  ],
+  "historicalReaperExperimentUsesBeforeSnapshot": true,
+  "exceptionalRecoveryHardwareValidated": false
+}

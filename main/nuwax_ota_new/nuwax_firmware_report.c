@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "json_resource_budget.h"
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -25,6 +26,7 @@
 #define FIRMWARE_REPORT_SEND_BUDGET_MS 200U
 #define FIRMWARE_IDENTITY_TASK_STACK_BYTES 5120U
 #define FIRMWARE_IDENTITY_STACK_WARN_BYTES 1024U
+#define FIRMWARE_IDENTITY_INTERNAL_RESERVE_BYTES 1024U
 #define FIRMWARE_IDENTITY_TASK_PRIORITY    1U
 #define FIRMWARE_IDENTITY_TASK_CORE        0
 #define NUWAX_FIRMWARE_TYPE "NuwaxAIPartner_V2"
@@ -83,6 +85,8 @@ static void firmware_identity_worker(void *argument)
         ESP_LOGI(TAG,
                  "firmware identity recovery complete stack_min_free=%u",
                  (unsigned)stack_min_free);
+    } else if (err == ESP_ERR_NOT_FINISHED) {
+        ESP_LOGI(TAG, "firmware identity shared verification pending; retry deferred");
     } else {
         ESP_LOGE(TAG,
                  "firmware identity recovery failed err=%s; retry is deferred",
@@ -123,12 +127,28 @@ static esp_err_t firmware_identity_ensure_async(void)
     firmware_identity_worker_reap();
 
     const uint32_t now_ms = monotonic_ms();
-    bool start_worker = false;
     portENTER_CRITICAL(&s_lock);
     if (s_image_sha256[0] != '\0') {
         portEXIT_CRITICAL(&s_lock);
         return ESP_OK;
     }
+    portEXIT_CRITICAL(&s_lock);
+
+    const size_t internal_free = heap_caps_get_free_size(
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t internal_largest = heap_caps_get_largest_free_block(
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (internal_largest < FIRMWARE_IDENTITY_TASK_STACK_BYTES ||
+        internal_free < FIRMWARE_IDENTITY_TASK_STACK_BYTES +
+                            FIRMWARE_IDENTITY_INTERNAL_RESERVE_BYTES) {
+        /* Identity reporting is reliable but non-gating. Do not consume its
+         * retry transaction or compete with Wi-Fi/audio startup while the
+         * internal heap cannot satisfy the complete task allocation. A later
+         * idle service pass retries without delaying normal operation. */
+        return ESP_ERR_NOT_FINISHED;
+    }
+    bool start_worker = false;
+    portENTER_CRITICAL(&s_lock);
     start_worker = nuwax_firmware_identity_policy_request(&s_identity_policy,
                                                           now_ms);
     portEXIT_CRITICAL(&s_lock);
@@ -153,12 +173,14 @@ static esp_err_t firmware_identity_ensure_async(void)
                                                 false,
                                                 monotonic_ms());
         portEXIT_CRITICAL(&s_lock);
-        ESP_LOGE(TAG,
-                 "firmware identity worker allocation failed stack_bytes=%u internal_free=%u",
+        ESP_LOGW(TAG,
+                 "firmware identity worker allocation deferred stack_bytes=%u internal_free=%u internal_largest=%u",
                  (unsigned)FIRMWARE_IDENTITY_TASK_STACK_BYTES,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL |
-                                                    MALLOC_CAP_8BIT));
-        return ESP_ERR_NO_MEM;
+                                                    MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(
+                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        return ESP_ERR_NOT_FINISHED;
     }
 
     portENTER_CRITICAL(&s_lock);
@@ -427,7 +449,7 @@ bool nuwax_firmware_report_handle_text(const char *payload,
         return false;
     }
     const char *parse_end = NULL;
-    cJSON *root = cJSON_ParseWithLengthOpts(payload, (size_t)len,
+    cJSON *root = nuwax_json_parse_with_length_opts(payload, (size_t)len,
                                             &parse_end, false);
     if (root == NULL || !cJSON_IsObject(root)) {
         cJSON_Delete(root);

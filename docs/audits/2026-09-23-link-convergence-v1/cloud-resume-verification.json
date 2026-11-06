@@ -1,0 +1,15 @@
+{
+  "revision": "20260923-cloud-resume-v1",
+  "elfSha256": "302394c2f0b992631cafbf12abee6fd93ee115d8a3b7c0e5492e8c4876f83852",
+  "binSha256": "492cbeacf47fd64b0e0ce43188d08014194d04ee9a8fd3f49f30ae278f6f245f",
+  "bytes": 3822992,
+  "sourceHashes": {
+    "main/nuwax_ai_partner_main.c": "3e86864528b327ef6d31f0619dfdab6410814710c4179187199da2e81613c9ff",
+    "main/audio_modes/meeting/meeting_mode.c": "0ab06ee152e34c49da162173340d736262b78e56296e04c494aaada380af29a9",
+    "main/audio_modes/monitoring/monitoring_mode.c": "ba87f1958e86c0022d731f990d0e1158c851b83c3a7065450f0ddc98e855ea3f",
+    "tools/test-cloud-resume.py": "3a6bde6d775fd6165c5da631dfbf346d976bb575db1bd854ee7f25ec6e24911b",
+    "main/wake_supervisor_host_check.c": "0eb2116cf95a67477751b50c1186dc8a47792e69e451601545e19ffeae03571e",
+    "main/cloud_ready_sleep_host_check.c": "0359ab18618d4f04ee8a174ec843e76b4dcebbf6d4bb0c9af0667d2a69a56ab3"
+  },
+  "hardwareValidated": false
+}

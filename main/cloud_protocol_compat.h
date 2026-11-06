@@ -1,5 +1,14 @@
 #pragma once
 
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/* Only this exact formal-cloud close reason requests a rebind. Other policy
+ * failures, truncated strings and embedded NULs keep their existing handling. */
+bool nuwax_cloud_peer_close_requires_provision(uint16_t code,
+    const uint8_t *reason, size_t reason_bytes);
+
 typedef enum {
     NUWAX_CLOUD_MESSAGE_NONE = 0,
     NUWAX_CLOUD_MESSAGE_HELLO_OK,

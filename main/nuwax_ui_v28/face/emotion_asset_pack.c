@@ -402,41 +402,10 @@ static esp_err_t validate_v4_segment(uint16_t segment_index,
     return ESP_OK;
 }
 
-static esp_err_t validate_payload_crc(void)
-{
-    uint8_t *chunk = heap_caps_malloc(CRC_CHUNK_BYTES,
-                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!chunk) {
-        return ESP_ERR_NO_MEM;
-    }
-    uint32_t crc = 0;
-    uint32_t offset = s_header.header_size;
-    while (offset < s_header.total_size) {
-        const uint32_t remaining = s_header.total_size - offset;
-        const uint32_t bytes = remaining < CRC_CHUNK_BYTES
-                                   ? remaining
-                                   : CRC_CHUNK_BYTES;
-        const esp_err_t err = esp_partition_read(s_partition, offset,
-                                                 chunk, bytes);
-        if (err != ESP_OK) {
-            heap_caps_free(chunk);
-            return err;
-        }
-        crc = esp_rom_crc32_le(crc, chunk, bytes);
-        offset += bytes;
-    }
-    heap_caps_free(chunk);
-    if (crc != s_header.payload_crc32) {
-        ESP_LOGE(TAG,
-                 "payload CRC mismatch header=%08lx actual=%08lx",
-                 (unsigned long)s_header.payload_crc32,
-                 (unsigned long)crc);
-        return ESP_ERR_INVALID_CRC;
-    }
-    return ESP_OK;
-}
-
-static esp_err_t validate_pack_sha256(void)
+/* Read the emotion partition once and update both integrity primitives from
+ * each chunk. The previous implementation scanned the 2.9 MiB partition
+ * twice (CRC, then SHA-256), adding avoidable startup latency. */
+static esp_err_t validate_pack_integrity(void)
 {
     const psa_status_t init_status = psa_crypto_init();
     if (init_status != PSA_SUCCESS) {
@@ -450,6 +419,7 @@ static esp_err_t validate_pack_sha256(void)
 
     psa_hash_operation_t operation = PSA_HASH_OPERATION_INIT;
     psa_status_t status = psa_hash_setup(&operation, PSA_ALG_SHA_256);
+    uint32_t crc = 0U;
     uint32_t offset = 0;
     while (status == PSA_SUCCESS && offset < s_header.total_size) {
         const uint32_t remaining = s_header.total_size - offset;
@@ -464,6 +434,15 @@ static esp_err_t validate_pack_sha256(void)
             return read_err;
         }
         status = psa_hash_update(&operation, chunk, bytes);
+        if (status == PSA_SUCCESS &&
+            offset + bytes > s_header.header_size) {
+            const uint32_t crc_skip =
+                offset < s_header.header_size
+                    ? s_header.header_size - offset
+                    : 0U;
+            crc = esp_rom_crc32_le(crc, chunk + crc_skip,
+                                   bytes - crc_skip);
+        }
         offset += bytes;
     }
     uint8_t digest[32] = {0};
@@ -480,6 +459,15 @@ static esp_err_t validate_pack_sha256(void)
         ESP_LOGE(TAG, "pack SHA-256 calculation failed status=%ld",
                  (long)status);
         return ESP_FAIL;
+    }
+
+    if (crc != s_header.payload_crc32) {
+        ESP_LOGE(TAG,
+                 "payload CRC mismatch header=%08lx actual=%08lx",
+                 (unsigned long)s_header.payload_crc32,
+                 (unsigned long)crc);
+        memset(digest, 0, sizeof(digest));
+        return ESP_ERR_INVALID_CRC;
     }
 
     char digest_hex[SHA256_HEX_BYTES + 1U];
@@ -883,10 +871,7 @@ esp_err_t nuwax_emotion_asset_pack_init(void)
         err = validate_entry_table(raw_entries, raw_segments);
     }
     if (err == ESP_OK) {
-        err = validate_payload_crc();
-    }
-    if (err == ESP_OK) {
-        err = validate_pack_sha256();
+        err = validate_pack_integrity();
     }
     if (err != ESP_OK) {
         reset_pack_state();

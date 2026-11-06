@@ -1,5 +1,8 @@
 #include "diagnostics.h"
 
+#include <stdio.h>
+
+#include "device_error_report.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -44,6 +47,23 @@ void nuwax_diagnostics_log_heap_label(const char *tag, const char *label) {
         internal_largest < NUWAX_HEAP_WARN_INTERNAL_LARGEST_BYTES ||
         dma_largest < NUWAX_HEAP_WARN_DMA_LARGEST_BYTES ||
         psram_largest < NUWAX_HEAP_WARN_PSRAM_LARGEST_BYTES) {
+        const char *trigger =
+            internal < NUWAX_HEAP_WARN_INTERNAL_FREE_BYTES
+                ? "internal_free"
+                : internal_largest < NUWAX_HEAP_WARN_INTERNAL_LARGEST_BYTES
+                      ? "internal_largest"
+                      : dma_largest < NUWAX_HEAP_WARN_DMA_LARGEST_BYTES
+                            ? "dma_largest"
+                            : "psram_largest";
+        char detail[NUWAX_DEVICE_ERROR_RESULT_BYTES];
+        snprintf(detail,
+                 sizeof(detail),
+                 "ESP_OK;internal=%u;largest=%u;dma_largest=%u;psram_largest=%u;trigger=%s",
+                 (unsigned)internal,
+                 (unsigned)internal_largest,
+                 (unsigned)dma_largest,
+                 (unsigned)psram_largest,
+                 trigger);
         ESP_LOGW(tag,
                  "current heap safety warning checkpoint=%s internal=%u historical_min=%u largest=%u dma_largest=%u psram_largest=%u thresholds internal>=%u largest>=%u dma_largest>=%u psram_largest>=%u",
                  checkpoint,
@@ -56,6 +76,8 @@ void nuwax_diagnostics_log_heap_label(const char *tag, const char *label) {
                  NUWAX_HEAP_WARN_INTERNAL_LARGEST_BYTES,
                  NUWAX_HEAP_WARN_DMA_LARGEST_BYTES,
                  NUWAX_HEAP_WARN_PSRAM_LARGEST_BYTES);
+        (void)nuwax_device_warning_report_enqueue_detail(
+            "memory", "heap_safety", ESP_OK, detail, checkpoint, 0U, NULL);
     }
 }
 
@@ -92,4 +114,8 @@ void nuwax_diagnostics_log_aec_ref_health(const char *tag,
              "corr=%.3f delay_samples=%d clip_ratio=%.3f slot0_rms=%d passed=%d",
              status, (double)score, (double)tone_amp, (double)quiet_rms,
              (double)corr, delay_samples, (double)clip_ratio, slot0_rms, passed ? 1 : 0);
+    if (!passed) {
+        (void)nuwax_device_warning_report_enqueue(
+            "audio", "aec_ref_health", ESP_OK, "diagnostic", 0U, NULL);
+    }
 }

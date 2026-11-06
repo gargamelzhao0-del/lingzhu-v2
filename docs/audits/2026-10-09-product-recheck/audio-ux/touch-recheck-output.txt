@@ -1,0 +1,1 @@
+REPRODUCED: current production touch policy cancels SPEAKING but ignores LISTENING (wake greeting playback state)

@@ -1,5 +1,6 @@
 #pragma once
 
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdatomic.h>
@@ -7,6 +8,7 @@
 
 #include "esp_err.h"
 #include "ws_close_policy.h"
+#include "ws_send_metrics.h"
 
 typedef struct esp_tls esp_tls_t;
 
@@ -14,6 +16,10 @@ typedef void (*nuwax_ws_text_handler_t)(const char *payload, int len, void *user
 typedef void (*nuwax_ws_binary_handler_t)(const uint8_t *payload, int len, void *user_ctx);
 typedef void (*nuwax_ws_activity_handler_t)(void *user_ctx);
 typedef void (*nuwax_ws_handshake_handler_t)(void *user_ctx);
+/* RX-thread notification; borrowed reason bytes are not NUL-terminated.
+ * Only publish owner work here. Do not block, persist state or close/join RX. */
+typedef void (*nuwax_ws_peer_close_handler_t)(uint32_t epoch, uint16_t code,
+    const uint8_t *reason, size_t reason_bytes, void *user_ctx);
 
 typedef enum {
     NUWAX_WS_LIFECYCLE_IDLE = 0,
@@ -53,21 +59,36 @@ typedef struct {
     /* Called synchronously after a validated 101 response and before the RX
      * task starts. It must not perform WebSocket I/O or block. */
     nuwax_ws_handshake_handler_t on_handshake_verified;
+    nuwax_ws_peer_close_handler_t on_peer_close;
+    /* Optional owner cancellation during connection establishment. */
+    bool (*connect_cancelled)(void *ctx);
     void *user_ctx;
+    /* Optional plain TCP establishment budget; zero keeps the 15 s default. */
+    uint32_t tcp_connect_timeout_ms;
+    /* Test endpoints may log establishment failures without durable cloud diagnostics. */
+    bool local_connect_diagnostics_only;
+    /* Dedicated plain archive socket only; TLS keeps serialized reads. */
+    bool plain_event_rx;
 } nuwax_ws_config_t;
 
 typedef struct {
     int sock;
     esp_tls_t *tls;
     bool use_tls;
+    /* Immutable while RX is alive; close joins RX before freeing the socket. */
+    bool plain_event_rx;
+    uint32_t plain_rx_reads, plain_rx_waits, plain_rx_timeouts;
     atomic_bool connected;
     int last_http_status;
     nuwax_ws_text_handler_t on_text;
     nuwax_ws_binary_handler_t on_binary;
     nuwax_ws_activity_handler_t on_rx_activity;
     void *user_ctx;
+    nuwax_ws_peer_close_handler_t on_peer_close;
     void *rx_task;
     void *io_lock;
+    /* Whole-frame TX ownership; RX still uses io_lock between write chunks. */
+    void *tx_frame_lock;
     uint8_t *rx_buffer;
     size_t rx_buffer_capacity;
     atomic_bool rx_task_running;
@@ -85,8 +106,14 @@ typedef struct {
     atomic_int tx_stage;
     atomic_uint_fast32_t tx_stage_epoch;
     atomic_uint_fast32_t tx_stage_since_ms;
+    /* RX uses this advisory count to yield a short IO-lock slice to TX. */
+    atomic_uint_fast32_t tx_waiters;
+    /* Control-frame admission has priority at archive frame boundaries. */
+    atomic_uint_fast32_t control_waiters;
 } nuwax_ws_client_t;
 
+/* Initialize once per client lifetime, before any connect/send operation.
+ * owner_close retains the mutexes for reconnect; do not reinitialize them. */
 void nuwax_ws_init(nuwax_ws_client_t *client);
 /* RX payload pointers are borrowed connection storage and remain valid only
  * for the duration of their callback. A callback must copy data it retains. */
@@ -125,7 +152,44 @@ esp_err_t nuwax_ws_send_binary_with_timeout_if_epoch(
     size_t len,
     uint32_t timeout_ms,
     uint32_t expected_epoch);
+/* At most 8064 archive bytes + the 64-byte NWXCH1 header; archive traffic has
+ * a short lifecycle admission and a separate bounded I/O budget. A partially
+ * written frame retains the ordinary transport integrity policy. */
+esp_err_t nuwax_ws_send_archive_chunk_if_epoch(
+    nuwax_ws_client_t *client, const uint8_t *payload, size_t len,
+    uint32_t expected_epoch);
+/* Scratch must be distinct from payload and contain at least len + 14 bytes.
+ * Reuse it only after return. Plain archive frames use one encoded buffer;
+ * TLS retains its existing bounded record/chunk path. */
+esp_err_t nuwax_ws_send_archive_buffered_if_epoch(
+    nuwax_ws_client_t *client, const uint8_t *payload, size_t len,
+    uint32_t timeout_ms, uint32_t expected_epoch,
+    uint8_t *scratch, size_t scratch_capacity, nuwax_ws_send_metrics_t *metrics);
+/* Header is exactly 64 bytes; data and header are read-only until return.
+ * Scratch must not overlap either source. Protocol bytes are unchanged. */
+#include "ws_archive_batch.h"
+/* Coalesce complete, independently masked frames into a bounded plain-TCP
+ * write. TLS retains its existing per-frame encoding/write geometry. All
+ * sources and scratch remain caller-owned until return; no heap allocation. */
+esp_err_t nuwax_ws_send_archive_batch_if_epoch(
+    nuwax_ws_client_t *client, const nuwax_ws_archive_frame_t *frames, size_t count,
+    uint32_t timeout_ms, uint32_t expected_epoch,
+    uint8_t *scratch, size_t scratch_capacity, nuwax_ws_send_metrics_t *metrics);
+esp_err_t nuwax_ws_send_archive_parts_if_epoch(
+    nuwax_ws_client_t *client, const uint8_t *header, const uint8_t *data, size_t bytes,
+    uint32_t timeout_ms, uint32_t expected_epoch,
+    uint8_t *scratch, size_t scratch_capacity, nuwax_ws_send_metrics_t *metrics);
+/* Isolated replay connections may allow up to 1500 ms of frame I/O.
+ * Shared realtime connections keep the default short archive budget. */
+esp_err_t nuwax_ws_send_archive_chunk_with_timeout_if_epoch(
+    nuwax_ws_client_t *client, const uint8_t *payload, size_t len,
+    uint32_t timeout_ms, uint32_t expected_epoch);
+esp_err_t nuwax_ws_send_archive_text_if_epoch(
+    nuwax_ws_client_t *client, const char *payload, uint32_t expected_epoch);
 esp_err_t nuwax_ws_send_ping(nuwax_ws_client_t *client);
+/* Optional SD-file output recovery. Zero means SDK-only fallback. Preparation
+ * and endpoint lookup are outside a TLS write; close fences invalidate it. */
+uint32_t nuwax_ws_archive_recovery_begin(nuwax_ws_client_t *client, uint32_t expected_epoch);
 /* Records a validated Pong for the specified connection generation. Control
  * Pong frames call this internally; the application protocol must call it for
  * its JSON Pong. */
@@ -193,3 +257,9 @@ bool nuwax_ws_is_connected(const nuwax_ws_client_t *client);
 int nuwax_ws_last_http_status(const nuwax_ws_client_t *client);
 nuwax_ws_lifecycle_state_t nuwax_ws_lifecycle_state(
     const nuwax_ws_client_t *client);
+
+/* Advisory application ping only: bounded admission, then at most 60 ms for
+ * write (scheduler latency excluded). TLS partial/attempted failure policy
+ * remains unchanged. Zero-progress deferral does not persist a diagnostic. */
+esp_err_t nuwax_ws_send_keepalive_until_if_epoch(nuwax_ws_client_t *client,
+    const char *payload, int64_t admission_deadline_us, uint32_t expected_epoch);

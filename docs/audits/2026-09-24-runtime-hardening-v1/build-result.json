@@ -1,0 +1,82 @@
+{
+  "revision": "20260924-runtime-v1",
+  "elfSha256": "9c51d1c7aa0df2114986c83e0d3bcf34ebc46da1ca9a4af41795dc562aa1f6f0",
+  "binSha256": "e622ab873e4ab1e700de832b4cd452fb4dea2a3c6990dc3539aa8443590b70c6",
+  "bytes": 3824272,
+  "jsonMaxDepth": 32,
+  "notificationStartupMs": 10000,
+  "hardwareValidated": false,
+  "provisioningProfile": "compatibility",
+  "developmentFlags": [
+    "NUWAX_PROVISION_SEC2_DEV_MODE",
+    "NUWAX_CLOUD_CONFIG_ALLOW_INSECURE_WS",
+    "NUWAX_PROVISION_USB_CONTROL_ENABLE"
+  ],
+  "releaseSecurityValidated": false,
+  "sourceHashes": {
+    "main/conversation/speaker_playback.c": "9308ceceb155613a1decf842d44ea5cfb922bc396a9376c4f33e63cc98ea60b8",
+    "main/conversation/speaker_jitter_policy.h": "80645befc81486a86f02b1d008f248aff8776b33ec4c8c655ccfe4a9125c04a7",
+    "main/session_protocol.c": "867688b83dc7f84495750def49a89d13926b856f127e850b840681f9b49187fa",
+    "main/nuwax_ai_partner_main.c": "4a2c814d76fe15de7720c6cd7a1b970bdc51ce09d037e5d301a3461fb7e1c339",
+    "main/ws_transport.c": "35786a0431339b0d77d7e51f14462c017ee2c1ea4a2c84ca3e317835fa82a525",
+    "main/nuwax_provision_new/nuwax_cloud_config.c": "dd4c94335200dda8e9ba9d802926406e714ae56f7e2cfc8c509f764df55745c4",
+    "CMakeLists.txt": "8b40bdae2f2ad6df338e115fd203c0a9d2035a557bd72b454c922bbac5b14b9c",
+    "sdkconfig.defaults": "9ae94dd5ea0e085ee6da82759516cf4f20f24968975ef802545e26b142acd3f4",
+    "sdkconfig.product-ota.defaults": "ce2e84eceb188ce344dc1504aebb5ea7f31043ab83f6e186cd206a9be8bf3034",
+    "sdkconfig.sd-replay-formal.defaults": "3addd92d0ccd0ffdb0fd384445d1187c576ab8f59d262f631876ae05aea8affe",
+    "tools/test-json-budget.py": "15f0af55d00180ce296fe7d71229f6d28b30c540a814f85bdce915265ea28aaa",
+    "tools/test-playback-startup.py": "77ae9befbc600524678f8f96ad91e5b5fe83eedb63df688a2b14014b90031870",
+    "tools/test-notification-startup.py": "3e4cf104f02004e19f677c720cc9e6f198b4dcf010510da87753ea55b8bb8d1a",
+    "tools/test-runtime-privacy.py": "84c9028cd8d567b51e8d030c7acc73ebd1627c841fb5f40249b1fed447d8a7a1",
+    "tools/verify-runtime-hardening-build.py": "489d04f942197768c2f0c3b35e74b496385270ce9e14251d7cd90f7801896182"
+  },
+  "captureStackFrames": {
+    "stream_microphone_audio": 3488
+  },
+  "speakerStackFrames": {
+    "nuwax_speaker_playback_task": 336
+  },
+  "images": [
+    {
+      "offset": "0x0",
+      "file": "bootloader/bootloader.bin",
+      "sha256": "f51cf87e3c1cf2d2a947abb8f1475bb45a8408f2d9870e5275824f771b465663"
+    },
+    {
+      "offset": "0x8000",
+      "file": "partition_table/partition-table.bin",
+      "sha256": "2d14d431e660392a4f6bd8610a97f298b6a7e5810dbdcaf5d16ab98089abb06d"
+    },
+    {
+      "offset": "0xf000",
+      "file": "ota_data_initial.bin",
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    },
+    {
+      "offset": "0x20000",
+      "file": "srmodels/srmodels.bin",
+      "sha256": "dec3196aaadcf4e6305434462f5735e1148e5ddfe1f6a0696776d666f9066d34"
+    },
+    {
+      "offset": "0x2c0000",
+      "file": "NuwaxAIPartner.bin",
+      "sha256": "e622ab873e4ab1e700de832b4cd452fb4dea2a3c6990dc3539aa8443590b70c6"
+    },
+    {
+      "offset": "0xb00000",
+      "file": "emotion_assets/emotion-assets.bin",
+      "sha256": "c8e9258f5963f6b08089ef80af6190ba1053e3e73dfc990d529d090a6f752897"
+    }
+  ],
+  "checks": {
+    "productHost": true,
+    "conversationHost": true,
+    "jsonBudget": true,
+    "notificationStartup": true,
+    "runtimePrivacy": true,
+    "formalBuild": true,
+    "hardwareValidated": false,
+    "flashVerifyOnly": true,
+    "releaseCompatibilityRejectedAsExpected": true
+  }
+}

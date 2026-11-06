@@ -1,6 +1,8 @@
 #include "display.h"
+#include "boot_logo.h"
 
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -11,10 +13,52 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_memory_utils.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+/* Low-rate telemetry only; no allocations and no logging in the SPI path.
+ * Times are elapsed wall time (including preemption), not hardware wire time. */
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+static portMUX_TYPE s_display_perf_mux = portMUX_INITIALIZER_UNLOCKED;
+static nuwax_display_perf_t s_display_perf;
+
+void nuwax_display_perf_record(const nuwax_display_perf_t *sample) {
+    taskENTER_CRITICAL(&s_display_perf_mux);
+    s_display_perf.queue_us += sample->queue_us;
+    s_display_perf.copy_us += sample->copy_us;
+    s_display_perf.swap_us += sample->swap_us;
+    s_display_perf.tx_wait_us += sample->tx_wait_us;
+    s_display_perf.bounce_bytes += sample->bounce_bytes;
+    s_display_perf.direct_bytes += sample->direct_bytes;
+    s_display_perf.jobs += sample->jobs;
+    s_display_perf.chunks += sample->chunks;
+    s_display_perf.failures += sample->failures;
+    s_display_perf.frames += sample->frames;
+    s_display_perf.frame_us += sample->frame_us;
+    if (sample->frame_max_us > s_display_perf.frame_max_us)
+        s_display_perf.frame_max_us = sample->frame_max_us;
+    taskEXIT_CRITICAL(&s_display_perf_mux);
+}
+#else
+void nuwax_display_perf_record(const nuwax_display_perf_t *sample) {
+    (void)sample;
+}
+#endif
+
+void nuwax_display_perf_take(nuwax_display_perf_t *result) {
+    if (!result) return;
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+    taskENTER_CRITICAL(&s_display_perf_mux);
+    *result = s_display_perf;
+    memset(&s_display_perf, 0, sizeof(s_display_perf));
+    taskEXIT_CRITICAL(&s_display_perf_mux);
+#else
+    memset(result, 0, sizeof(*result));
+#endif
+}
 
 #if CONFIG_NUWAX_DISPLAY_ENABLE
 
@@ -288,9 +332,39 @@ static bool s_spi_device_added;
 static bool s_spi_bus_acquired;
 static uint16_t *s_line_buffer;
 static uint16_t *s_tx_buffer;
+static bool s_tx_buffer_leased;
 static uint8_t *s_cmd_buffer;
 static bool s_initialized;
+
+void *display_acquire_draw_buffer(size_t bytes) {
+#if CONFIG_NUWAX_DISPLAY_QSPI_ENABLE
+    if (s_initialized && s_tx_buffer && !s_tx_buffer_leased && bytes > 0 &&
+        bytes <= ST77916_TX_BUFFER_PIXELS * sizeof(uint16_t)) {
+        s_tx_buffer_leased = true;
+        return s_tx_buffer;
+    }
+#endif
+    (void)bytes;
+    return NULL;
+}
+
+bool display_release_draw_buffer(void *buffer) {
+    if (buffer && buffer == s_tx_buffer && s_tx_buffer_leased) {
+        s_tx_buffer_leased = false;
+        return true;
+    }
+    return false;
+}
 static bool s_backlight_pwm_initialized;
+/* LVGL's periodic keepalive runs before the first UI frame during boot. Keep
+ * its panel refresh independent from explicit backlight permission. */
+typedef enum {
+    NUWAX_BACKLIGHT_STAGE_OFF = 0,
+    NUWAX_BACKLIGHT_STAGE_DIM,
+    NUWAX_BACKLIGHT_STAGE_FULL,
+} nuwax_backlight_stage_t;
+static atomic_uint s_backlight_stage = ATOMIC_VAR_INIT(
+    NUWAX_BACKLIGHT_STAGE_OFF);
 static bool s_frame_active;
 static bool s_region_active;
 static int16_t s_region_x;
@@ -305,6 +379,25 @@ static void st77916_drive_backlight_on(void) {
 #else
     gpio_set_level(CONFIG_NUWAX_DISPLAY_PIN_BL, 1);
 #endif
+}
+
+static esp_err_t st77916_backlight_configure_off(void) {
+    const gpio_config_t bl_cfg = {
+        .pin_bit_mask = 1ULL << CONFIG_NUWAX_DISPLAY_PIN_BL,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&bl_cfg), TAG, "backlight gpio config failed");
+#if CONFIG_NUWAX_DISPLAY_BL_ACTIVE_LOW
+    const int off_level = 1;
+#else
+    const int off_level = 0;
+#endif
+    ESP_RETURN_ON_ERROR(gpio_set_level(CONFIG_NUWAX_DISPLAY_PIN_BL, off_level),
+                        TAG, "backlight off level failed");
+    return ESP_OK;
 }
 
 #if !CONFIG_NUWAX_DISPLAY_QSPI_ENABLE
@@ -456,11 +549,25 @@ static void copy_pixels_byte_swapped(uint16_t *destination,
     }
     uint32_t *dst32 = (uint32_t *)destination;
     const size_t pairs = count / 2U;
-    for (size_t pair = 0; pair < pairs; ++pair) {
-        uint32_t value;
-        memcpy(&value, source + pair * 2U, sizeof(value));
-        dst32[pair] = ((value & 0x00FF00FFU) << 8) |
-                      ((value & 0xFF00FF00U) >> 8);
+    if ((((uintptr_t)source) & (sizeof(uint32_t) - 1U)) == 0U) {
+        const uint32_t *src32 = (const uint32_t *)__builtin_assume_aligned(source, 4);
+        for (size_t pair = 0; pair < pairs; ++pair) {
+            uint32_t value;
+            /* Explicit builtin bypasses IDF's -fno-builtin-memcpy. Known
+             * alignment permits a word load without violating aliasing. */
+            __builtin_memcpy(&value, src32 + pair, sizeof(value));
+            dst32[pair] = ((value & 0x00FF00FFU) << 8) |
+                          ((value & 0xFF00FF00U) >> 8);
+        }
+    } else {
+        /* Odd clipping/stride can leave the source only halfword aligned.
+         * Two halfword loads avoid both unaligned words and stack memcpy. */
+        for (size_t pair = 0; pair < pairs; ++pair) {
+            const uint32_t value = (uint32_t)source[pair * 2U] |
+                                   ((uint32_t)source[pair * 2U + 1U] << 16);
+            dst32[pair] = ((value & 0x00FF00FFU) << 8) |
+                          ((value & 0xFF00FF00U) >> 8);
+        }
     }
     if ((count & 1U) != 0U) {
         destination[count - 1U] = __builtin_bswap16(source[count - 1U]);
@@ -475,11 +582,21 @@ static esp_err_t spi_write_pixels_strided(const uint16_t *pixels,
         source_stride_pixels < width || height > SIZE_MAX / width) {
         return ESP_ERR_INVALID_ARG;
     }
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+    nuwax_display_perf_t perf = {0};
+#endif
     esp_err_t err = ESP_OK;
     uint8_t yield_counter = 0;
     const size_t count = width * height;
     size_t source_pixel = 0U;
     size_t remaining = count;
+
+    /* The staging allocation can also be the next LVGL drawing surface.
+     * Never overwrite it in a clipped/PSRAM/unaligned fallback. The separate
+     * line buffer remains available for these uncommon, bounded transfers. */
+    uint16_t *const staging = s_tx_buffer_leased ? s_line_buffer : s_tx_buffer;
+    const size_t capacity = s_tx_buffer_leased ? ST77916_LINE_BUFFER_PIXELS
+                                              : ST77916_TX_BUFFER_PIXELS;
 
     gpio_set_level(CONFIG_NUWAX_DISPLAY_PIN_CS, 0);
 #if !CONFIG_NUWAX_DISPLAY_QSPI_ENABLE
@@ -488,13 +605,16 @@ static esp_err_t spi_write_pixels_strided(const uint16_t *pixels,
     bool first_chunk = true;
 #endif
     while (remaining > 0U) {
-        size_t chunk = remaining > ST77916_TX_BUFFER_PIXELS
-                           ? ST77916_TX_BUFFER_PIXELS
+        size_t chunk = remaining > capacity
+                           ? capacity
                            : remaining;
         if (chunk > ST77916_SPI_SAFE_TRANSFER_PIXELS) {
             chunk = ST77916_SPI_SAFE_TRANSFER_PIXELS;
         }
 
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+        const int64_t copy_started_us = esp_timer_get_time();
+#endif
         size_t packed = 0U;
         while (packed < chunk) {
             const size_t source_row = source_pixel / width;
@@ -502,17 +622,21 @@ static esp_err_t spi_write_pixels_strided(const uint16_t *pixels,
             size_t run = width - source_column;
             if (run > chunk - packed) run = chunk - packed;
             copy_pixels_byte_swapped(
-                s_tx_buffer + packed,
+                staging + packed,
                 pixels + source_row * source_stride_pixels + source_column,
                 run);
             packed += run;
             source_pixel += run;
         }
 
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+        perf.copy_us += esp_timer_get_time() - copy_started_us;
+        const int64_t tx_started_us = esp_timer_get_time();
+#endif
 #if CONFIG_NUWAX_DISPLAY_QSPI_ENABLE
         spi_transaction_ext_t transaction = {0};
         transaction.base.length = chunk * sizeof(uint16_t) * 8;
-        transaction.base.tx_buffer = s_tx_buffer;
+        transaction.base.tx_buffer = staging;
         if (first_chunk) {
             transaction.base.flags = SPI_TRANS_MODE_QIO;
             transaction.base.cmd = ST77916_QSPI_WRITE_PIXELS_CMD;
@@ -533,7 +657,13 @@ static esp_err_t spi_write_pixels_strided(const uint16_t *pixels,
                                               (spi_transaction_t *)&transaction);
         }
 #else
-        err = spi_write_raw(s_tx_buffer, chunk * sizeof(uint16_t));
+        err = spi_write_raw(staging, chunk * sizeof(uint16_t));
+#endif
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+        perf.tx_wait_us += esp_timer_get_time() - tx_started_us;
+        perf.chunks++;
+        if (err == ESP_OK) perf.bounce_bytes += chunk * sizeof(uint16_t);
+        else perf.failures++;
 #endif
         if (err != ESP_OK) {
             break;
@@ -545,11 +675,104 @@ static esp_err_t spi_write_pixels_strided(const uint16_t *pixels,
         }
     }
     gpio_set_level(CONFIG_NUWAX_DISPLAY_PIN_CS, 1);
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+    nuwax_display_perf_record(&perf);
+#endif
     return err;
 }
 
 static esp_err_t spi_write_pixels(const uint16_t *pixels, size_t count) {
     return spi_write_pixels_strided(pixels, count, 1U, count);
+}
+
+/* Swap native little-endian RGB565 to the panel byte order in place. `pixels`
+ * must be 32-bit aligned so the paired word swap keeps DMA alignment; a
+ * misaligned tail pixel is peeled like the copy variant above. */
+static void swap_pixels_inplace(uint16_t *pixels, size_t count) {
+    if ((((uintptr_t)pixels) & (sizeof(uint32_t) - 1U)) != 0U) {
+        for (size_t i = 0; i < count; ++i) {
+            pixels[i] = __builtin_bswap16(pixels[i]);
+        }
+        return;
+    }
+    uint32_t *pairs = (uint32_t *)pixels;
+    const size_t pair_count = count / 2U;
+    for (size_t pair = 0; pair < pair_count; ++pair) {
+        const uint32_t value = pairs[pair];
+        pairs[pair] = ((value & 0x00FF00FFU) << 8) |
+                      ((value & 0xFF00FF00U) >> 8);
+    }
+    if ((count & 1U) != 0U) {
+        pixels[count - 1U] = __builtin_bswap16(pixels[count - 1U]);
+    }
+}
+
+/* DMA-fast transmit: `pixels` is already byte-swapped and resides in internal
+ * DMA-capable RAM, so chunks stream straight from the caller's buffer without
+ * the intermediate tx-buffer copy. Chunk sizing follows the same interrupt vs
+ * polling and yield rules as the copy path. */
+static esp_err_t st77916_transmit_pixels_direct(const uint16_t *pixels,
+                                                size_t count) {
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+    nuwax_display_perf_t perf = {0};
+#endif
+    esp_err_t err = ESP_OK;
+    uint8_t yield_counter = 0;
+    size_t offset = 0U;
+    size_t remaining = count;
+
+    gpio_set_level(CONFIG_NUWAX_DISPLAY_PIN_CS, 0);
+    bool first_chunk = true;
+    while (remaining > 0U) {
+        size_t chunk = remaining > ST77916_SPI_SAFE_TRANSFER_PIXELS
+                           ? ST77916_SPI_SAFE_TRANSFER_PIXELS
+                           : remaining;
+        spi_transaction_ext_t transaction = {0};
+        transaction.base.length = chunk * sizeof(uint16_t) * 8;
+        transaction.base.tx_buffer = pixels + offset;
+        if (first_chunk) {
+            transaction.base.flags = SPI_TRANS_MODE_QIO;
+            transaction.base.cmd = ST77916_QSPI_WRITE_PIXELS_CMD;
+            transaction.base.addr = ST77916_QSPI_WRITE_PIXELS_ADDR;
+            first_chunk = false;
+        } else {
+            transaction.base.flags = SPI_TRANS_MODE_QIO | SPI_TRANS_VARIABLE_CMD |
+                                     SPI_TRANS_VARIABLE_ADDR | SPI_TRANS_VARIABLE_DUMMY;
+            transaction.command_bits = 0;
+            transaction.address_bits = 0;
+            transaction.dummy_bits = 0;
+        }
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+        const int64_t tx_started_us = esp_timer_get_time();
+#endif
+        const size_t transfer_bytes = chunk * sizeof(uint16_t);
+        if (transfer_bytes >= ST77916_INTERRUPT_TRANSFER_MIN_BYTES) {
+            err = spi_device_transmit(s_spi, (spi_transaction_t *)&transaction);
+        } else {
+            err = spi_device_polling_transmit(s_spi,
+                                              (spi_transaction_t *)&transaction);
+        }
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+        perf.tx_wait_us += esp_timer_get_time() - tx_started_us;
+        perf.chunks++;
+        if (err == ESP_OK) perf.direct_bytes += chunk * sizeof(uint16_t);
+        else perf.failures++;
+#endif
+        if (err != ESP_OK) {
+            break;
+        }
+        offset += chunk;
+        remaining -= chunk;
+        if (++yield_counter >= ST77916_FLUSH_YIELD_CHUNKS) {
+            yield_counter = 0;
+            taskYIELD();
+        }
+    }
+    gpio_set_level(CONFIG_NUWAX_DISPLAY_PIN_CS, 1);
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+    nuwax_display_perf_record(&perf);
+#endif
+    return err;
 }
 
 static esp_err_t spi_write_c8_bytes(uint8_t command, const uint8_t *data, size_t len) {
@@ -594,6 +817,27 @@ static esp_err_t st77916_fill_screen(uint16_t color) {
     ESP_RETURN_ON_ERROR(st77916_set_addr_window(0, 0, ST77916_WIDTH, ST77916_HEIGHT), TAG, "set full window failed");
     for (uint16_t row = 0; row < ST77916_HEIGHT; row++) {
         ESP_RETURN_ON_ERROR(spi_write_pixels(s_line_buffer, ST77916_WIDTH), TAG, "screen fill failed");
+    }
+    return ESP_OK;
+}
+
+/* Boot-only writer: called before LVGL exists, with the backlight still off.
+ * Reuse the existing 720-byte line buffer; no framebuffer or runtime heap.
+ * The panel retains the logo while LVGL output is gated during bootstrap. */
+static esp_err_t st77916_draw_boot_logo(void) {
+    _Static_assert(NUWAX_BOOT_LOGO_WIDTH == ST77916_WIDTH &&
+                   NUWAX_BOOT_LOGO_HEIGHT == ST77916_HEIGHT,
+                   "Boot logo must match the panel");
+    ESP_RETURN_ON_ERROR(st77916_set_addr_window(0, 0, ST77916_WIDTH,
+                                               ST77916_HEIGHT),
+                        TAG, "boot logo window failed");
+    for (size_t y = 0U; y < NUWAX_BOOT_LOGO_HEIGHT; ++y) {
+        if (!nuwax_boot_logo_decode_row(y, s_line_buffer, ST77916_WIDTH)) {
+            ESP_LOGE(TAG, "boot logo invalid row=%u", (unsigned)y);
+            return ESP_ERR_INVALID_SIZE;
+        }
+        ESP_RETURN_ON_ERROR(spi_write_pixels(s_line_buffer, ST77916_WIDTH),
+                            TAG, "boot logo write failed");
     }
     return ESP_OK;
 }
@@ -719,26 +963,14 @@ static esp_err_t st77916_reset(void) {
     return ESP_OK;
 }
 
-static esp_err_t st77916_backlight_on(void) {
-    gpio_config_t bl_cfg = {
-        .pin_bit_mask = 1ULL << CONFIG_NUWAX_DISPLAY_PIN_BL,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    ESP_RETURN_ON_ERROR(gpio_config(&bl_cfg), TAG, "backlight gpio config failed");
-    st77916_drive_backlight_on();
-    ESP_LOGI(TAG, "display backlight asserted gpio=%d active_low=%d",
-             CONFIG_NUWAX_DISPLAY_PIN_BL,
-             NUWAX_DISPLAY_BL_ACTIVE_LOW_VALUE);
-    return ESP_OK;
-}
-
 esp_err_t nuwax_display_backlight_set_percent(uint8_t percent)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
     if (percent > 100) return ESP_ERR_INVALID_ARG;
+    uint32_t duty = ((uint32_t)percent * 1023u + 50u) / 100u;
+#if CONFIG_NUWAX_DISPLAY_BL_ACTIVE_LOW
+    duty = 1023u - duty;
+#endif
     if (!s_backlight_pwm_initialized) {
         const ledc_timer_config_t timer = {
             .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -754,20 +986,25 @@ esp_err_t nuwax_display_backlight_set_percent(uint8_t percent)
             .channel = LEDC_CHANNEL_1,
             .intr_type = LEDC_INTR_DISABLE,
             .timer_sel = LEDC_TIMER_1,
-            .duty = 1023,
+            /* Start at the requested duty; do not briefly expose full
+             * brightness while the LEDC channel is being attached. */
+            .duty = duty,
             .hpoint = 0,
         };
         ESP_RETURN_ON_ERROR(ledc_channel_config(&channel), TAG, "backlight PWM channel failed");
         s_backlight_pwm_initialized = true;
     }
-    uint32_t duty = ((uint32_t)percent * 1023u + 50u) / 100u;
-#if CONFIG_NUWAX_DISPLAY_BL_ACTIVE_LOW
-    duty = 1023u - duty;
-#endif
     ESP_RETURN_ON_ERROR(ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty),
                         TAG, "backlight PWM duty failed");
     ESP_RETURN_ON_ERROR(ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1),
                         TAG, "backlight PWM update failed");
+    atomic_store_explicit(
+        &s_backlight_stage,
+        percent == 0U
+            ? NUWAX_BACKLIGHT_STAGE_OFF
+            : (percent >= 100U ? NUWAX_BACKLIGHT_STAGE_FULL
+                               : NUWAX_BACKLIGHT_STAGE_DIM),
+        memory_order_release);
     ESP_LOGI(TAG, "backlight brightness=%u%% duty=%u", percent, (unsigned)duty);
     return ESP_OK;
 }
@@ -780,6 +1017,9 @@ esp_err_t nuwax_display_backlight_force_off(void)
 #else
     const int off_level = 0;
 #endif
+    atomic_store_explicit(&s_backlight_stage,
+                          NUWAX_BACKLIGHT_STAGE_OFF,
+                          memory_order_release);
     if (s_backlight_pwm_initialized) {
         ESP_RETURN_ON_ERROR(ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, off_level),
                             TAG, "backlight PWM stop failed");
@@ -913,6 +1153,9 @@ static esp_err_t st77916_release_init_resources(void) {
     esp_err_t first_err = ESP_OK;
 
     s_initialized = false;
+    atomic_store_explicit(&s_backlight_stage,
+                          NUWAX_BACKLIGHT_STAGE_OFF,
+                          memory_order_release);
     s_frame_active = false;
     s_region_active = false;
     s_region_x = 0;
@@ -976,7 +1219,16 @@ esp_err_t nuwax_display_init(void) {
     }
 
     esp_err_t err = ESP_OK;
-    bool backlight_enabled = false;
+    atomic_store_explicit(&s_backlight_stage,
+                          NUWAX_BACKLIGHT_STAGE_OFF,
+                          memory_order_release);
+
+    /* Keep the panel dark until the complete boot logo has been written.
+     * Never expose the controller reset colour or a partial logo. */
+    err = st77916_backlight_configure_off();
+    if (err != ESP_OK) {
+        goto fail;
+    }
 
     s_line_buffer = heap_caps_aligned_alloc(16,
                                             ST77916_LINE_BUFFER_PIXELS * sizeof(uint16_t),
@@ -1022,17 +1274,16 @@ esp_err_t nuwax_display_init(void) {
     if (err != ESP_OK) {
         goto fail;
     }
-    err = st77916_backlight_on();
-    if (err != ESP_OK) {
-        goto fail;
-    }
-    backlight_enabled = true;
-
     err = st77916_fill_screen(ST77916_COLOR_BLACK);
     if (err != ESP_OK) {
         goto fail;
     }
+    err = st77916_draw_boot_logo();
+    if (err != ESP_OK) {
+        goto fail;
+    }
     s_initialized = true;
+    ESP_LOGI(TAG, "boot logo ready brand=ling_zhu size=360x360 buffer_bytes=720");
 
 #if CONFIG_NUWAX_DISPLAY_QSPI_ENABLE
     ESP_LOGI(TAG,
@@ -1069,13 +1320,7 @@ esp_err_t nuwax_display_init(void) {
     return ESP_OK;
 
 fail:
-    if (backlight_enabled) {
-#if CONFIG_NUWAX_DISPLAY_BL_ACTIVE_LOW
-        gpio_set_level(CONFIG_NUWAX_DISPLAY_PIN_BL, 1);
-#else
-        gpio_set_level(CONFIG_NUWAX_DISPLAY_PIN_BL, 0);
-#endif
-    }
+    (void)st77916_backlight_configure_off();
     esp_err_t cleanup_err = st77916_release_init_resources();
     if (cleanup_err != ESP_OK) {
         ESP_LOGE(TAG,
@@ -1124,7 +1369,11 @@ esp_err_t display_keepalive(void) {
     if (s_frame_active || s_region_active) {
         return ESP_ERR_INVALID_STATE;
     }
-    st77916_drive_backlight_on();
+    if (atomic_load_explicit(&s_backlight_stage,
+                             memory_order_acquire) !=
+        NUWAX_BACKLIGHT_STAGE_OFF) {
+        if (!s_backlight_pwm_initialized) st77916_drive_backlight_on();
+    }
     ESP_RETURN_ON_ERROR(spi_command(ST77916_DISPON), TAG, "display on keepalive failed");
     return ESP_OK;
 }
@@ -1269,6 +1518,54 @@ esp_err_t display_write_region_pixels_strided(
                                     source_stride_pixels);
 }
 
+esp_err_t display_write_region_pixels_swapped_inplace(
+    int16_t x, int16_t y, int16_t w, int16_t h,
+    uint16_t *pixels, size_t pixel_count) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!pixels || w <= 0 || h <= 0 || pixel_count == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (x < 0 || y < 0 || x + w > ST77916_WIDTH || y + h > ST77916_HEIGHT) {
+        ESP_LOGW(TAG, "reject inplace region x=%d y=%d w=%d h=%d",
+                 (int)x, (int)y, (int)w, (int)h);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (pixel_count != (size_t)w * (size_t)h) {
+        ESP_LOGW(TAG, "reject inplace pixel_count mismatch x=%d y=%d w=%d h=%d pixels=%u",
+                 (int)x, (int)y, (int)w, (int)h, (unsigned)pixel_count);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_frame_active || s_region_active) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_RETURN_ON_ERROR(st77916_set_addr_window((uint16_t)x, (uint16_t)y,
+                                                (uint16_t)w, (uint16_t)h),
+                        TAG, "set inplace window failed");
+
+    /* The caller owns the buffer until the transfer completes (the LVGL flush
+     * job holds the pipeline slot), so mutating it in place cannot race
+     * rendering. A DMA-capable, 32-bit-aligned internal buffer skips the
+     * tx-buffer copy entirely; PSRAM or misaligned buffers keep the proven
+     * swap-copy path. */
+    if (esp_ptr_dma_capable(pixels) &&
+        (((uintptr_t)pixels) & (sizeof(uint32_t) - 1U)) == 0U) {
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+        const int64_t swap_started_us = esp_timer_get_time();
+#endif
+        swap_pixels_inplace(pixels, pixel_count);
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+        const nuwax_display_perf_t perf = {
+            .swap_us = esp_timer_get_time() - swap_started_us,
+        };
+        nuwax_display_perf_record(&perf);
+#endif
+        return st77916_transmit_pixels_direct(pixels, pixel_count);
+    }
+    return spi_write_pixels(pixels, pixel_count);
+}
+
 #else
 
 esp_err_t nuwax_display_init(void) {
@@ -1353,6 +1650,16 @@ esp_err_t display_write_region_pixels_strided(
     const uint16_t *pixels, size_t source_stride_pixels) {
     (void)x; (void)y; (void)w; (void)h; (void)pixels;
     (void)source_stride_pixels;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+void *display_acquire_draw_buffer(size_t bytes) { (void)bytes; return NULL; }
+bool display_release_draw_buffer(void *buffer) { (void)buffer; return false; }
+
+esp_err_t display_write_region_pixels_swapped_inplace(
+    int16_t x, int16_t y, int16_t w, int16_t h,
+    uint16_t *pixels, size_t pixel_count) {
+    (void)x; (void)y; (void)w; (void)h; (void)pixels; (void)pixel_count;
     return ESP_ERR_NOT_SUPPORTED;
 }
 

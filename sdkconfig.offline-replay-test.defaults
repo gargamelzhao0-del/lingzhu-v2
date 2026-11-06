@@ -1,0 +1,6 @@
+# Test profile: keep the primary cloud URL unchanged and replay SD archives
+# through a separate LAN WebSocket after the primary connection is restored.
+CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE=y
+CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE=y
+CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_URL="ws://192.168.31.180:8810/api/device/ws"
+CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_TOKEN="offline-replay-test"

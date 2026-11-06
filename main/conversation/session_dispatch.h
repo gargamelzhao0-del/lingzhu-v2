@@ -77,6 +77,12 @@ typedef struct {
                         const char lines[NUWAX_SESSION_STATUS_LINES][48],
                         const char *text);
     void (*apply_volume_percent)(void *ctx, int volume_percent, bool persist);
+    bool (*start_music)(void *ctx,
+                        nuwax_ws_client_t *ws,
+                        const char *request_id,
+                        const char *url,
+                        const char *format);
+    bool (*stop_music)(void *ctx, const char *request_id);
     esp_err_t (*set_wake_word)(void *ctx,
                                const char *wake_word,
                                bool persist);
@@ -127,6 +133,13 @@ typedef struct {
                                                   bool *out_passed);
     esp_err_t (*set_l3_interrupt_enabled)(void *ctx, bool enabled, bool persist);
 } nuwax_session_dispatch_callbacks_t;
+
+/* Set once on the dispatch owner at startup. A capture-aware sender may copy
+ * and defer ACK I/O; command evaluation and deduplication stay on this owner. */
+typedef esp_err_t (*nuwax_session_dispatch_ack_sender_t)(
+    nuwax_ws_client_t *ws, const nuwax_session_command_t *command,
+    bool ok, const char *message, uint32_t epoch);
+void nuwax_session_dispatch_set_ack_sender(nuwax_session_dispatch_ack_sender_t sender);
 
 void nuwax_session_dispatch_command(nuwax_ws_client_t *ws,
                                     const nuwax_session_command_t *command,

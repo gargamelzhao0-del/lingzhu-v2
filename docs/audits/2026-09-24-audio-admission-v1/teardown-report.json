@@ -1,0 +1,48 @@
+{
+  "kind": "production-function fault injection; simulated hardware boundary",
+  "status": "PASS",
+  "exit_code": 0,
+  "stdout": "normal_idempotent_init_and_lock_timeout=PASS\nteardown_failure_before_and_after_TX_delete_cross_generation=PASS\nduplicate_same_and_cross_channel_acquire_preserves_owner=PASS\nshared_RX_TX_last_reference_lease_guard=PASS\nlease_release_rejection_retains_cleanup_but_blocks_output=PASS\ncapacity_duplicate_same_generation_and_init_failure=PASS\nmic_failed_teardown_then_new_owner_and_old_cleanup=PASS\nreference_token_wrap_skips_live_token=PASS\n",
+  "stderr": "",
+  "negative_mutants": [
+    {
+      "name": "overwrite_live_lease",
+      "rejected": true,
+      "exit_code": 3,
+      "stderr": "Assertion failed: !memcmp(&rx_lease,&saved_lease,sizeof(rx_lease)) && rx==saved_rx, file C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\build-host-checks\\w05-fix\\teardown\\overwrite_live_lease.c, line 963\n"
+    },
+    {
+      "name": "empty_ref_consumes_new_owner",
+      "rejected": true,
+      "exit_code": 3,
+      "stderr": "Assertion failed: nuwax_audio_board_deinit(&a)==ESP_OK && s_init_refcount==1, file C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\build-host-checks\\w05-fix\\teardown\\empty_ref_consumes_new_owner.c, line 951\n"
+    },
+    {
+      "name": "caller_ref_not_consumed",
+      "rejected": true,
+      "exit_code": 3,
+      "stderr": "Assertion failed: nuwax_speaker_output_init(out)==ESP_OK, file C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\build-host-checks\\w05-fix\\teardown\\caller_ref_not_consumed.c, line 930\n"
+    },
+    {
+      "name": "failed_output_still_initialized",
+      "rejected": true,
+      "exit_code": 3,
+      "stderr": "Assertion failed: !speaker_output_ready_locked() && !out->initialized && out->board_ref.token, file C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\build-host-checks\\w05-fix\\teardown\\failed_output_still_initialized.c, line 976\n"
+    },
+    {
+      "name": "pending_cleanup_not_recorded",
+      "rejected": true,
+      "exit_code": 3,
+      "stderr": "Assertion failed: out->board_lease.token==0 && out->board_ref.token==0 && s_teardown_pending, file C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\build-host-checks\\w05-fix\\teardown\\pending_cleanup_not_recorded.c, line 936\n"
+    }
+  ],
+  "source_sha256": {
+    "main/board/audio_board.c": "03c8f78598189c4b70c8a30748f3bbb700762c1248b23b03f25c1c52146a1bcc",
+    "main/speaker_output.c": "b5e13809b93dc64136d43814a4283c3a90b169e226c7259c9b3b56e08050c676",
+    "main/speaker_output.h": "f0a2d0e483472cff19667a7fdfd86cbba2f6f5d217cac7c5ea8d7fad9c5349e7",
+    "main/conversation/speaker_playback.c": "f173e2829a55a46cfb8e7273fc46f22dc6198e7de93701278bcfa6f47fcbe1e4",
+    "main/board/audio_board.h": "d33658803462aeaa5cf1fec293e5193a13f1369ddb71c509241c31998342adc8",
+    "main/mic_input.h": "b8046d276e7892772e869cd5cd2b5dcd32a309bb51520e3f4374fa94e187adc8",
+    "main/mic_input.c": "8bab566945ca2e673406df2810fe2d395d1392019d2f308038e601498164a6d9"
+  }
+}

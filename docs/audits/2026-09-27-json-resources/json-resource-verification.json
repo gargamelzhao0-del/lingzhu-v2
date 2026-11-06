@@ -1,0 +1,38 @@
+{
+  "revision": "20260927-json-resources-v1",
+  "elfSha256": "fee56b4caffc46d9eacc0251e23a2e249a96511b43bc3b6257a4a675fcc1a8ff",
+  "binSha256": "5718f2a361242f85562db1ff13e49b8d0a66e9d8e3eee7ddbd740089e81bc61e",
+  "bytes": 3835312,
+  "hardwareValidated": false,
+  "guardedTranslationUnits": [
+    "cloud_protocol_compat.c",
+    "device_error_report.c",
+    "mcp_server.c",
+    "nuwax_ai_partner_main.c",
+    "offline_audio_spool.c",
+    "session_protocol.c",
+    "nuwax_ota_new/nuwax_firmware_report.c",
+    "nuwax_ota_new/nuwax_ota_device.c",
+    "nuwax_ota_new/nuwax_ota_manifest.c",
+    "nuwax_provision_new/nuwax_provision_main.c",
+    "audio_modes/meeting/meeting_protocol.c",
+    "audio_modes/monitoring/monitoring_protocol.c"
+  ],
+  "sourceHashes": {
+    "main/json_resource_budget.h": "f291ddc1e2aed9894f5577750bb68f710890315a1008d01c604a167d69b08437",
+    "tools/test-json-resource-budget.py": "238909f8bdf78411e6db39291a3ebda1aad7fe04a83d94b536360a34338c2889",
+    "tools/verify-json-resource-build.py": "1a8a11e5f47654ff667329f292662f98637c53dea1d06996ce48da34f8d32f73",
+    "main/cloud_protocol_compat.c": "db88a79375ff079de344833cba60761c48d749686f9708c0e8b2e9b74676e3d6",
+    "main/device_error_report.c": "7878519fe24a9907fd3d341681c4420a2208c40ffff0f77e3c0f114299d835b9",
+    "main/mcp_server.c": "4ec4174be2ba388ac60af15b0328c4a682a611bbd3beb36c671c58359710b10e",
+    "main/nuwax_ai_partner_main.c": "07b6c9d62a3038690202e1b1dd24600a400565bae3f5ba5f2d6b6054a6450867",
+    "main/offline_audio_spool.c": "e34db61ba5f9a4a5be2530e8eb883a74712a2c51b879bc2bb62a87dae9d70308",
+    "main/session_protocol.c": "6876e85944d8fdbddd9196616b9028de7e915db77c6bd1045cdb5c5b21b78859",
+    "main/nuwax_ota_new/nuwax_firmware_report.c": "1d59b433482defb011f6d7b7a8cc157fb09772926937efd87594a577199232b5",
+    "main/nuwax_ota_new/nuwax_ota_device.c": "21534e7d47db7f388ea19f0dd6bee5fd16c94c8170ca3bcd2a10f47337675838",
+    "main/nuwax_ota_new/nuwax_ota_manifest.c": "e7749193a3f8f63bb23ab891f28502736e56dd4b41bc5a447d6934b6bbf7078a",
+    "main/nuwax_provision_new/nuwax_provision_main.c": "de9c1742ed92bec4a0f5e4bb12c3b5ed5c4e6780ae7552bacf26b5dedb73aeb1",
+    "main/audio_modes/meeting/meeting_protocol.c": "97cfb1ae7a8ecb2505a18b54f4cae4c775ac9afffcf108fed84360624c8b8958",
+    "main/audio_modes/monitoring/monitoring_protocol.c": "b3fd1c421032f8e7ae822f7cac96d74f8e3719465652d8d2575ceea87fc37070"
+  }
+}

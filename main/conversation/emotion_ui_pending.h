@@ -67,6 +67,13 @@ static inline bool nuwax_emotion_ui_matches(
            state->revision == revision;
 }
 
+/* Completion consumes pending work without revoking its published owner.
+ * Only submit/invalidate advance the revision and make a publisher stale. */
+static inline bool nuwax_emotion_ui_revision_current(
+    const nuwax_emotion_ui_pending_t *state, uint32_t revision) {
+    return state && revision != 0U && state->revision == revision;
+}
+
 static inline bool nuwax_emotion_ui_complete(
     nuwax_emotion_ui_pending_t *state,
     uint32_t revision) {

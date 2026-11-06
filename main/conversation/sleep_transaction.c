@@ -91,6 +91,44 @@ nuwax_sleep_request_result_t nuwax_sleep_transaction_request(
                 sizeof(transaction->turn_id),
                 turn_id);
     transaction->speaker_stopped = speaker_generation == 0U;
+    transaction->local_request = false;
+    return NUWAX_SLEEP_REQUEST_STARTED;
+}
+
+nuwax_sleep_request_result_t nuwax_sleep_transaction_request_local(
+    nuwax_sleep_transaction_t *transaction,
+    uint32_t now_ms,
+    uint32_t timeout_ms,
+    uint32_t speaker_generation,
+    bool local_sleeping) {
+    if (!transaction || timeout_ms == 0U) {
+        return NUWAX_SLEEP_REQUEST_INVALID;
+    }
+    if (local_sleeping ||
+        transaction->state == NUWAX_SLEEP_TRANSACTION_SLEEPING) {
+        return NUWAX_SLEEP_REQUEST_ALREADY_SLEEPING;
+    }
+    if (transaction->active ||
+        transaction->state != NUWAX_SLEEP_TRANSACTION_IDLE) {
+        return NUWAX_SLEEP_REQUEST_BUSY;
+    }
+
+    const uint32_t token = next_token(transaction->token);
+    memset(transaction, 0, sizeof(*transaction));
+    transaction->state = NUWAX_SLEEP_TRANSACTION_REQUESTED;
+    transaction->active = true;
+    transaction->token = token;
+    transaction->speaker_generation = speaker_generation;
+    transaction->requested_ms = now_ms;
+    transaction->deadline_ms = now_ms + timeout_ms;
+    copy_string(transaction->request_id,
+                sizeof(transaction->request_id),
+                "local_power_key");
+    copy_string(transaction->command,
+                sizeof(transaction->command),
+                "local_sleep");
+    transaction->speaker_stopped = speaker_generation == 0U;
+    transaction->local_request = true;
     return NUWAX_SLEEP_REQUEST_STARTED;
 }
 
@@ -125,8 +163,9 @@ bool nuwax_sleep_transaction_mark_protocol_closed(
     uint32_t token,
     uint32_t ws_epoch) {
     if (!transaction || !transaction->active || token == 0U ||
-        transaction->token != token || ws_epoch == 0U ||
-        transaction->ws_epoch != ws_epoch ||
+        transaction->token != token ||
+        ((transaction->ws_epoch != 0U || ws_epoch != 0U) &&
+         transaction->ws_epoch != ws_epoch) ||
         (transaction->state != NUWAX_SLEEP_TRANSACTION_REQUESTED &&
          transaction->state != NUWAX_SLEEP_TRANSACTION_QUIESCING &&
          transaction->state != NUWAX_SLEEP_TRANSACTION_RECOVERING)) {
@@ -142,8 +181,9 @@ bool nuwax_sleep_transaction_mark_speaker_stopped(
     uint32_t ws_epoch,
     uint32_t speaker_generation) {
     if (!transaction || !transaction->active || token == 0U ||
-        transaction->token != token || ws_epoch == 0U ||
-        speaker_generation == 0U || transaction->ws_epoch != ws_epoch ||
+        transaction->token != token || speaker_generation == 0U ||
+        ((transaction->ws_epoch != 0U || ws_epoch != 0U) &&
+         transaction->ws_epoch != ws_epoch) ||
         transaction->speaker_generation != speaker_generation ||
         (transaction->state != NUWAX_SLEEP_TRANSACTION_REQUESTED &&
          transaction->state != NUWAX_SLEEP_TRANSACTION_QUIESCING &&

@@ -1,0 +1,408 @@
+
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include "conversation/conversation_state.h"
+#include "conversation/ui_sync_pending.h"
+#include "conversation/deferred_state_pending.h"
+#include "conversation/awake_session_state.h"
+#include "conversation/prelisten_state.h"
+#include "nuwax_ui_v28/emotion_display_policy.h"
+#include "nuwax_ui_v28/ui_bridge_revision_policy.h"
+#define CONFIG_NUWAX_SPEAKER_ENABLE 1
+#define CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC 1
+#define portENTER_CRITICAL(x) ((void)(x))
+#define portEXIT_CRITICAL(x) ((void)(x))
+#define taskENTER_CRITICAL(x) ((void)(x))
+#define taskEXIT_CRITICAL(x) ((void)(x))
+#define ESP_LOGI(tag,...) do { (void)(tag); if(0) printf(__VA_ARGS__); } while(0)
+#define ESP_LOGD ESP_LOGI
+#define ESP_LOGW ESP_LOGI
+#include "conversation/normal_conversation_policy.h"
+static bool service_normal_conversation_inactivity(void){return false;}
+static bool exclusive_audio_owner_active(void){return false;}
+static bool local_power_transition_active(void){return false;}
+static bool nuwax_ota_device_blocks_audio(void){return false;}
+static bool conversation_capture_busy_for_sleep(void){return false;}
+static bool nuwax_audio_terminal_recovery_pending(void){return false;}
+static struct { bool active; } s_touch_cancel_recovery,s_playback_terminal_guard;
+static bool nuwax_audio_uplink_sender_busy(void){return false;}
+static struct { bool active; } s_notification_transaction;
+static struct { int state; } s_head_touch_agent_intent;
+#define NUWAX_HEAD_TOUCH_AGENT_STATE_IDLE 0
+static void note_valid_conversation_activity(void){}
+static const char *TAG="probe";
+static int s_conversation_state_lock,s_bridge_state_mux;
+typedef uint32_t nuwax_app_shell_state_fields_t;
+
+enum {
+    NUWAX_APP_SHELL_STATE_EMOTION = 1U << 0,
+    NUWAX_APP_SHELL_STATE_WIFI = 1U << 1,
+    NUWAX_APP_SHELL_STATE_CLOUD = 1U << 2,
+    NUWAX_APP_SHELL_STATE_DIALOG = 1U << 3,
+    NUWAX_APP_SHELL_STATE_APP_LOW_POWER = 1U << 4,
+    NUWAX_APP_SHELL_STATE_BATTERY = 1U << 5,
+    NUWAX_APP_SHELL_STATE_MEETING = 1U << 6,
+    NUWAX_APP_SHELL_STATE_MONITORING = 1U << 7,
+    NUWAX_APP_SHELL_STATE_VOLUME = 1U << 8,
+    NUWAX_APP_SHELL_STATE_PROVISIONING = 1U << 9,
+    NUWAX_APP_SHELL_STATE_TOUCH_SEQUENCE = 1U << 10,
+    NUWAX_APP_SHELL_STATE_WIFI_SIGNAL = 1U << 11,
+    NUWAX_APP_SHELL_STATE_SEMANTIC_EMOTION = 1U << 12,
+    NUWAX_APP_SHELL_STATE_TOUCH_EMOTION = 1U << 13,
+    NUWAX_APP_SHELL_STATE_SPEAKING_PCM = 1U << 14,
+    NUWAX_APP_SHELL_STATE_OTA_PROGRESS = 1U << 15,
+    NUWAX_APP_SHELL_STATE_SIMULATED_OFFLINE = 1U << 16,
+    NUWAX_APP_SHELL_STATE_BRIGHTNESS = 1U << 17,
+    NUWAX_APP_SHELL_STATE_ALL = (1U << 18) - 1U,
+};
+static nuwax_conversation_state_t s_conversation_state;
+static nuwax_ui_sync_pending_t s_ui_state_sync;
+static nuwax_deferred_state_pending_t s_deferred_speaker_state;
+static nuwax_emotion_display_policy_t s_emotion_policy;
+static bool s_emotion_policy_initialized;
+static nuwax_app_state_t s_current_app_state,s_last_app_state;
+static uint32_t s_bridge_revision,s_lifecycle_publication_seq;
+static char s_semantic_owner_source[24];
+static uint32_t s_semantic_owner_revision;
+static nuwax_device_state_t mailbox;
+static uint32_t accepted_revision[32];
+static uint32_t fake_now;
+static bool inject_sleep;
+static unsigned prelisten_starts,sleep_entries;
+static nuwax_awake_session_state_t s_awake_session;
+static nuwax_prelisten_state_t s_prelisten;
+static struct { bool active; } s_turn_guard;
+#include "conversation/listen_resume_state.h"
+static nuwax_listen_resume_state_t s_listen_resume;
+static uint32_t monotonic_ms(void){return fake_now;}
+static uint32_t bridge_now_ms(void){return fake_now;}
+static bool ui_ready_snapshot(void){return true;}
+typedef struct { uint32_t submitted_generation,submitted_connection_epoch; } nuwax_speaker_playback_stats_t;
+static bool nuwax_speaker_playback_has_pending(void){return false;}
+static void nuwax_speaker_playback_get_stats(nuwax_speaker_playback_stats_t *stats){memset(stats,0,sizeof(*stats));}
+static void cancel_pending_semantic_emotion_for_state(nuwax_app_state_t s){(void)s;}
+static void set_state(nuwax_app_state_t state);
+static bool nuwax_state_bridge_update_owned_real(nuwax_app_state_t state,uint32_t seq);
+static bool nuwax_state_bridge_update_owned(nuwax_app_state_t state,uint32_t seq){
+    if(inject_sleep && state==NUWAX_APP_STATE_LISTENING){inject_sleep=false;set_state(NUWAX_APP_STATE_SLEEPING);}
+    return nuwax_state_bridge_update_owned_real(state,seq);
+}
+static nuwax_device_state_t state_snapshot(void){return mailbox;}
+static bool nuwax_app_shell_publish_app_state_delta_from_bridge(
+    nuwax_app_state_t state,const nuwax_device_state_t *patch,
+    nuwax_app_shell_state_fields_t fields,uint32_t revision){
+    (void)state;
+    uint32_t accepted=nuwax_ui_bridge_filter_newer_fields(revision,fields,accepted_revision,32);
+    if(accepted & NUWAX_APP_SHELL_STATE_DIALOG) mailbox.dialog=patch->dialog;
+    if(accepted & NUWAX_APP_SHELL_STATE_EMOTION) mailbox.emotion=patch->emotion;
+    if(accepted & NUWAX_APP_SHELL_STATE_APP_LOW_POWER) mailbox.app_low_power=patch->app_low_power;
+    return accepted!=0;
+}
+static bool product_music_blocks_audio(void){return false;}
+static bool sleep_transaction_blocks_new_audio(void){return false;}
+static bool exclusive_audio_mode_blocks_normal_audio(void){return false;}
+static bool menu_blocked;
+static bool nuwax_app_shell_blocks_auto_followup(void){return menu_blocked;}
+
+static uint32_t awake_session_listen_window_ms(uint32_t t){return nuwax_awake_session_state_remaining_ms(&s_awake_session,t);}
+static void start_prelisten_window(const char *mode,uint32_t ms,uint32_t delay);
+static void enter_sleeping_conversation_state(const char *reason){(void)reason;++sleep_entries;}
+
+
+#include "conversation/sleep_transaction.h"
+#define CONFIG_NUWAX_VOICE_MIC_TOUCH_TRIGGER 1
+#define CONFIG_NUWAX_TOUCH_WAKE_ACTION_ENABLE 1
+#define CONFIG_NUWAX_TOUCH_INTERRUPT_ACTION_ENABLE 1
+#define CONFIG_NUWAX_WAKE_WORD_ENABLE 1
+#define CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE 0
+#define CONFIG_NUWAX_VOICE_MIC_FRAMES_PER_BURST 10
+#define CONFIG_NUWAX_VOICE_FRAME_DURATION_MS 20
+#define ESP_OK 0
+#define ESP_ERR_INVALID_STATE 1
+#define pdTRUE 1
+#define ESP_LOGW ESP_LOGI
+#define CONFIG_NUWAX_WAKE_WORD_LISTEN_GRACE_MS 650
+#define NUWAX_WAKE_EVENT_MAX_AGE_MS 2000
+#define NUWAX_WAKE_MODE_PLAYBACK_INTERRUPT 1
+#define NUWAX_WAKE_WORD_GREETING_TEXT "hello"
+typedef int esp_err_t;
+typedef int nuwax_ws_client_t;
+typedef struct { struct { int mode; uint32_t ws_epoch; } arm; uint32_t detected_ms; char wake_word[32]; } wake_word_event_t;
+static int s_wake_word_events;
+static bool handle_playback_wake_event(nuwax_ws_client_t *ws,const wake_word_event_t *ev){(void)ws;(void)ev;return false;}
+static uint32_t active_ws_epoch_snapshot(void){return 1;}
+static void wake_greeting_metrics_begin(const char *word,uint32_t ms){(void)word;(void)ms;}
+static const char *esp_err_to_name(esp_err_t err){(void)err;return "stub";}
+static esp_err_t send_wake_word_greeting(nuwax_ws_client_t *ws,const char *word){(void)ws;(void)word;return ESP_OK;}
+static esp_err_t conversation_live_aec_pool_init(void){return ESP_OK;}
+static void restart_if_post_reprovision_aec_failed(const char *why){(void)why;}
+static int s_shell_actions=1;
+static bool s_power_shutdown_requested,s_sleep_request_pending;
+static atomic_bool s_reprovision_quiesce_requested;
+static nuwax_sleep_transaction_t s_sleep_transaction;
+static nuwax_deferred_sleep_intent_t s_deferred_sleep_intent;
+
+static unsigned owner_polls,activated;
+static uint32_t close_menu_at;
+static bool nuwax_ws_is_connected(const nuwax_ws_client_t *ws){(void)ws;return fake_now<70000;}
+static void app_task_watchdog_checkpoint(void){}
+static void service_power_key_events(nuwax_ws_client_t *ws){(void)ws;}
+static bool service_music_url_test(bool allow){(void)allow;return false;}
+static void complete_during_playback_wake_stop(void){}
+static void drain_session_commands(nuwax_ws_client_t *ws){(void)ws;}
+static void service_exclusive_audio_sleep_reconcile(void){}
+static void service_ota_wake_detector_recovery(void){}
+static bool nuwax_notification_blocks_conversation(const void *txn){(void)txn;return false;}
+static bool lifecycle_blocked;
+static bool sleep_lifecycle_blocks_new_capture(void){return lifecycle_blocked;}
+static void request_sleeping_conversation_state(const char *reason){(void)reason;sleep_entries++;}
+static void service_wake_interrupt_cancel(nuwax_ws_client_t *ws){(void)ws;}
+static void ensure_sleep_wake_word_detector(void){}
+static void request_sleep_wake_word_detector(const char *why){(void)why;}
+static int64_t now_ms_i64(void){return fake_now;}
+static esp_err_t service_idle_wait_application_keepalive(nuwax_ws_client_t *ws){(void)ws;return ESP_OK;}
+static esp_err_t service_application_keepalive(nuwax_ws_client_t *ws,const char *why){(void)ws;(void)why;return ESP_OK;}
+static void drain_shell_actions(nuwax_ws_client_t *ws){(void)ws;}
+static void conversation_owner_wait_ms(uint32_t ms){
+    (void)ms;++owner_polls;fake_now+=1000;
+    if(close_menu_at && fake_now>=close_menu_at) menu_blocked=false;
+}
+static int xQueueReceive(int q,void *item,int delay){(void)q;(void)item;(void)delay;return 0;}
+static void begin_awake_session(const char *reason){(void)reason;nuwax_awake_session_state_begin(&s_awake_session,60000);}
+static void reset_awake_wait_budget_paused(const char *reason){(void)reason;nuwax_awake_session_state_reset_paused(&s_awake_session);}
+static uint32_t conversation_listen_window_ms(void){return 60000;}
+static bool elapsed_ms(uint32_t now,uint32_t deadline){return (int32_t)(now-deadline)>=0;}
+static void clear_tts_skip_emotion_window(const char *reason){(void)reason;}
+static bool nuwax_playback_terminal_guard_waiting(const void *guard){(void)guard;return false;}
+static void clear_active_turn_guard(const char *reason){(void)reason;s_turn_guard.active=false;}
+static void nuwax_speaker_playback_release_idle_output(const char *reason){(void)reason;}
+static void stop_sleep_wake_word_detector(const char *reason){(void)reason;}
+static void set_conversation_status_guarded(const char *a,const char *b,const char *c,bool show){(void)a;(void)b;(void)c;(void)show;}
+@FUNCTION:clear_last_listen_resume@
+
+static void metrics_begin_prelisten(const char *mode,const char *why){(void)mode;(void)why;activated++;}
+
+typedef enum {
+    NUWAX_APP_SHELL_ACTION_NONE = 0,
+    NUWAX_APP_SHELL_ACTION_START_LISTEN,
+    NUWAX_APP_SHELL_ACTION_STOP_LISTEN,
+    NUWAX_APP_SHELL_ACTION_SCAN_WIFI,
+    NUWAX_APP_SHELL_ACTION_SHOW_SAVED_WIFI,
+    NUWAX_APP_SHELL_ACTION_SELECT_WIFI,
+    NUWAX_APP_SHELL_ACTION_CONNECT_SAVED_WIFI,
+    NUWAX_APP_SHELL_ACTION_REPROVISION_WIFI,
+    NUWAX_APP_SHELL_ACTION_REFRESH_PC_STATUS,
+    NUWAX_APP_SHELL_ACTION_REFRESH_WORK_STATUS,
+    NUWAX_APP_SHELL_ACTION_REFRESH_ISSUES_STATUS,
+    NUWAX_APP_SHELL_ACTION_CANCEL,
+    NUWAX_APP_SHELL_ACTION_SET_VOLUME,
+    NUWAX_APP_SHELL_ACTION_SET_MEETING_MODE,
+    NUWAX_APP_SHELL_ACTION_SET_SIMULATED_OFFLINE,
+    NUWAX_APP_SHELL_ACTION_HEAD_TOUCH_AGENT,
+    NUWAX_APP_SHELL_ACTION_SHAKE_AGENT,
+    NUWAX_APP_SHELL_ACTION_CYCLE_BRIGHTNESS,
+} nuwax_app_shell_action_t;
+
+typedef struct {
+    nuwax_app_shell_action_t action;
+    int index;
+    uint32_t volume_sequence;
+} nuwax_app_shell_result_t;
+
+
+typedef struct {
+    void *ctx;
+    void (*clear_auto_followup)(void *ctx, const char *reason);
+    void (*request_wifi_scan)(void *ctx);
+    void (*refresh_saved_wifi_list_ui)(void *ctx);
+    void (*request_pc_status)(void *ctx, nuwax_ws_client_t *ws);
+    void (*request_status_app)(void *ctx, nuwax_ws_client_t *ws, const char *app);
+    void (*request_cancel_turn)(void *ctx, nuwax_ws_client_t *ws, const char *reason);
+    void (*request_head_touch_agent)(void *ctx, nuwax_ws_client_t *ws);
+    void (*request_shake_agent)(void *ctx, nuwax_ws_client_t *ws);
+    void (*apply_volume_percent)(void *ctx, int volume_percent);
+    void (*apply_volume_commit_percent)(void *ctx, int volume_percent, uint32_t sequence);
+    void (*cycle_brightness)(void *ctx);
+    void (*set_meeting_mode)(void *ctx, nuwax_ws_client_t *ws, bool enabled);
+    void (*set_simulated_offline)(void *ctx, nuwax_ws_client_t *ws, bool enabled);
+    void (*select_wifi)(void *ctx, int index);
+    void (*connect_saved_wifi)(void *ctx, int index);
+    void (*set_reprovisioning)(void *ctx, bool enabled);
+} nuwax_shell_action_dispatch_callbacks_t;
+@FUNCTION:ensure_policy_initialized_locked@
+
+@FUNCTION:next_bridge_revision_locked@
+
+@FUNCTION:emotion_name@
+
+@FUNCTION:dialog_name@
+
+@FUNCTION:power_overrides_emotion@
+
+@FUNCTION:power_has_default_emotion@
+
+@FUNCTION:emotion_for_power@
+
+@FUNCTION:current_or_neutral@
+
+@FUNCTION:default_emotion_for_app_state@
+
+@FUNCTION:publish_app_state_delta@
+
+@FUNCTION:nuwax_state_bridge_update_owned@
+
+@FUNCTION:conversation_state_snapshot@
+
+@FUNCTION:conversation_state_current@
+
+@FUNCTION:conversation_state_generation@
+
+@FUNCTION:set_state_logical@
+
+@FUNCTION:set_state@
+
+@FUNCTION:sync_pending_ui_state@
+
+@FUNCTION:awake_idle_sleep_admitted@
+
+@FUNCTION:maybe_enter_idle_sleep@
+
+@FUNCTION:clear_auto_followup@
+
+@FUNCTION:start_prelisten_window@
+
+@FUNCTION:activate_pending_prelisten_capture@
+
+@FUNCTION:shell_dispatch_clear_auto_followup@
+
+@FUNCTION:pause_awake_waiting@
+
+@FUNCTION:resume_awake_waiting@
+
+@FUNCTION:resume_awake_conversation_after_inactivity@
+
+
+static bool take_deferred_shell_listen_action(nuwax_app_shell_result_t *action){(void)action;return false;}
+static void handle_shell_action(nuwax_ws_client_t *ws,const nuwax_app_shell_result_t *action){(void)ws;(void)action;}
+static void start_prelisten_capture_now(const char *mode,uint32_t ms,const char *why){(void)why;nuwax_prelisten_state_start_capture(&s_prelisten,mode,fake_now,ms,false);}
+
+static uint8_t s_current_volume_percent,mocked_volume;
+static bool accept_volume_commit=true;
+static unsigned volume_report_count;
+static struct {bool pending;uint32_t next_attempt_ms;} s_volume_report;
+static void nuwax_speaker_playback_apply_volume_percent(int percent,bool persist){(void)persist;mocked_volume=(uint8_t)percent;}
+static bool nuwax_speaker_playback_apply_volume_commit_percent(int percent,bool persist,uint32_t sequence){(void)sequence;if(!accept_volume_commit)return false;nuwax_speaker_playback_apply_volume_percent(percent,persist);return true;}
+static uint8_t nuwax_speaker_playback_get_volume_percent(void){return mocked_volume;}
+static uint8_t nuwax_speaker_playback_get_confirmed_volume_percent(uint32_t *sequence){if(sequence)*sequence=1;return mocked_volume;}
+static void schedule_volume_report(uint8_t percent,bool force){(void)percent;(void)force;volume_report_count++;}
+@FUNCTION:shell_dispatch_apply_volume_percent@
+@FUNCTION:session_dispatch_apply_volume_percent@
+
+static const nuwax_shell_action_dispatch_callbacks_t action_callbacks={
+    .clear_auto_followup=shell_dispatch_clear_auto_followup,
+    .apply_volume_commit_percent=shell_dispatch_apply_volume_percent,
+};
+
+
+
+@FUNCTION:nuwax_shell_action_is_listen_control@
+
+
+
+@FUNCTION:nuwax_shell_action_dispatch@
+
+@FUNCTION:wait_for_mic_start_action@
+
+typedef enum {
+    NUWAX_SESSION_EVENT_NONE = 0,
+    NUWAX_SESSION_EVENT_ASR_PARTIAL,
+    NUWAX_SESSION_EVENT_ASR_FINAL,
+    NUWAX_SESSION_EVENT_ASR_RESULT,
+    NUWAX_SESSION_EVENT_TEXT_RESPONSE,
+    NUWAX_SESSION_EVENT_TTS_RESULT,
+    NUWAX_SESSION_EVENT_TTS_SKIP,
+    NUWAX_SESSION_EVENT_PLAYBACK_BEGIN,
+    NUWAX_SESSION_EVENT_PLAYBACK_END,
+    NUWAX_SESSION_EVENT_NOTIFY_PLAYBACK_BEGIN,
+    NUWAX_SESSION_EVENT_NOTIFY_PLAYBACK_END,
+    NUWAX_SESSION_EVENT_CANCEL_TURN_ACK,
+    NUWAX_SESSION_EVENT_AUDIO_PROGRESS,
+} nuwax_session_event_t;
+#define NUWAX_CONVERSATION_NO_SPEECH_RESUME_GRACE_MS 160
+#define ESP_LOGE ESP_LOGI
+#define NUWAX_CONVERSATION_TEXT_TIMEOUT_MS 30000
+#define NUWAX_POST_END_RESPONSE_TIMEOUT_MS 15000
+#define NUWAX_VISUAL_ROUND_NORMAL 1
+#define NUWAX_HEAD_TOUCH_AGENT_STATE_IDLE 0
+static bool s_during_playback_handoff_pending;
+
+static uint32_t s_consecutive_post_end_response_timeouts,s_conversation_cloud_progress_epoch;
+static nuwax_session_event_t s_conversation_cloud_progress_event;
+static bool s_conversation_cloud_progress_closes_capture;
+typedef struct {nuwax_session_event_t event;bool ok;int sequence;char audio_session_id[64],turn_id[64],provider[24],text[128],error[64];} nuwax_session_command_t;
+static size_t strlcpy(char *dst,const char *src,size_t capacity){size_t n=strlen(src);if(capacity){size_t k=n<capacity-1?n:capacity-1;memcpy(dst,src,k);dst[k]=0;}return n;}
+static void nuwax_state_bridge_clear_waiting_question(void){}
+static void request_during_playback_capture(const char *why,bool started){(void)why;(void)started;assert(!"unexpected playback owner");}
+static void metrics_mark_asr_result(bool ok){(void)ok;}
+static bool begin_active_turn_guard(const char *request,const char *turn,uint32_t timeout,const char *why){(void)request;(void)turn;(void)timeout;(void)why;assert(!"unexpected successful ASR");return false;}
+static bool begin_conversation_visual_round(int kind,const char *request,const char *why){(void)kind;(void)request;(void)why;assert(!"unexpected successful ASR");return false;}
+static bool enter_cloud_waiting_question(const char *why){(void)why;assert(!"unexpected successful ASR");return false;}
+@FUNCTION:publish_listening_after_current_asr_failure@
+@FUNCTION:resume_prelisten_after_no_speech@
+@FUNCTION:is_no_speech_asr_error@
+@FUNCTION:note_conversation_cloud_progress@
+
+@ASR_ENTRY@
+
+static void actual_no_speech_entry(void){
+    fake_now=1000;owner_polls=activated=0;menu_blocked=false;close_menu_at=0;lifecycle_blocked=false;
+    memset(&s_awake_session,0,sizeof(s_awake_session));memset(&s_prelisten,0,sizeof(s_prelisten));
+    memset(&s_listen_resume,0,sizeof(s_listen_resume));memset(&s_turn_guard,0,sizeof(s_turn_guard));
+    memset(&s_sleep_transaction,0,sizeof(s_sleep_transaction));
+    nuwax_awake_session_state_begin(&s_awake_session,60000);
+    nuwax_awake_session_state_resume_waiting(&s_awake_session,fake_now);
+    set_state(NUWAX_APP_STATE_THINKING);
+    nuwax_listen_resume_state_bind_round(&s_listen_resume,s_awake_session.generation,"audio_1");
+    nuwax_listen_resume_state_arm_no_speech(&s_listen_resume,"auto_followup",61000);
+    assert(nuwax_listen_resume_state_arm_post_end_asr(&s_listen_resume,1,18000));
+    fake_now=3000;
+    nuwax_session_command_t command={.event=NUWAX_SESSION_EVENT_ASR_RESULT,.ok=false};
+    strcpy(command.audio_session_id,"audio_1");strcpy(command.error,"no_speech");
+    admitted_asr_event(&command);
+    assert(s_prelisten.pending && !s_prelisten.capture_active && !s_awake_session.waiting);
+    assert(!nuwax_listen_resume_state_is_waiting_post_end_asr(&s_listen_resume));
+    assert(conversation_state_current()==NUWAX_APP_STATE_LISTENING);
+}
+int main(void){
+    (void)prelisten_starts;(void)sync_pending_ui_state;
+    actual_no_speech_entry();int ws=1;
+    assert(wait_for_mic_start_action(&ws)==ESP_OK && s_prelisten.capture_active);
+    puts("control: actual admitted no_speech recovery -> pending -> capture activated");
+    actual_no_speech_entry();menu_blocked=true;close_menu_at=5000;
+    assert(wait_for_mic_start_action(&ws)==ESP_OK && s_prelisten.capture_active);
+    puts("control: menu closes before pending deadline -> capture activated");
+    actual_no_speech_entry();s_volume_report.pending=true;s_volume_report.next_attempt_ms=9000;
+    session_dispatch_apply_volume_percent(NULL,70,true);
+    assert(s_prelisten.pending && mocked_volume==70);
+    assert(!s_volume_report.pending&&s_volume_report.next_attempt_ms==0);
+    assert(wait_for_mic_start_action(&ws)==ESP_OK && s_prelisten.capture_active);
+    puts("control: remote volume callback preserves pending; defect belongs to local shell action route");
+    actual_no_speech_entry();nuwax_app_shell_result_t volume={.action=NUWAX_APP_SHELL_ACTION_SET_VOLUME,.index=70};
+    nuwax_shell_action_dispatch(&ws,&volume,&action_callbacks);
+    assert(s_prelisten.pending && mocked_volume==70);
+    assert(wait_for_mic_start_action(&ws)==ESP_OK && s_prelisten.capture_active);
+    puts("PASS real no_speech -> local volume -> capture activates without truncation");
+    nuwax_shell_action_dispatch(&ws,&volume,&action_callbacks);
+    assert(s_prelisten.capture_active);
+    puts("PASS volume preserves already active capture");
+    unsigned old_reports=volume_report_count;accept_volume_commit=false;volume.index=90;
+    nuwax_shell_action_dispatch(&ws,&volume,&action_callbacks);
+    assert(mocked_volume==70&&volume_report_count==old_reports&&s_prelisten.capture_active);
+    accept_volume_commit=true;
+    puts("PASS stale local volume cannot report or interrupt capture; cloud update retires stale report retry");
+    actual_no_speech_entry();menu_blocked=true;close_menu_at=62000;
+    assert(wait_for_mic_start_action(&ws)==ESP_OK && s_prelisten.capture_active);
+    puts("PASS real no_speech -> menu pending expiry -> close -> owner-aware capture recovery");
+    return 0;
+}

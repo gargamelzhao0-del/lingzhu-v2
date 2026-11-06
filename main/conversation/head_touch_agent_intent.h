@@ -5,6 +5,7 @@
 
 #define NUWAX_HEAD_TOUCH_AGENT_AUDIO_SESSION_ID_LEN 48U
 #define NUWAX_HEAD_TOUCH_AGENT_REQUEST_ID_LEN 48U
+#define NUWAX_HEAD_TOUCH_AGENT_ASR_WAIT_MS 4000U
 
 typedef enum {
     NUWAX_HEAD_TOUCH_AGENT_STATE_IDLE = 0,
@@ -47,6 +48,9 @@ typedef struct {
     uint32_t speaker_generation;
     uint32_t quiet_guard_ms;
     uint32_t quiet_deadline_ms;
+    bool asr_deferred;
+    bool asr_no_speech;
+    uint32_t asr_deadline_ms;
     bool speaker_required;
     bool speaker_released;
     bool capture_required;
@@ -112,6 +116,20 @@ nuwax_head_touch_agent_intent_observe_frame(
 
 bool nuwax_head_touch_agent_intent_begin_quiesce(
     nuwax_head_touch_agent_intent_t *intent);
+
+/* Keep one touch pending while the bound utterance finishes normally. Only
+ * an explicit matching no-speech result may release it; timeouts never do. */
+bool nuwax_head_touch_agent_intent_defer_asr(
+    nuwax_head_touch_agent_intent_t *intent,
+    const char *audio_session_id, uint32_t now_ms);
+
+bool nuwax_head_touch_agent_intent_accept_no_speech(
+    nuwax_head_touch_agent_intent_t *intent,
+    uint32_t ws_epoch, uint32_t awake_generation,
+    const char *audio_session_id, uint32_t now_ms);
+
+bool nuwax_head_touch_agent_intent_asr_expired(
+    const nuwax_head_touch_agent_intent_t *intent, uint32_t now_ms);
 
 bool nuwax_head_touch_agent_intent_bind_capture_transaction(
     nuwax_head_touch_agent_intent_t *intent,

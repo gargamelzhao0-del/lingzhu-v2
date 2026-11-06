@@ -15,6 +15,7 @@ static bool s_emotion_policy_initialized;
 static nuwax_app_state_t s_current_app_state = NUWAX_APP_STATE_BOOTING;
 static nuwax_app_state_t s_last_app_state = NUWAX_APP_STATE_BOOTING;
 static uint32_t s_bridge_revision;
+static uint32_t s_lifecycle_publication_seq;
 static portMUX_TYPE s_bridge_state_mux = portMUX_INITIALIZER_UNLOCKED;
 #define SEMANTIC_OWNER_SOURCE_CAPACITY 24U
 static char s_semantic_owner_source[SEMANTIC_OWNER_SOURCE_CAPACITY];
@@ -185,10 +186,10 @@ static nuwax_emotion_t default_emotion_for_app_state(nuwax_app_state_t app_state
              * active cloud reasoning turn. */
             return NUWAX_EMOTION_DISCONNECTED_FACE;
         case NUWAX_APP_STATE_WS_CONNECTING:
-            /* Wi-Fi is already usable and the local wake detector is armed
-             * before cloud connection starts. Keep that wake-ready state
-             * visible while the cloud indicator reports its own progress. */
-            return NUWAX_EMOTION_SLEEPING_FACE;
+            /* Local detection may already run, but greeting requests cannot
+             * be admitted until cloud-ready. Do not advertise sleep/wake-ready
+             * before that application-level connection is established. */
+            return NUWAX_EMOTION_DISCONNECTED_FACE;
         case NUWAX_APP_STATE_LISTENING:
             return NUWAX_EMOTION_FOCUSED;
         case NUWAX_APP_STATE_THINKING:
@@ -196,7 +197,9 @@ static nuwax_emotion_t default_emotion_for_app_state(nuwax_app_state_t app_state
         case NUWAX_APP_STATE_SPEAKING:
             return NUWAX_EMOTION_HAPPY;
         case NUWAX_APP_STATE_ERROR:
-            return NUWAX_EMOTION_SAD;
+            /* SAD shares the dizziness asset. Keep ERROR in dialog/status;
+             * a storage/network failure must not mimic a physical shake. */
+            return NUWAX_EMOTION_NEUTRAL;
         case NUWAX_APP_STATE_SLEEPING:
             return NUWAX_EMOTION_SLEEPING_FACE;
         case NUWAX_APP_STATE_IDLE:
@@ -527,6 +530,43 @@ bool nuwax_state_bridge_set_semantic_emotion_name(const char *emotion,
         emotion, source, 0U);
 }
 
+bool nuwax_state_bridge_refresh_semantic_emotion_name_owned_lease(
+    const char *emotion,
+    const char *source,
+    uint32_t owner_revision,
+    uint32_t duration_ms) {
+    nuwax_emotion_t parsed = NUWAX_EMOTION_NEUTRAL;
+    if (!parse_emotion_name(emotion, &parsed) || duration_ms == 0U ||
+        owner_revision == 0U) {
+        return false;
+    }
+
+    uint32_t generation = 0U;
+    bool refreshed = false;
+    taskENTER_CRITICAL(&s_bridge_state_mux);
+    ensure_policy_initialized_locked();
+    if (!nuwax_ui_bridge_owned_revision_is_rejected(
+            owner_revision, s_semantic_reject_through_revision) &&
+        s_current_app_state == NUWAX_APP_STATE_SLEEPING) {
+        refreshed = nuwax_emotion_display_policy_refresh_matching_lease(
+            &s_emotion_policy, parsed, duration_ms, bridge_now_ms(),
+            &generation);
+        if (refreshed) {
+            copy_semantic_owner_source(s_semantic_owner_source, source);
+            s_semantic_owner_revision = owner_revision;
+        }
+    }
+    taskEXIT_CRITICAL(&s_bridge_state_mux);
+    if (refreshed) {
+        ESP_LOGI(TAG,
+                 "semantic emotion lease refreshed name=%s source=%s generation=%lu duration_ms=%lu",
+                 emotion_name(parsed), source ? source : "-",
+                 (unsigned long)generation,
+                 (unsigned long)duration_ms);
+    }
+    return refreshed;
+}
+
 static bool clear_semantic_emotion(const char *expected_source,
                                    uint32_t expected_revision,
                                    bool require_owner) {
@@ -597,7 +637,8 @@ bool nuwax_state_bridge_clear_semantic_emotion_if_owner(
     return clear_semantic_emotion(source, owner_revision, true);
 }
 
-void nuwax_state_bridge_update(nuwax_app_state_t app_state) {
+bool nuwax_state_bridge_update_owned(nuwax_app_state_t app_state,
+                                     uint32_t publication_seq) {
     bool semantic_emotion_valid = false;
     nuwax_emotion_t semantic_emotion = NUWAX_EMOTION_NEUTRAL;
     bool touch_active = false;
@@ -611,7 +652,7 @@ void nuwax_state_bridge_update(nuwax_app_state_t app_state) {
     /* Re-publishing the same lifecycle state is synchronization, not a new
      * lifecycle transition. Preserve a short semantic lease accepted after
      * LISTENING was entered (for example a no-TTS turn). */
-    const bool lifecycle_changed = app_state != s_last_app_state;
+
     switch (app_state) {
         case NUWAX_APP_STATE_IDLE: dialog = NUWAX_DIALOG_READY; break;
         case NUWAX_APP_STATE_LISTENING: dialog = NUWAX_DIALOG_LISTENING; break;
@@ -622,6 +663,22 @@ void nuwax_state_bridge_update(nuwax_app_state_t app_state) {
         default: dialog = NUWAX_DIALOG_RECOGNIZING; break;
     }
     taskENTER_CRITICAL(&s_bridge_state_mux);
+    /* Validate the source order before touching policy or lifecycle state.
+     * Mailbox field revisions fence patches delayed after this lock. */
+    if (s_lifecycle_publication_seq != 0U &&
+        (publication_seq == 0U ||
+         (int32_t)(publication_seq - s_lifecycle_publication_seq) < 0)) {
+        taskEXIT_CRITICAL(&s_bridge_state_mux);
+        return false;
+    }
+    if (publication_seq != 0U &&
+        publication_seq == s_lifecycle_publication_seq) {
+        const bool same = app_state == s_current_app_state;
+        taskEXIT_CRITICAL(&s_bridge_state_mux);
+        return same;
+    }
+    s_lifecycle_publication_seq = publication_seq;
+    const bool lifecycle_changed = app_state != s_last_app_state;
     ensure_policy_initialized_locked();
     if (lifecycle_changed) {
         (void)nuwax_emotion_display_policy_enter_lifecycle(
@@ -733,6 +790,7 @@ void nuwax_state_bridge_update(nuwax_app_state_t app_state) {
              (int)s.cloud,
              s.low_power ? 1 : 0);
     publish_app_state_delta(app_state, &s, fields, bridge_revision);
+    return true;
 }
 
 static void set_waiting_question(bool active) {
@@ -767,6 +825,10 @@ static void set_waiting_question(bool active) {
                             NUWAX_APP_SHELL_STATE_SEMANTIC_EMOTION |
                             NUWAX_APP_SHELL_STATE_TOUCH_EMOTION,
                         bridge_revision);
+}
+
+void nuwax_state_bridge_update(nuwax_app_state_t app_state) {
+    (void)nuwax_state_bridge_update_owned(app_state, 0U);
 }
 
 void nuwax_state_bridge_start_waiting_question(void) {

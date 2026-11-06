@@ -1,0 +1,82 @@
+[
+  {
+    "check": "verify-sd-formal-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-board-power-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-startup-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-interaction-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-audio-owner-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-network-recovery-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-provision-finish-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-cloud-resume-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-link-convergence-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-shake-gap-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-playback-startup-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-runtime-hardening-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-wake-evidence-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-jitter-stability-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-rejected-playback-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-uplink-handoff-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-sd-media-admission-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-uplink-reaper-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-json-resource-build.py",
+    "exit_code": 0
+  },
+  {
+    "check": "verify-ota-identity-build.py",
+    "exit_code": 0
+  }
+]

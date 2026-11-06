@@ -1,0 +1,44 @@
+2026-10-09 security recheck — execution record
+
+Repository:
+C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2
+
+Reproducible command from repository root:
+powershell -NoProfile -ExecutionPolicy Bypass -File tmp/product-launch-recheck-20261009/security/reproduce.ps1
+
+Equivalent compilation for mode 0 (repeat with 1):
+gcc -std=c11 -Wall -Wextra -Werror -DCONFIG_NUWAX_CLOUD_CONFIG_ALLOW_INSECURE_WS=0 -I<artifact-dir>/stubs -I<repo-root>/main/nuwax_provision_new <artifact-dir>/cloud_config_recheck.c -o <temporary-output>/cloud-config-0.exe
+<temporary-output>/cloud-config-0.exe legacy_ws
+<temporary-output>/cloud-config-0.exe existing_wss
+
+The harness includes the current production nuwax_cloud_config.c directly.
+Only NVS, error/log headers, and the device UID are stubbed. NVS is an isolated
+in-memory model; all test values are synthetic. No BLE, network, board, real
+NVS flash, eFuse, production credentials, or deployed cloud were accessed.
+The include uses the supplied include search path, so the artifact directory
+can be copied into docs/audits/2026-10-09-product-recheck/security unchanged.
+
+Result: four process invocations, twelve PASS assertions, both compiler modes
+compiled with warnings-as-errors. See cloud-config-recheck.log.
+
+Proven behaviors:
+1. Existing ws active config is erased by actual initialization when compiled
+   with ALLOW_INSECURE_WS=0. This is a naive-remediation migration hazard; the
+   audited release uses flag=1 and retains that config.
+2. Existing wss active config survives initialization in either mode.
+3. An unlisted syntactically valid wss host and an unverified synthetic secret
+   can be staged and committed locally in either mode.
+4. A mismatched device ID is rejected.
+
+Not established by this host test:
+Live BLE takeover, real APP QR compatibility, cloud-account takeover,
+cross-account audio visibility, TLS peak memory, RF/network behavior,
+flash wear or real power-cut persistence, any actual OTA execution.
+These need the explicit hardware/cloud acceptance cases in the report.
+
+Read-only source checks additionally covered provisioning Security 2, cloud
+config commit, WebSocket TLS and hello, OTA manifest/transport/controller,
+release sequencing and boot health, actual release sdkconfig, partition table,
+and matching IDF 6.0 source for SRP, NVS and app signature verification.
+No full product suite was run by this sub-audit. No production source changed.
+Do not copy generated .exe files into the audit archive.

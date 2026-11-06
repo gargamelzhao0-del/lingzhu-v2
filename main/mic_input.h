@@ -36,9 +36,13 @@ typedef struct {
     void *rx_handle;
     void *raw_samples;
     size_t raw_capacity;
+    /* Shared RX keeps unconsumed whole-TDM samples in its own buffer. */
+    size_t rx_cached_offset;
+    size_t rx_cached_bytes;
     nuwax_mic_raw_stats_t last_raw_stats;
     nuwax_mic_owner_t owner;
     nuwax_audio_board_lease_t board_lease;
+    nuwax_audio_board_ref_t board_ref;
     uint32_t rx_overflow_count;
     uint32_t rx_overflow_events;
     uint32_t rx_startup_resyncs;
@@ -50,6 +54,9 @@ typedef struct {
     bool rx_overflow_recovery_pending;
 } nuwax_mic_input_t;
 
+/* Zero-initialize caller storage and serialize its lifecycle. An owner-busy
+ * or owner-lock failure preserves the object; successful admission initializes
+ * it. Live instances may only be moved by the existing owner-transfer API. */
 esp_err_t nuwax_mic_input_init(nuwax_mic_input_t *mic);
 esp_err_t nuwax_mic_input_init_with_owner(nuwax_mic_input_t *mic, nuwax_mic_owner_t owner);
 esp_err_t nuwax_mic_input_read_pcm16(nuwax_mic_input_t *mic,

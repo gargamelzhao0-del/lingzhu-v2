@@ -2,6 +2,28 @@
 
 #include <string.h>
 
+bool nuwax_turn_guard_accepts_rx_rejection(const nuwax_turn_guard_t *guard,
+                                          uint32_t awake_generation,
+                                          const char *request_id,
+                                          const char *turn_id,
+                                          const char *playback_id) {
+    if (!guard || !guard->active || guard->speaker_generation != 0U ||
+        (guard->phase != NUWAX_TURN_PHASE_WAIT_TEXT &&
+         guard->phase != NUWAX_TURN_PHASE_WAIT_TTS &&
+         guard->phase != NUWAX_TURN_PHASE_WAIT_TTS_RETRY) ||
+        !turn_id || !turn_id[0] || !playback_id || !playback_id[0]) {
+        return false;
+    }
+    /* A rejection cannot bootstrap an owner or cancel an unrelated wait.
+     * Require an already known identity, beyond permissive BEGIN binding. */
+    const bool anchored =
+        (guard->request_id[0] && request_id && request_id[0] &&
+         strcmp(guard->request_id, request_id) == 0) ||
+        (guard->turn_id[0] && strcmp(guard->turn_id, turn_id) == 0);
+    return anchored && nuwax_turn_guard_matches(
+        guard, awake_generation, request_id, turn_id, playback_id);
+}
+
 static void copy_id(char *out, size_t out_size, const char *value) {
     if (!out || out_size == 0U) {
         return;

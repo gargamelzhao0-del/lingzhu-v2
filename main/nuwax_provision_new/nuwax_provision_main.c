@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "json_resource_budget.h"
 #include "board/nuwax_board.h"
 #include "esp_app_desc.h"
 #include "esp_check.h"
@@ -31,8 +32,10 @@
 
 #include "nuwax_device_uid.h"
 #include "nuwax_cloud_config.h"
+#include "nuwax_pair_commit.h"
 #include "nuwax_provision_policy.h"
 #include "nuwax_provision_qr_payload.h"
+#include "wake_word_detector.h"
 #include "wifi_manager.h"
 
 static const char *TAG = "nuwax_provision";
@@ -47,6 +50,7 @@ static const char *const VOX_CONFIG_EP = "vox-config";
 #define PROVISION_FINALIZE_RETRY_BASE_MS 250U
 #define PROVISION_FINALIZE_RETRY_MAX_MS 4000U
 #define PROVISION_FINALIZE_RESTART_FAILURES 8U
+#define PROVISION_NVS_FLASH_GUARD_TIMEOUT_MS 500U
 #ifndef CONFIG_NUWAX_PROVISION_SECURITY_SESSION_TIMEOUT_MS
 #define CONFIG_NUWAX_PROVISION_SECURITY_SESSION_TIMEOUT_MS 15000
 #endif
@@ -72,6 +76,14 @@ static const char *const VOX_CONFIG_EP = "vox-config";
 #define CONFIG_NUWAX_PROVISION_VOX_CONFIG_JOB_TIMEOUT_MS 15000
 #endif
 #define PROVISION_INTERNAL_FREE_MIN_BYTES 32768U
+/* Runtime reprovisioning reaches this guard only after the wake model,
+ * speaker output and live AEC owners have been quiesced, and after NimBLE
+ * plus both application endpoints have allocated their steady-state objects.
+ * The production heap is quantized in 512-byte blocks; allowing one block of
+ * allocator jitter avoids rejecting a valid runtime start when the measured
+ * total is 133 bytes below the boot-profile floor.  The strict floor remains
+ * in force for boot provisioning and for Wi-Fi recovery diagnostics. */
+#define PROVISION_RUNTIME_INTERNAL_FREE_MIN_BYTES 32256U
 /* Runtime provisioning retains the internal LVGL and display DMA buffers.
  * On the production S3 heap this leaves a 31 x 512-byte contiguous block
  * after audio, AEC, wake and TLS teardown. NimBLE has already completed its
@@ -81,6 +93,9 @@ static const char *const VOX_CONFIG_EP = "vox-config";
 #define PROVISION_INTERNAL_LARGEST_MIN_BYTES 15360U
 #define PROVISION_INTERNAL_STARTUP_RESERVE_BYTES 15872U
 #define PROVISION_DMA_FREE_MIN_BYTES 16384U
+_Static_assert(PROVISION_RUNTIME_INTERNAL_FREE_MIN_BYTES <
+                   PROVISION_INTERNAL_FREE_MIN_BYTES,
+               "runtime provisioning floor must remain below the strict boot floor");
 #define PERSIST_RETRY_COUNT 3
 #define PERSIST_RETRY_DELAY_MS 100U
 #ifndef CONFIG_NUWAX_PROVISION_SUCCESS_BLE_HOLD_MS
@@ -88,6 +103,7 @@ static const char *const VOX_CONFIG_EP = "vox-config";
 #endif
 static bool s_initialized;
 static atomic_bool s_started = ATOMIC_VAR_INIT(false);
+static bool s_runtime_start;
 typedef enum {
     PROVISION_CANCEL_DISABLED = 0,
     PROVISION_CANCEL_AVAILABLE,
@@ -129,6 +145,9 @@ typedef struct {
     nuwax_provision_wifi_owner_t wifi_owner;
     uint32_t owner_generation;
     uint32_t wifi_attempt_owner_generation;
+    uint32_t success_query_revision;
+    uint32_t success_read_owner_generation;
+    int64_t success_response_read_us;
     bool wifi_candidate_hash_valid;
     uint32_t wifi_candidate_hash;
     bool failed_attempt_release_pending;
@@ -150,6 +169,52 @@ static provision_state_t s_state = {
     .outcome = NUWAX_PROVISION_OUTCOME_NONE,
 };
 static int64_t s_supervisor_heartbeat_us;
+
+/* Never reuse response tags across reset_state()/BLE connection generations. */
+static uint32_t s_success_query_sequence;
+extern esp_err_t __real_network_prov_mgr_done(void);
+
+esp_err_t __wrap_network_prov_mgr_done(void) {
+    const esp_err_t err = __real_network_prov_mgr_done();
+    if (err != ESP_OK) {
+        return err;
+    }
+    /* The Wi-Fi manager calls done only for a CONNECTED status response.
+     * The transport separately confirms that this exact response was read. */
+    portENTER_CRITICAL(&s_state_lock);
+    if (s_state.ble_connected && s_state.security_secured &&
+        s_state.wifi_owner == NUWAX_PROVISION_WIFI_OWNER_APP &&
+        s_state.got_ip && !s_state.app_abort_pending) {
+        if (++s_success_query_sequence == 0) {
+            ++s_success_query_sequence;
+        }
+        s_state.success_query_revision = s_success_query_sequence;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return err;
+}
+
+uint32_t nuwax_provision_success_query_revision(void) {
+    portENTER_CRITICAL(&s_state_lock);
+    const uint32_t revision = s_state.success_query_revision;
+    portEXIT_CRITICAL(&s_state_lock);
+    return revision;
+}
+
+void nuwax_provision_success_response_read(uint32_t revision,
+                                           uint16_t conn_handle) {
+    portENTER_CRITICAL(&s_state_lock);
+    if (revision != 0 && revision == s_state.success_query_revision &&
+        s_state.ble_connected && s_state.security_secured &&
+        conn_handle == s_state.ble_conn_handle &&
+        s_state.wifi_owner == NUWAX_PROVISION_WIFI_OWNER_APP &&
+        s_state.got_ip && !s_state.app_abort_pending &&
+        s_state.success_response_read_us == 0) {
+        s_state.success_response_read_us = esp_timer_get_time();
+        s_state.success_read_owner_generation = s_state.owner_generation;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+}
 
 typedef struct {
     uint8_t *input;
@@ -173,13 +238,12 @@ static bool s_has_staged_vox_config;
 #define REPROVISION_RECORD_VERSION 2U
 #define REPROVISION_RECORD_FLAG_WIFI_VERIFIED (1U << 0)
 #define REPROVISION_RECORD_FLAG_CLOUD_ACTIVE (1U << 1)
+#define REPROVISION_RECORD_FLAG_BINDING_REQUIRED (1U << 2)
 #define REPROVISION_RECORD_REQUIRED_FLAGS                                      \
     (REPROVISION_RECORD_FLAG_WIFI_VERIFIED |                                  \
      REPROVISION_RECORD_FLAG_CLOUD_ACTIVE)
 #define WIFI_VERIFIED_RECORD_MAGIC 0x4e585658U
 #define WIFI_VERIFIED_NVS_KEY "wifi_verified"
-#define WIFI_COMMIT_RECORD_MAGIC 0x4e585643U
-#define WIFI_COMMIT_NVS_KEY "commit_pending"
 #define LOW_MEMORY_BOOT_NVS_KEY "lowmem_boot"
 
 typedef struct {
@@ -194,13 +258,14 @@ typedef struct {
     uint32_t credentials_hash;
 } wifi_verified_record_t;
 
-typedef struct {
-    uint32_t magic;
-    uint32_t credentials_hash;
-} wifi_commit_record_t;
-
 static atomic_bool s_force_reprovision = ATOMIC_VAR_INIT(false);
+static atomic_bool s_binding_required = ATOMIC_VAR_INIT(false);
+static atomic_bool s_binding_rejection_durable = ATOMIC_VAR_INIT(false);
 static reprovision_record_t s_reprovision_record;
+/* True only when the rollback record has reached flash.  A volatile record is
+ * still sufficient to recover a failed in-process rebind, but must never be
+ * mistaken for crash-safe state after a reboot. */
+static bool s_reprovision_record_durable;
 static bool s_event_handlers_registered;
 static bool s_manager_initialized;
 static bool s_restart_on_unrecoverable = true;
@@ -276,6 +341,20 @@ static bool provision_memory_is_low(const provision_memory_snapshot_t *memory) {
         memory->internal_free, memory->internal_largest, memory->dma_free,
         PROVISION_INTERNAL_FREE_MIN_BYTES,
         PROVISION_INTERNAL_LARGEST_MIN_BYTES,
+        PROVISION_DMA_FREE_MIN_BYTES);
+}
+
+static bool provision_memory_is_low_for_start(
+    const provision_memory_snapshot_t *memory, bool runtime_start) {
+    if (!memory) {
+        return true;
+    }
+    const size_t internal_free_min = runtime_start
+        ? PROVISION_RUNTIME_INTERNAL_FREE_MIN_BYTES
+        : PROVISION_INTERNAL_FREE_MIN_BYTES;
+    return nuwax_provision_memory_below_reserve(
+        memory->internal_free, memory->internal_largest, memory->dma_free,
+        internal_free_min, PROVISION_INTERNAL_LARGEST_MIN_BYTES,
         PROVISION_DMA_FREE_MIN_BYTES);
 }
 
@@ -411,44 +490,6 @@ esp_err_t nuwax_provision_main_request_low_memory_boot_profile(void) {
     return err;
 }
 
-static esp_err_t write_wifi_commit_marker(const wifi_config_t *config) {
-    if (!config || config->sta.ssid[0] == '\0') {
-        return ESP_ERR_INVALID_ARG;
-    }
-    const wifi_commit_record_t record = {
-        .magic = WIFI_COMMIT_RECORD_MAGIC,
-        .credentials_hash = wifi_credentials_hash(config),
-    };
-    nvs_handle_t nvs;
-    ESP_RETURN_ON_ERROR(nvs_open(REPROVISION_NVS_NAMESPACE, NVS_READWRITE, &nvs),
-                        TAG, "open Wi-Fi commit marker failed");
-    esp_err_t err = nvs_set_blob(nvs, WIFI_COMMIT_NVS_KEY,
-                                 &record, sizeof(record));
-    if (err == ESP_OK) {
-        err = nvs_commit(nvs);
-    }
-    nvs_close(nvs);
-    return err;
-}
-
-static bool wifi_commit_marker_matches(const wifi_config_t *config) {
-    if (!config || config->sta.ssid[0] == '\0') {
-        return false;
-    }
-    wifi_commit_record_t record = {0};
-    nvs_handle_t nvs;
-    if (nvs_open(REPROVISION_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
-        return false;
-    }
-    size_t length = sizeof(record);
-    const esp_err_t err = nvs_get_blob(nvs, WIFI_COMMIT_NVS_KEY,
-                                       &record, &length);
-    nvs_close(nvs);
-    return err == ESP_OK && length == sizeof(record) &&
-           record.magic == WIFI_COMMIT_RECORD_MAGIC &&
-           record.credentials_hash == wifi_credentials_hash(config);
-}
-
 static void unregister_provisioning_handlers(void) {
     if (!s_event_handlers_registered) {
         return;
@@ -540,7 +581,16 @@ static void set_force_reprovision(bool enabled) {
                           memory_order_release);
 }
 
+static bool previous_pair_unusable(void) {
+    return nuwax_provision_main_binding_required() ||
+           nuwax_pair_commit_blocks_rollback();
+}
+
 bool nuwax_provision_main_request_runtime_cancel(void) {
+    if (previous_pair_unusable()) {
+        ESP_LOGW(TAG, "provisioning cancel rejected: previous pair unavailable or commit in progress");
+        return false;
+    }
     int expected = PROVISION_CANCEL_AVAILABLE;
     if (atomic_compare_exchange_strong_explicit(
             &s_cancel_state, &expected, PROVISION_CANCEL_REQUESTED,
@@ -560,8 +610,31 @@ bool nuwax_provision_main_request_runtime_cancel(void) {
 }
 
 static bool provisioning_cancel_requested(void) {
-    return atomic_load_explicit(&s_cancel_state, memory_order_acquire) ==
+    return !previous_pair_unusable() &&
+           atomic_load_explicit(&s_cancel_state, memory_order_acquire) ==
            PROVISION_CANCEL_REQUESTED;
+}
+
+bool nuwax_provision_main_binding_required(void) {
+    return atomic_load_explicit(&s_binding_required, memory_order_acquire);
+}
+
+void nuwax_provision_main_note_binding_rejected(void) {
+    atomic_store_explicit(&s_binding_required, true, memory_order_release);
+    atomic_store_explicit(&s_binding_rejection_durable, false, memory_order_release);
+    atomic_store_explicit(&s_cancel_state, PROVISION_CANCEL_DISABLED,
+                          memory_order_release);
+}
+
+static void binding_replaced_by_committed_pair(void) {
+    /* Called only after the APP's complete Wi-Fi/cloud transaction commits,
+     * including recovery from its durable commit marker. The normal cloud
+     * application-readiness fence still verifies every new connection. */
+    atomic_store_explicit(&s_binding_rejection_durable, false, memory_order_release);
+    atomic_store_explicit(&s_binding_required, false, memory_order_release);
+    /* Deferred NVS cleanup belongs to the completed pair. Do not let a later
+     * menu request reuse that older rollback snapshot in the current boot. */
+    set_force_reprovision(false);
 }
 
 static nuwax_provision_outcome_t finish_runtime_cancel(void) {
@@ -683,6 +756,9 @@ static void provisioning_manager_app_event_handler(void *user_data,
     }
     portENTER_CRITICAL(&s_state_lock);
     s_state.wifi_credentials_started = true;
+    s_state.success_query_revision = 0;
+    s_state.success_response_read_us = 0;
+    s_state.success_read_owner_generation = 0;
     s_state.wifi_config_locked = true;
     s_state.wifi_marker_clear_pending = true;
     s_state.wifi_candidate_hash = wifi_credentials_hash(wifi_config);
@@ -911,6 +987,9 @@ static void provisioning_event_handler(void *arg, esp_event_base_t event_base,
                 s_state.app_abort_pending = false;
                 s_state.wifi_owner = NUWAX_PROVISION_WIFI_OWNER_APP;
                 s_state.owner_generation++;
+                s_state.success_query_revision = 0;
+                s_state.success_response_read_us = 0;
+                s_state.success_read_owner_generation = 0;
                 s_state.new_wifi_attempt_active = false;
                 s_state.wifi_attempt_owner_generation = 0;
                 s_state.wifi_candidate_hash_valid = false;
@@ -1009,7 +1088,7 @@ static esp_err_t device_info_handler(uint32_t session_id, const uint8_t *inbuf,
     if (!inbuf || inlen <= 0 || !outbuf || !outlen) {
         return ESP_ERR_INVALID_ARG;
     }
-    cJSON *request = cJSON_ParseWithLength((const char *)inbuf, (size_t)inlen);
+    cJSON *request = nuwax_json_parse_with_length((const char *)inbuf, (size_t)inlen);
     if (!cJSON_IsObject(request)) {
         cJSON_Delete(request);
         return ESP_ERR_INVALID_ARG;
@@ -1156,7 +1235,7 @@ static esp_err_t vox_config_process(const uint8_t *inbuf, ssize_t inlen,
     if (!inbuf || inlen <= 0 || !outbuf || !outlen) {
         return ESP_ERR_INVALID_ARG;
     }
-    cJSON *request = cJSON_ParseWithLength((const char *)inbuf, (size_t)inlen);
+    cJSON *request = nuwax_json_parse_with_length((const char *)inbuf, (size_t)inlen);
     if (!cJSON_IsObject(request)) {
         cJSON_Delete(request);
         return vox_config_response(false, "VOX_CONFIG_INVALID", NULL,
@@ -1189,7 +1268,7 @@ static esp_err_t vox_config_process(const uint8_t *inbuf, ssize_t inlen,
         return vox_config_response(false, "VOX_CONFIG_SESSION_REQUIRED", NULL,
                                    outbuf, outlen);
     }
-    if (state.wifi_config_locked) {
+    if (state.wifi_config_locked || nuwax_pair_commit_pending()) {
         const bool identical = s_has_staged_vox_config &&
             memcmp(&config, &s_staged_vox_config, sizeof(config)) == 0;
         if (identical) {
@@ -1431,27 +1510,17 @@ static esp_err_t prepare_security2(void) {
 }
 
 static esp_err_t clear_reprovision_record(void) {
+    if (nuwax_pair_commit_blocks_rollback()) return ESP_ERR_INVALID_STATE;
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(REPROVISION_NVS_NAMESPACE, NVS_READWRITE, &nvs);
-    if (err != ESP_OK) {
-        return err;
-    }
+    if (err != ESP_OK) return err;
     err = nvs_erase_key(nvs, REPROVISION_NVS_KEY);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        err = ESP_OK;
-    }
-    if (err == ESP_OK) {
-        err = nvs_erase_key(nvs, WIFI_COMMIT_NVS_KEY);
-        if (err == ESP_ERR_NVS_NOT_FOUND) {
-            err = ESP_OK;
-        }
-    }
-    if (err == ESP_OK) {
-        err = nvs_commit(nvs);
-    }
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_commit(nvs);
     nvs_close(nvs);
-    if (err == ESP_OK) {
+    if (err == ESP_OK || !s_reprovision_record_durable) {
         memset(&s_reprovision_record, 0, sizeof(s_reprovision_record));
+        s_reprovision_record_durable = false;
         set_force_reprovision(false);
     }
     return err;
@@ -1467,6 +1536,7 @@ static bool reprovision_record_can_restore(
 }
 
 static esp_err_t save_reprovision_record(void) {
+    if (nuwax_pair_commit_blocks_rollback()) return ESP_ERR_INVALID_STATE;
     wifi_config_t wifi_config = {0};
     ESP_RETURN_ON_ERROR(esp_wifi_get_config(WIFI_IF_STA, &wifi_config), TAG,
                         "read current Wi-Fi config for reversible reprovision failed");
@@ -1500,25 +1570,59 @@ static esp_err_t save_reprovision_record(void) {
         .flags = REPROVISION_RECORD_REQUIRED_FLAGS,
         .wifi_config = wifi_config,
     };
-    nvs_handle_t nvs;
-    ESP_RETURN_ON_ERROR(nvs_open(REPROVISION_NVS_NAMESPACE, NVS_READWRITE, &nvs),
-                        TAG, "open reprovision NVS failed");
-    esp_err_t err = nvs_set_blob(nvs, REPROVISION_NVS_KEY, &record, sizeof(record));
-    if (err == ESP_OK) {
-        err = nvs_erase_key(nvs, WIFI_COMMIT_NVS_KEY);
-        if (err == ESP_ERR_NVS_NOT_FOUND) {
-            err = ESP_OK;
-        }
+    if (nuwax_provision_main_binding_required()) {
+        record.flags |= REPROVISION_RECORD_FLAG_BINDING_REQUIRED;
     }
+    /* Keep a RAM copy before touching NVS.  If the diagnostic queue or an old
+     * stale key has exhausted NVS, the current boot can still complete a
+     * bounded rebind and roll back safely without losing the old Wi-Fi. */
+    s_reprovision_record = record;
+    s_reprovision_record_durable = false;
+    set_force_reprovision(true);
+    nvs_handle_t nvs;
+    esp_err_t open_err = nvs_open(REPROVISION_NVS_NAMESPACE,
+                                  NVS_READWRITE,
+                                  &nvs);
+    if (open_err != ESP_OK) {
+        if (open_err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+            ESP_LOGW(TAG,
+                     "reprovision rollback record is volatile for this boot; NVS is full");
+        } else {
+            memset(&s_reprovision_record, 0, sizeof(s_reprovision_record));
+            set_force_reprovision(false);
+        }
+        return open_err;
+    }
+    esp_err_t err = nvs_set_blob(nvs, REPROVISION_NVS_KEY, &record, sizeof(record));
     if (err == ESP_OK) {
         err = nvs_commit(nvs);
     }
     nvs_close(nvs);
     if (err == ESP_OK) {
-        s_reprovision_record = record;
-        set_force_reprovision(true);
+        s_reprovision_record_durable = true;
+        atomic_store_explicit(&s_binding_rejection_durable,
+            (record.flags & REPROVISION_RECORD_FLAG_BINDING_REQUIRED) != 0U,
+            memory_order_release);
+        return ESP_OK;
     }
+    if (err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+        ESP_LOGW(TAG,
+                 "reprovision rollback record is volatile for this boot; NVS is full");
+        return err;
+    }
+    memset(&s_reprovision_record, 0, sizeof(s_reprovision_record));
+    set_force_reprovision(false);
     return err;
+}
+
+void nuwax_provision_main_discard_volatile_rollback(void) {
+    if (s_reprovision_record_durable) return;
+    memset(&s_reprovision_record, 0, sizeof(s_reprovision_record));
+    set_force_reprovision(false);
+    atomic_store_explicit(&s_cancel_state, PROVISION_CANCEL_DISABLED,
+                          memory_order_release);
+    ESP_LOGW(TAG,
+             "runtime reprovision deferred until rollback can be persisted; current Wi-Fi retained");
 }
 
 static esp_err_t load_reprovision_record(void) {
@@ -1535,18 +1639,29 @@ static esp_err_t load_reprovision_record(void) {
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         return ESP_OK;
     }
-    if (err != ESP_OK || length != sizeof(record) ||
+    if (err != ESP_OK && err != ESP_ERR_NVS_INVALID_LENGTH) return err;
+    if (err == ESP_ERR_NVS_INVALID_LENGTH || length != sizeof(record) ||
         !reprovision_record_can_restore(&record)) {
-        ESP_LOGW(TAG, "discarding invalid reversible reprovision record");
-        return clear_reprovision_record();
+        ESP_RETURN_ON_ERROR(nuwax_pair_commit_require_app(), TAG,
+                            "persist ambiguous rollback repair failed");
+        set_force_reprovision(true);
+        ESP_LOGW(TAG, "invalid rollback record retained; fresh APP pair required");
+        return ESP_OK;
     }
     s_reprovision_record = record;
+    s_reprovision_record_durable = true;
+    if (record.flags & REPROVISION_RECORD_FLAG_BINDING_REQUIRED) {
+        atomic_store_explicit(&s_binding_required, true, memory_order_release);
+        atomic_store_explicit(&s_binding_rejection_durable, true, memory_order_release);
+    }
     set_force_reprovision(true);
     return ESP_OK;
 }
 
 bool nuwax_provision_main_requires_low_memory_boot_profile(void) {
-    const esp_err_t reprovision_err = load_reprovision_record();
+    const esp_err_t pair_err = nuwax_pair_commit_load();
+    const esp_err_t reprovision_err = pair_err != ESP_OK ? pair_err :
+        (nuwax_pair_commit_blocks_rollback() ? ESP_OK : load_reprovision_record());
     const bool cloud_ready = nuwax_cloud_config_init() == ESP_OK &&
                              nuwax_cloud_config_has_config();
     const bool marker_present = wifi_verified_marker_exists();
@@ -1565,7 +1680,8 @@ bool nuwax_provision_main_requires_low_memory_boot_profile(void) {
     }
 
     const bool required = nuwax_provision_boot_profile_required(
-        reprovision_err == ESP_OK, force_reprovision_requested(), cloud_ready,
+        reprovision_err == ESP_OK, force_reprovision_requested() ||
+            nuwax_pair_commit_blocks_rollback(), cloud_ready,
         marker_present, marker_matches, app_wifi_present,
         recovery_err != ESP_OK || low_memory_recovery_requested);
     ESP_LOGI(TAG,
@@ -1576,10 +1692,31 @@ bool nuwax_provision_main_requires_low_memory_boot_profile(void) {
     return required;
 }
 
+static esp_err_t recover_provisioned_pair(void) {
+    ESP_RETURN_ON_ERROR(nuwax_pair_commit_load(), TAG, "load pair journal failed");
+    if (nuwax_pair_commit_pending()) {
+        ESP_RETURN_ON_ERROR(nuwax_pair_commit_complete(write_wifi_verified_marker,
+                                wifi_verified_marker_matches), TAG,
+                            "recover Wi-Fi/cloud pair failed");
+        memset(&s_reprovision_record, 0, sizeof(s_reprovision_record));
+        s_reprovision_record_durable = false;
+        binding_replaced_by_committed_pair();
+        ESP_LOGW(TAG, "completed interrupted Wi-Fi/cloud transaction");
+    }
+    if (nuwax_pair_commit_requires_app()) {
+        set_force_reprovision(true);
+        atomic_store_explicit(&s_cancel_state, PROVISION_CANCEL_DISABLED,
+                              memory_order_release);
+        return ESP_OK;
+    }
+    return load_reprovision_record();
+}
+
 esp_err_t nuwax_provision_main_init(void) {
     if (s_initialized) {
         return ESP_OK;
     }
+    s_runtime_start = false;
     esp_err_t err = nuwax_device_uid_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "uid init failed: %s", esp_err_to_name(err));
@@ -1590,6 +1727,8 @@ esp_err_t nuwax_provision_main_init(void) {
         ESP_LOGE(TAG, "cloud config init failed: %s", esp_err_to_name(err));
         return err;
     }
+    err = recover_provisioned_pair();
+    if (err != ESP_OK) return err;
     uint8_t sta_mac[6] = {0};
     err = esp_wifi_get_mac(WIFI_IF_STA, sta_mac);
     if (err != ESP_OK) {
@@ -1665,13 +1804,6 @@ esp_err_t nuwax_provision_main_init(void) {
         ESP_LOGE(TAG, "read provisioned state failed: %s", esp_err_to_name(err));
         goto fail;
     }
-    err = load_reprovision_record();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "load reversible reprovision request failed: %s",
-                 esp_err_to_name(err));
-        goto fail;
-    }
-
     wifi_config_t driver_config = {0};
     err = esp_wifi_get_config(WIFI_IF_STA, &driver_config);
     if (err != ESP_OK) {
@@ -1689,26 +1821,6 @@ esp_err_t nuwax_provision_main_init(void) {
            sizeof(driver_config.sta.ssid));
     memcpy(driver_password, driver_config.sta.password,
            sizeof(driver_config.sta.password));
-    if (has_driver_credentials && force_reprovision_requested() &&
-        wifi_commit_marker_matches(&driver_config) &&
-        !nuwax_cloud_config_has_pending() &&
-        nuwax_cloud_config_has_config() &&
-        nuwax_wifi_saved_credentials_match(driver_ssid, driver_password)) {
-        /* Power may fail after the new cloud/Wi-Fi pair commits but before the
-         * ordinary success cleanup. A durable candidate marker plus an erased
-         * cloud pending slot proves that rollback would now mix generations. */
-        err = write_wifi_verified_marker(&driver_config);
-        if (err == ESP_OK) {
-            err = clear_reprovision_record();
-        }
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "recover committed provisioning transaction failed: %s",
-                     esp_err_to_name(err));
-            goto fail;
-        }
-        verified = true;
-        ESP_LOGW(TAG, "completed interrupted provisioning transaction");
-    }
     if (has_driver_credentials && !verified && !force_reprovision_requested() &&
         nuwax_cloud_config_has_config() &&
         nuwax_wifi_saved_credentials_match(driver_ssid, driver_password)) {
@@ -1724,7 +1836,7 @@ esp_err_t nuwax_provision_main_init(void) {
             goto fail;
         }
     }
-    if (has_driver_credentials && verified &&
+    if (has_driver_credentials && verified && !nuwax_pair_commit_requires_app() &&
         !nuwax_wifi_saved_credentials_match(driver_ssid, driver_password)) {
         err = nuwax_wifi_import_driver_credentials();
         if (err != ESP_OK) {
@@ -1737,7 +1849,8 @@ esp_err_t nuwax_provision_main_init(void) {
 
     const bool cloud_ready = nuwax_cloud_config_has_config();
     s_provisioned_pair_ready = nuwax_provision_pair_ready(
-        has_driver_credentials, verified, cloud_ready);
+        has_driver_credentials, verified, cloud_ready) &&
+        !nuwax_pair_commit_blocks_rollback();
     if (has_driver_credentials && !force_reprovision_requested() &&
         (!verified || !cloud_ready)) {
         ESP_LOGW(TAG,
@@ -1746,7 +1859,7 @@ esp_err_t nuwax_provision_main_init(void) {
     }
     atomic_store_explicit(
         &s_cancel_state,
-        force_reprovision_requested() &&
+        !previous_pair_unusable() && force_reprovision_requested() &&
                 reprovision_record_can_restore(&s_reprovision_record)
             ? PROVISION_CANCEL_AVAILABLE
             : PROVISION_CANCEL_DISABLED,
@@ -1765,11 +1878,13 @@ fail:
 
 bool nuwax_provision_main_should_auto_enter(void) {
     return s_initialized &&
-           (!s_provisioned_pair_ready || force_reprovision_requested());
+           (!s_provisioned_pair_ready || force_reprovision_requested() ||
+            previous_pair_unusable());
 }
 
 bool nuwax_provision_main_has_complete_pair(void) {
-    return s_initialized && s_provisioned_pair_ready;
+    return s_initialized && s_provisioned_pair_ready &&
+           !previous_pair_unusable();
 }
 
 static esp_err_t retry_persist_operation(esp_err_t (*operation)(void),
@@ -1806,6 +1921,7 @@ static esp_err_t retry_write_wifi_verified_marker(const wifi_config_t *config) {
 }
 
 static esp_err_t restore_flash_credentials_after_candidate(void) {
+    if (nuwax_pair_commit_pending()) return ESP_ERR_INVALID_STATE;
     wifi_config_t restore_config = {0};
     const bool restore_old = force_reprovision_requested() &&
                              reprovision_record_can_restore(
@@ -1882,41 +1998,44 @@ static esp_err_t reset_manager_wifi_state(provision_wifi_reset_kind_t kind,
     if (reset_err == ESP_OK) {
         return ESP_OK;
     }
+    /* Only a state mismatch may select the generic abort reset. A driver or
+     * storage error must stay pending; the alternate STARTED fast path could
+     * otherwise falsely acknowledge a partially completed reset. */
+    if (!failed_attempt || reset_err != ESP_ERR_INVALID_STATE) {
+        return reset_err;
+    }
 
     ESP_LOGW(TAG,
              "%s: primary provisioning state reset failed kind=%s error=%s; trying alternate reset",
              reason, failed_attempt ? "failed_attempt" : "abort_attempt",
              esp_err_to_name(reset_err));
-    return failed_attempt
-               ? network_prov_mgr_reset_wifi_sm_state_for_reprovision()
-               : network_prov_mgr_reset_wifi_sm_state_on_failure();
+    return network_prov_mgr_reset_wifi_sm_state_for_reprovision();
+}
+
+static esp_err_t discard_uncommitted_pair_candidate(void) {
+    if (nuwax_pair_commit_pending()) return ESP_ERR_INVALID_STATE;
+    ESP_RETURN_ON_ERROR(restore_flash_credentials_after_candidate(), TAG,
+                        "restore uncommitted Wi-Fi candidate failed");
+    ESP_RETURN_ON_ERROR(nuwax_cloud_config_discard_pending(), TAG,
+                        "discard uncommitted cloud candidate failed");
+    memset(&s_staged_vox_config, 0, sizeof(s_staged_vox_config));
+    s_has_staged_vox_config = false;
+    return ESP_OK;
 }
 
 static esp_err_t reset_manager_for_app(const char *reason,
                                        bool discard_pending,
                                        provision_wifi_reset_kind_t kind) {
+    if (nuwax_pair_commit_pending()) return ESP_ERR_INVALID_STATE;
     const esp_err_t reset_err = reset_manager_wifi_state(kind, reason);
     if (reset_err != ESP_OK) {
         ESP_LOGE(TAG, "%s: provisioning state reset failed: %s", reason,
                  esp_err_to_name(reset_err));
         return reset_err;
     }
-    const esp_err_t flash_err = restore_flash_credentials_after_candidate();
-    if (flash_err != ESP_OK) {
-        ESP_LOGE(TAG, "%s: Flash Wi-Fi candidate cleanup failed: %s", reason,
-                 esp_err_to_name(flash_err));
-        return flash_err;
-    }
-    if (discard_pending) {
-        const esp_err_t discard_err = nuwax_cloud_config_discard_pending();
-        if (discard_err != ESP_OK) {
-            ESP_LOGE(TAG, "%s: pending cloud config discard failed: %s", reason,
-                     esp_err_to_name(discard_err));
-            return discard_err;
-        }
-        memset(&s_staged_vox_config, 0, sizeof(s_staged_vox_config));
-        s_has_staged_vox_config = false;
-    }
+    ESP_RETURN_ON_ERROR(discard_pending ? discard_uncommitted_pair_candidate()
+                                       : restore_flash_credentials_after_candidate(),
+                        TAG, "sanitize uncommitted APP candidate failed");
     portENTER_CRITICAL(&s_state_lock);
     s_state.app_claim_pending = false;
     s_state.app_abort_pending = false;
@@ -1952,6 +2071,7 @@ static esp_err_t reset_manager_for_app(const char *reason,
 }
 
 static esp_err_t start_old_wifi_attempt(void) {
+    if (previous_pair_unusable()) return ESP_ERR_INVALID_STATE;
     if (!force_reprovision_requested() ||
         !reprovision_record_can_restore(&s_reprovision_record) ||
         !nuwax_cloud_config_has_config()) {
@@ -2002,7 +2122,8 @@ static esp_err_t start_old_wifi_attempt(void) {
 }
 
 static esp_err_t finalize_old_wifi_recovery(void) {
-    if (!reprovision_record_can_restore(&s_reprovision_record) ||
+    if (previous_pair_unusable() ||
+        !reprovision_record_can_restore(&s_reprovision_record) ||
         !nuwax_cloud_config_has_config()) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -2043,70 +2164,54 @@ static esp_err_t finalize_old_wifi_recovery(void) {
 }
 
 static esp_err_t finalize_new_provisioning(void) {
-    if (!nuwax_wifi_is_connected() || !nuwax_cloud_config_has_pending()) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    wifi_config_t verified_config = {0};
-    ESP_RETURN_ON_ERROR(esp_wifi_get_config(WIFI_IF_STA, &verified_config), TAG,
-                        "read provisioned Wi-Fi before commit failed");
-    if (verified_config.sta.ssid[0] == '\0') {
-        return ESP_ERR_NOT_FOUND;
-    }
-    const provision_state_t state = get_state_snapshot();
-    if (!state.wifi_candidate_hash_valid ||
-        state.wifi_candidate_hash != wifi_credentials_hash(&verified_config) ||
-        !nuwax_provision_attempt_belongs_to_owner(
-            state.wifi_attempt_owner_generation, state.owner_generation)) {
-        ESP_LOGE(TAG, "connected Wi-Fi does not match the active APP candidate");
-        return ESP_ERR_INVALID_STATE;
-    }
-    wifi_ap_record_t ap = {0};
-    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK ||
-        strncmp((const char *)ap.ssid,
-                (const char *)verified_config.sta.ssid,
-                sizeof(ap.ssid)) != 0) {
-        ESP_LOGE(TAG, "connected AP does not match the active APP SSID");
-        return ESP_ERR_INVALID_STATE;
-    }
-    int cancel_state = PROVISION_CANCEL_AVAILABLE;
-    if (!atomic_compare_exchange_strong_explicit(
-            &s_cancel_state, &cancel_state, PROVISION_CANCEL_COMMITTING,
-            memory_order_acq_rel, memory_order_acquire) &&
-        cancel_state == PROVISION_CANCEL_REQUESTED) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    ESP_RETURN_ON_ERROR(retry_persist_operation(
-                            nuwax_wifi_import_driver_credentials,
-                            "import provisioned Wi-Fi credentials"),
-                        TAG, "import provisioned Wi-Fi credentials failed");
-    if (force_reprovision_requested()) {
-        ESP_RETURN_ON_ERROR(write_wifi_commit_marker(&verified_config), TAG,
-                            "write Wi-Fi commit marker failed");
-    }
-    ESP_RETURN_ON_ERROR(retry_persist_operation(
-                            nuwax_cloud_config_commit_pending,
-                            "commit pending cloud config"),
-                        TAG, "commit pending cloud config failed");
-    const esp_err_t marker_err =
-        retry_write_wifi_verified_marker(&verified_config);
-    if (marker_err != ESP_OK) {
-        ESP_LOGE(TAG,
-                 "Wi-Fi verification marker deferred after committed pair: %s",
-                 esp_err_to_name(marker_err));
-    }
-    if (force_reprovision_requested()) {
-        const esp_err_t cleanup_err = retry_persist_operation(
-            clear_reprovision_record, "clear committed Wi-Fi rollback record");
-        if (cleanup_err != ESP_OK) {
-            /* The Wi-Fi/cloud pair and commit marker are already durable. Do
-             * not roll back to the old Wi-Fi and create a mixed generation. */
-            ESP_LOGE(TAG,
-                     "committed pair retained with deferred rollback cleanup: %s",
-                     esp_err_to_name(cleanup_err));
+    if (!nuwax_pair_commit_pending()) {
+        if (!nuwax_wifi_is_connected() || !nuwax_cloud_config_has_pending()) {
+            return ESP_ERR_INVALID_STATE;
         }
+        wifi_config_t verified_config = {0};
+        ESP_RETURN_ON_ERROR(esp_wifi_get_config(WIFI_IF_STA, &verified_config), TAG,
+                            "read provisioned Wi-Fi before commit failed");
+        if (verified_config.sta.ssid[0] == '\0') {
+            return ESP_ERR_NOT_FOUND;
+        }
+        const provision_state_t state = get_state_snapshot();
+        if (!state.wifi_candidate_hash_valid ||
+            state.wifi_candidate_hash != wifi_credentials_hash(&verified_config) ||
+            !nuwax_provision_attempt_belongs_to_owner(
+                state.wifi_attempt_owner_generation, state.owner_generation)) {
+            ESP_LOGE(TAG, "connected Wi-Fi does not match the active APP candidate");
+            return ESP_ERR_INVALID_STATE;
+        }
+        wifi_ap_record_t ap = {0};
+        if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK ||
+            strncmp((const char *)ap.ssid,
+                    (const char *)verified_config.sta.ssid,
+                    sizeof(ap.ssid)) != 0) {
+            ESP_LOGE(TAG, "connected AP does not match the active APP SSID");
+            return ESP_ERR_INVALID_STATE;
+        }
+        int cancel_state = PROVISION_CANCEL_AVAILABLE;
+        if (!atomic_compare_exchange_strong_explicit(
+                &s_cancel_state, &cancel_state, PROVISION_CANCEL_COMMITTING,
+                memory_order_acq_rel, memory_order_acquire) &&
+            cancel_state == PROVISION_CANCEL_REQUESTED) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        nuwax_cloud_config_t cloud = {0};
+        ESP_RETURN_ON_ERROR(nuwax_cloud_config_get_pending(&cloud), TAG,
+                            "read APP cloud candidate failed");
+        const esp_err_t begin_err = nuwax_pair_commit_begin(&verified_config, &cloud);
+        memset(&cloud, 0, sizeof(cloud));
+        ESP_RETURN_ON_ERROR(begin_err, TAG, "prepare pair commit failed");
     }
+    ESP_RETURN_ON_ERROR(nuwax_pair_commit_complete(write_wifi_verified_marker,
+                            wifi_verified_marker_matches), TAG,
+                        "complete Wi-Fi/cloud pair failed");
+    memset(&s_reprovision_record, 0, sizeof(s_reprovision_record));
+    s_reprovision_record_durable = false;
     s_provisioned_pair_ready = true;
     memset(&s_staged_vox_config, 0, sizeof(s_staged_vox_config));
+    binding_replaced_by_committed_pair();
     s_has_staged_vox_config = false;
     portENTER_CRITICAL(&s_state_lock);
     s_state.outcome = NUWAX_PROVISION_OUTCOME_SUCCESS;
@@ -2117,9 +2222,7 @@ static esp_err_t finalize_new_provisioning(void) {
     s_state.failed_attempt_release_pending = false;
     s_state.failed_attempt_release_deadline_us = 0;
     s_state.credentials_received_us = 0;
-    set_reason_locked(marker_err == ESP_OK
-                          ? "provisioning_committed"
-                          : "success_marker_deferred");
+    set_reason_locked("provisioning_committed");
     portEXIT_CRITICAL(&s_state_lock);
     atomic_store_explicit(&s_cancel_state, PROVISION_CANCEL_COMMITTED,
                           memory_order_release);
@@ -2127,20 +2230,20 @@ static esp_err_t finalize_new_provisioning(void) {
 }
 
 esp_err_t nuwax_provision_main_start(const char *reason) {
-    (void)reason;
+    if (nuwax_pair_commit_pending()) return ESP_ERR_INVALID_STATE;
     if (!s_initialized || nuwax_provision_main_is_active() ||
         (s_provisioned_pair_ready && !force_reprovision_requested())) {
         return ESP_ERR_INVALID_STATE;
     }
+    /* Only the explicit in-process rebind path gets the one-quantum
+     * tolerance.  Keep all other callers on the strict boot floor so a new
+     * provisioning entry point cannot silently inherit the relaxed policy. */
+    s_runtime_start = reason && strcmp(reason, "runtime_reprovision") == 0;
     ESP_RETURN_ON_ERROR(ensure_vox_config_queue(), TAG,
                         "create vox-config queue failed");
     ESP_RETURN_ON_ERROR(prepare_security2(), TAG, "prepare security2 failed");
-    ESP_RETURN_ON_ERROR(nuwax_cloud_config_discard_pending(), TAG,
-                        "discard stale provisioning candidate failed");
-    ESP_RETURN_ON_ERROR(restore_flash_credentials_after_candidate(), TAG,
-                        "sanitize persisted Wi-Fi candidate failed");
-    memset(&s_staged_vox_config, 0, sizeof(s_staged_vox_config));
-    s_has_staged_vox_config = false;
+    ESP_RETURN_ON_ERROR(discard_uncommitted_pair_candidate(), TAG,
+                        "sanitize stale provisioning candidate failed");
     static uint8_t service_uuid[16] = {
         0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
         0x00, 0x10, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00,
@@ -2151,7 +2254,7 @@ esp_err_t nuwax_provision_main_start(const char *reason) {
     if (!provisioning_cancel_requested()) {
         atomic_store_explicit(
             &s_cancel_state,
-            force_reprovision_requested() &&
+            !previous_pair_unusable() && force_reprovision_requested() &&
                     reprovision_record_can_restore(&s_reprovision_record)
                 ? PROVISION_CANCEL_AVAILABLE
                 : PROVISION_CANCEL_DISABLED,
@@ -2212,16 +2315,27 @@ esp_err_t nuwax_provision_main_start(const char *reason) {
     heap_caps_free(internal_largest_reserve);
     const provision_memory_snapshot_t memory = provision_memory_snapshot();
     ESP_LOGI(TAG,
-             "BLE provisioning steady-state memory guard internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u",
+             "BLE provisioning steady-state memory guard mode=%s internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u internal_min=%u",
+             s_runtime_start ? "runtime" : "boot",
              (unsigned)memory.internal_free, (unsigned)memory.internal_largest,
-             (unsigned)memory.dma_free, (unsigned)memory.dma_largest);
-    if (provision_memory_is_low(&memory)) {
+             (unsigned)memory.dma_free, (unsigned)memory.dma_largest,
+             (unsigned)(s_runtime_start
+                 ? PROVISION_RUNTIME_INTERNAL_FREE_MIN_BYTES
+                 : PROVISION_INTERNAL_FREE_MIN_BYTES));
+    if (provision_memory_is_low_for_start(&memory, s_runtime_start)) {
         portENTER_CRITICAL(&s_state_lock);
         s_state.outcome = NUWAX_PROVISION_OUTCOME_RESOURCE_EXHAUSTED;
         set_reason_locked("ble_start_low_memory");
         portEXIT_CRITICAL(&s_state_lock);
         ESP_LOGE(TAG,
-                 "BLE provisioning stopped: steady-state internal/DMA reserve is unsafe");
+                 "BLE provisioning stopped: steady-state reserve is unsafe mode=%s internal_free=%u internal_largest=%u dma_free=%u internal_min=%u",
+                 s_runtime_start ? "runtime" : "boot",
+                 (unsigned)memory.internal_free,
+                 (unsigned)memory.internal_largest,
+                 (unsigned)memory.dma_free,
+                 (unsigned)(s_runtime_start
+                     ? PROVISION_RUNTIME_INTERNAL_FREE_MIN_BYTES
+                     : PROVISION_INTERNAL_FREE_MIN_BYTES));
         network_prov_mgr_stop_provisioning();
         atomic_store_explicit(&s_started, false, memory_order_release);
         return ESP_ERR_NO_MEM;
@@ -2242,6 +2356,7 @@ static nuwax_provision_outcome_t provision_main_run_internal(
         return get_state_snapshot().outcome;
     }
     const bool has_old_wifi = allow_old_wifi_recovery &&
+        !previous_pair_unusable() &&
         nuwax_provision_old_wifi_is_terminal_candidate(
             force_reprovision_requested(),
             reprovision_record_can_restore(&s_reprovision_record),
@@ -2260,11 +2375,12 @@ static nuwax_provision_outcome_t provision_main_run_internal(
     unsigned finalize_failures = 0;
 
     ESP_LOGI(TAG,
-             "continuous provisioning supervisor started focused_wait_ms=%lu overall_timeout_ms=%lu old_wifi=%d runtime_rebind=%d",
+             "continuous provisioning supervisor started focused_wait_ms=%lu overall_timeout_ms=%lu old_wifi=%d runtime_rebind=%d binding_required=%d",
              (unsigned long)focused_wait_ms,
              (unsigned long)overall_timeout_ms,
              has_old_wifi ? 1 : 0,
-             allow_old_wifi_recovery ? 0 : 1);
+             allow_old_wifi_recovery ? 0 : 1,
+             nuwax_provision_main_binding_required() ? 1 : 0);
     while (true) {
         note_supervisor_heartbeat();
         if (provisioning_cancel_requested()) {
@@ -2276,25 +2392,27 @@ static nuwax_provision_outcome_t provision_main_run_internal(
             return finish_runtime_cancel();
         }
         provision_state_t snapshot = get_state_snapshot();
-        if (snapshot.outcome == NUWAX_PROVISION_OUTCOME_RESOURCE_EXHAUSTED) {
+        if (snapshot.outcome == NUWAX_PROVISION_OUTCOME_RESOURCE_EXHAUSTED &&
+            !nuwax_pair_commit_pending()) {
             close_and_drain_vox_config_jobs();
             return snapshot.outcome;
         }
         const int64_t now = esp_timer_get_time();
         const bool runtime_idle_timeout =
             nuwax_provision_runtime_idle_timed_out(
-                !allow_old_wifi_recovery, snapshot.new_wifi_attempt_active,
+                !allow_old_wifi_recovery && !previous_pair_unusable(),
+                snapshot.new_wifi_attempt_active,
                 snapshot.runtime_activity_us > 0
                     ? snapshot.runtime_activity_us
                     : started_us,
                 now, CONFIG_NUWAX_PROVISION_RUNTIME_IDLE_TIMEOUT_MS);
-        const bool finalize_due = snapshot.got_ip &&
+        const bool finalize_due = nuwax_pair_commit_pending() || (snapshot.got_ip &&
             now >= next_finalize_retry_us &&
             ((allow_old_wifi_recovery &&
               snapshot.wifi_owner == NUWAX_PROVISION_WIFI_OWNER_OLD_RECOVERY &&
               snapshot.old_wifi_got_ip) ||
              (snapshot.wifi_owner == NUWAX_PROVISION_WIFI_OWNER_APP &&
-              snapshot.new_wifi_attempt_active));
+              snapshot.new_wifi_attempt_active)));
         if (overall_deadline != 0 && now >= overall_deadline && !finalize_due) {
             portENTER_CRITICAL(&s_state_lock);
             s_state.outcome = NUWAX_PROVISION_OUTCOME_TIMEOUT;
@@ -2318,7 +2436,7 @@ static nuwax_provision_outcome_t provision_main_run_internal(
             return NUWAX_PROVISION_OUTCOME_TIMEOUT;
         }
 
-        if (allow_old_wifi_recovery &&
+        if (allow_old_wifi_recovery && !nuwax_pair_commit_pending() &&
             snapshot.got_ip && snapshot.old_wifi_got_ip &&
             snapshot.wifi_owner == NUWAX_PROVISION_WIFI_OWNER_OLD_RECOVERY &&
             now >= next_finalize_retry_us) {
@@ -2363,10 +2481,10 @@ static nuwax_provision_outcome_t provision_main_run_internal(
             continue;
         }
 
-        if (snapshot.got_ip && !snapshot.old_wifi_got_ip &&
-            snapshot.wifi_owner == NUWAX_PROVISION_WIFI_OWNER_APP &&
-            snapshot.new_wifi_attempt_active &&
-            now >= next_finalize_retry_us) {
+        if ((nuwax_pair_commit_pending() ||
+             (snapshot.got_ip && !snapshot.old_wifi_got_ip &&
+              snapshot.wifi_owner == NUWAX_PROVISION_WIFI_OWNER_APP &&
+              snapshot.new_wifi_attempt_active)) && now >= next_finalize_retry_us) {
             if (provisioning_cancel_requested()) {
                 return finish_runtime_cancel();
             }
@@ -2412,18 +2530,32 @@ static nuwax_provision_outcome_t provision_main_run_internal(
             }
 
             /* Commit is complete before the final query window begins. */
-            int64_t hold_deadline = esp_timer_get_time() +
+            const int64_t committed_us = esp_timer_get_time();
+            int64_t hold_deadline = committed_us +
                 (int64_t)CONFIG_NUWAX_PROVISION_SUCCESS_BLE_HOLD_MS * 1000;
             if (overall_deadline != 0 && hold_deadline > overall_deadline) {
                 hold_deadline = overall_deadline;
             }
             while (esp_timer_get_time() < hold_deadline) {
+                const provision_state_t hold = get_state_snapshot();
+                if (hold.success_read_owner_generation == hold.owner_generation &&
+                    nuwax_provision_success_read_grace_elapsed(
+                        committed_us, hold.success_response_read_us,
+                        esp_timer_get_time())) {
+                    ESP_LOGI(TAG, "provision success response read; BLE drain grace complete hold_ms=%lld",
+                             (long long)((esp_timer_get_time() - committed_us) / 1000));
+                    break;
+                }
                 process_vox_config_job(
                     pdMS_TO_TICKS(PROVISION_SUPERVISOR_POLL_MS));
             }
+            ESP_LOGI(TAG, "provision success query window complete hold_ms=%lld",
+                     (long long)((esp_timer_get_time() - committed_us) / 1000));
             close_and_drain_vox_config_jobs();
             return NUWAX_PROVISION_OUTCOME_SUCCESS;
         }
+
+        if (nuwax_pair_commit_pending()) continue;
 
         if (snapshot.app_claim_pending && snapshot.ble_connected) {
             esp_err_t disconnect_err = esp_wifi_disconnect();
@@ -2783,6 +2915,7 @@ esp_err_t nuwax_provision_main_stop(void) {
      * singleton synchronization objects for the process lifetime so a late
      * endpoint call can fail closed without dereferencing deleted objects. */
     s_accept_vox_config_jobs = false;
+    s_runtime_start = false;
     s_initialized = false;
     if (s_provisioned_pair_ready) {
         const esp_err_t clear_err = write_low_memory_boot_request(false);
@@ -2798,12 +2931,32 @@ esp_err_t nuwax_provision_main_stop(void) {
 }
 
 esp_err_t nuwax_provision_main_reset_wifi_credentials(void) {
-    ESP_LOGW(TAG, "local UI reprovision requested; preserving current Wi-Fi for rollback");
-    if (force_reprovision_requested()) {
+    if (nuwax_pair_commit_blocks_rollback()) return ESP_ERR_INVALID_STATE;
+    ESP_LOGW(TAG, "reprovision requested binding_required=%d; preserving current Wi-Fi",
+             nuwax_provision_main_binding_required() ? 1 : 0);
+    if (force_reprovision_requested() && s_reprovision_record_durable &&
+        (!nuwax_provision_main_binding_required() ||
+         atomic_load_explicit(&s_binding_rejection_durable, memory_order_acquire))) {
         return ESP_OK;
     }
-    const esp_err_t err = save_reprovision_record();
-    if (err == ESP_OK &&
+    const esp_err_t guard_err =
+        nuwax_wake_word_detector_begin_flash_operation(
+            PROVISION_NVS_FLASH_GUARD_TIMEOUT_MS);
+    if (guard_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "Wi-Fi reprovision record deferred while wake detector is active: %s",
+                 esp_err_to_name(guard_err));
+        return guard_err;
+    }
+    esp_err_t err = ESP_OK;
+    if (!force_reprovision_requested() && s_reprovision_record_durable) {
+        /* Complete deferred cleanup before replacing its proof/snapshot. A
+         * cut here keeps the current committed pair bootable. */
+        err = clear_reprovision_record();
+    }
+    if (err == ESP_OK) err = save_reprovision_record();
+    nuwax_wake_word_detector_end_flash_operation();
+    if (err == ESP_OK && !previous_pair_unusable() &&
         reprovision_record_can_restore(&s_reprovision_record)) {
         atomic_store_explicit(&s_cancel_state, PROVISION_CANCEL_AVAILABLE,
                               memory_order_release);
@@ -2816,6 +2969,7 @@ bool nuwax_provision_main_is_reprovisioning(void) {
 }
 
 esp_err_t nuwax_provision_main_commit_wifi_credentials(void) {
+    if (previous_pair_unusable()) return ESP_ERR_INVALID_STATE;
     if (!force_reprovision_requested()) {
         return ESP_OK;
     }
@@ -2856,6 +3010,10 @@ static bool wait_for_wifi_connection_to(const wifi_config_t *config,
 }
 
 esp_err_t nuwax_provision_main_rollback_wifi_credentials(void) {
+    if (previous_pair_unusable()) {
+        ESP_LOGW(TAG, "old Wi-Fi rollback blocked by binding rejection or pair recovery");
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!force_reprovision_requested()) {
         return ESP_ERR_INVALID_STATE;
     }

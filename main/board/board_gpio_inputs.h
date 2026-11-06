@@ -26,7 +26,7 @@ typedef struct {
 
 typedef struct {
     uint32_t long_press_ms;
-    uint32_t gap_tolerance_ms;
+    uint32_t gap_tolerance_ms; /* Deprecated: continuous-contact policy ignores this. */
     uint32_t max_valid_duration_ms;
 } nuwax_head_touch_config_t;
 

@@ -1,9 +1,12 @@
 #include "nuwax_lvgl_port.h"
 
 #include <stdatomic.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "display.h"
+#include "display_maintenance_policy.h"
+#include "device_error_report.h"
 #include "diagnostics.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -16,8 +19,49 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "touch_input.h"
+#include "replay_ui_schedule.h"
+#include "ui_memory_pressure.h"
 
 static const char *TAG = "nuwax_lvgl_port";
+static atomic_uint s_interaction_deadline_ms;
+static atomic_uint s_external_wake_generation;
+/* Written only by the LVGL owner before it drains producer state. */
+static unsigned s_external_wake_serviced;
+
+void nuwax_lvgl_port_note_interaction(void) {
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    atomic_store_explicit(&s_interaction_deadline_ms, now + 300U, memory_order_relaxed);
+}
+
+bool nuwax_lvgl_port_background_work_deferred(void) {
+    const uint32_t deadline = atomic_load_explicit(&s_interaction_deadline_ms, memory_order_relaxed);
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    return deadline != 0U && (int32_t)(deadline - now) > 0;
+}
+
+static void report_ui_warning(const char *code, esp_err_t result) {
+    (void)nuwax_device_warning_report_enqueue(
+        "display", code, result, "ui", 0U, NULL);
+}
+
+static void report_ui_warning_detail(const char *code,
+                                     esp_err_t result,
+                                     size_t internal_free,
+                                     size_t internal_largest,
+                                     size_t required_free,
+                                     size_t buffer_size) {
+    char detail[NUWAX_DEVICE_ERROR_RESULT_BYTES];
+    snprintf(detail,
+             sizeof(detail),
+             "%s;internal=%u;largest=%u;required=%u;buffer=%u",
+             esp_err_to_name(result),
+             (unsigned)internal_free,
+             (unsigned)internal_largest,
+             (unsigned)required_free,
+             (unsigned)buffer_size);
+    (void)nuwax_device_warning_report_enqueue_detail(
+        "display", code, result, detail, "ui", 0U, NULL);
+}
 
 #ifndef CONFIG_NUWAX_UI_ASYNC_FLUSH_ENABLE
 #define CONFIG_NUWAX_UI_ASYNC_FLUSH_ENABLE 1
@@ -32,7 +76,11 @@ static const char *TAG = "nuwax_lvgl_port";
 #define CONFIG_NUWAX_UI_FLUSH_TASK_STACK_SIZE 4096
 #endif
 
-#define LVGL_TASK_STACK_SIZE (20 * 1024)
+/* 24-minute perf telemetry (stack_hw=15552 on the former 20 KiB stack) shows a
+ * ~4.9 KiB peak, so 12 KiB keeps a 2.5x margin while returning 8 KiB of scarce
+ * internal RAM. The 512 B underflow guard and the <4 KiB reserve warning below
+ * still protect the deep render paths. */
+#define LVGL_TASK_STACK_SIZE (12 * 1024)
 #define LVGL_TASK_STACK_GUARD_BYTES 512U
 #define LVGL_TASK_STACK_GUARD_PATTERN 0xa7U
 #define LVGL_TASK_STACK_WARN_BYTES (4 * 1024U)
@@ -47,17 +95,23 @@ static const char *TAG = "nuwax_lvgl_port";
 #define LVGL_MAX_SLEEP_MS    4
 #define LVGL_EXTERNAL_WAKE_STREAK_LIMIT 8U
 #define DISPLAY_KEEPALIVE_MS 15000
-#define DISPLAY_FULL_REFRESH_KEEPALIVE_MS 120000
 #define DISPLAY_KEEPALIVE_REFRESH_PX 4
 
 #define DISP_WIDTH   360
 #define DISP_HEIGHT  360
 #define DRAW_BUF_LINES CONFIG_NUWAX_UI_DRAW_BUFFER_LINES
 #define DRAW_BUF_SIZE  (DISP_WIDTH * DRAW_BUF_LINES * sizeof(uint16_t))
+/* Two non-overlapping strips inside the existing display DMA lease. This
+ * fallback costs no extra internal RAM and preserves the driver's ownership. */
+#define DRAW_BUF_SPLIT_SIZE (DISP_WIDTH * (DRAW_BUF_LINES / 2U) * sizeof(uint16_t))
 #define DRAW_BUF_DOUBLE_BUFFER_ENABLE CONFIG_NUWAX_UI_DOUBLE_BUFFER_ENABLE
 /* Keep the owner above background work, while allowing the worker to run as
  * soon as the owner blocks in flush_wait_cb. */
-#define FLUSH_TASK_PRIORITY 6
+/* Start DMA as soon as a frame stripe is queued. The worker blocks in
+ * spi_device_transmit(), allowing the LVGL owner to compose the other buffer.
+ * A lower-priority worker cannot start while LVGL draws that next stripe on
+ * the same core, defeating overlap even with two buffers. */
+#define FLUSH_TASK_PRIORITY (LVGL_TASK_PRIORITY + 1)
 #define FLUSH_QUEUE_DEPTH 2
 #define FLUSH_PIPELINE_CAPACITY FLUSH_QUEUE_DEPTH
 #define FLUSH_PIPELINE_WARN_MS 100
@@ -68,8 +122,8 @@ static const char *TAG = "nuwax_lvgl_port";
 #define DOUBLE_BUFFER_HEALTH_INTERVAL_MS 500
 #define DOUBLE_BUFFER_RESTORE_STABLE_MS 2000
 #define DOUBLE_BUFFER_RESTORE_COOLDOWN_MS 30000
+#define DOUBLE_BUFFER_RESTORE_WARNING_COOLDOWN_MS (5U * 60U * 1000U)
 #define DOUBLE_BUFFER_RESTORE_HEADROOM 8000U
-#define INTERNAL_RESTORE_LOG_INTERVAL_MS 30000
 /* Internal RAM to keep free AFTER carving out the LVGL draw buffer.
  *
  * LVGL renders pixels on the CPU into this buffer; on the ESP32-S3, writing to
@@ -104,6 +158,23 @@ static uint8_t *s_draw_buf1;
 static uint8_t *s_draw_buf2;
 static bool s_draw_buf1_internal;
 static bool s_draw_buf2_internal;
+static bool s_draw_buffers_split;
+/* Returned leases stay allocated in the driver; only owned buffers are freed.
+ * Call after both the LVGL owner and the transfer pipeline are fenced. */
+static uint8_t *s_driver_draw_buffer;
+static void release_draw_buffer(void *buffer) {
+    if (!buffer) return;
+    if (display_release_draw_buffer(buffer)) s_driver_draw_buffer = NULL;
+    else heap_caps_free(buffer);
+}
+
+/* A compact pair has one allocation/lease. The second pointer is an interior
+ * view and must never be freed or returned to the display driver separately. */
+static void release_draw_buffer_pair(void *first, void *second, bool split) {
+    release_draw_buffer(first);
+    if (!split) release_draw_buffer(second);
+}
+
 static QueueHandle_t s_flush_queue;
 /* Completion tokens are consumed by LVGL's flush_wait_cb.  Without this
  * semaphore LVGL falls back to a tight `while (flushing)` loop, which can
@@ -119,13 +190,20 @@ static StaticTask_t *s_flush_task_tcb;
 static StackType_t *s_flush_task_stack;
 static bool s_async_flush_active;
 static atomic_bool s_flush_task_exited;
+static atomic_bool s_panel_output_enabled = ATOMIC_VAR_INIT(false);
 static uint32_t s_flush_queue_fallbacks;
 static uint32_t s_flush_errors;
 static uint32_t s_flush_wait_timeouts;
 static int64_t s_double_buffer_last_health_us;
+static nuwax_ui_memory_pressure_t s_double_buffer_pressure;
 static int64_t s_double_buffer_restore_candidate_us;
 static int64_t s_double_buffer_released_us;
-static int64_t s_internal_restore_last_log_us;
+static bool s_internal_restore_incident_active;
+/* Keep a low-memory incident quiet across a UI teardown/rebuild. The
+ * incident flag is intentionally reset by a successful buffer restore, while
+ * this timestamp prevents a failed rebuild from starting a new warning storm
+ * every few seconds. */
+static int64_t s_buffer_restore_last_report_us;
 static bool s_runtime_internal_preferred = true;
 static TaskHandle_t s_lvgl_task;
 static uint8_t *s_lvgl_task_stack_allocation;
@@ -147,6 +225,10 @@ typedef struct {
     int32_t clip_w;
     int32_t clip_h;
     int64_t queued_us;
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+    int64_t frame_started_us;
+    bool last_in_frame;
+#endif
 } lvgl_flush_job_t;
 
 typedef enum {
@@ -171,6 +253,40 @@ static uint32_t s_refr_max_us;
 static uint32_t s_render_count;
 static uint64_t s_render_total_us;
 static uint32_t s_render_max_us;
+/* Owner-thread counters; transport-worker totals are reported separately. */
+static uint64_t s_filter_us, s_owner_wait_us, s_render_work_us;
+static uint32_t s_filter_max_us, s_owner_wait_max_us, s_render_work_max_us;
+static uint64_t s_render_filter_start, s_render_wait_start;
+static uint64_t s_refr_phase_us[3];
+static uint32_t s_refr_phase_max_us[3], s_refr_parts, s_refr_culled, s_refr_cached;
+void nuwax_lvgl_record_refr_phase(unsigned phase, uint32_t elapsed_us);
+void nuwax_lvgl_record_refr_phase(unsigned phase, uint32_t elapsed_us) {
+    if (phase == 4) { s_refr_cached++; return; }
+    if (phase == 3) { s_refr_culled++; return; }
+    if (phase >= 3) return;
+    s_refr_phase_us[phase] += elapsed_us;
+    if (elapsed_us > s_refr_phase_max_us[phase]) s_refr_phase_max_us[phase] = elapsed_us;
+    if (phase == 0) s_refr_parts++;
+}
+static uint64_t s_sw_draw_us[7];
+static uint32_t s_sw_draw_count, s_sw_draw_max_us;
+void nuwax_lvgl_record_sw_draw(unsigned type, uint32_t elapsed_us);
+void nuwax_lvgl_record_sw_draw(unsigned type, uint32_t elapsed_us) {
+    unsigned group;
+    switch (type) {
+        case LV_DRAW_TASK_TYPE_FILL: group = 0; break;
+        case LV_DRAW_TASK_TYPE_BORDER: group = 1; break;
+        case LV_DRAW_TASK_TYPE_LETTER:
+        case LV_DRAW_TASK_TYPE_LABEL: group = 2; break;
+        case LV_DRAW_TASK_TYPE_IMAGE: group = 3; break;
+        case LV_DRAW_TASK_TYPE_LAYER: group = 4; break;
+        case LV_DRAW_TASK_TYPE_MASK_RECTANGLE: group = 5; break;
+        default: group = 6; break;
+    }
+    s_sw_draw_us[group] += elapsed_us;
+    s_sw_draw_count++;
+    if (elapsed_us > s_sw_draw_max_us) s_sw_draw_max_us = elapsed_us;
+}
 static uint32_t s_flush_count;
 static uint64_t s_flush_pixels;
 static uint64_t s_flush_total_us;
@@ -184,7 +300,7 @@ static int64_t s_handler_last_log_us;
 #endif
 
 static int64_t s_display_last_keepalive_us;
-static int64_t s_display_last_full_refresh_us;
+static nuwax_display_maintenance_t s_display_maintenance;
 
 static void lvgl_port_set_init_state(lvgl_port_init_state_t state) {
     taskENTER_CRITICAL(&s_init_mux);
@@ -193,6 +309,8 @@ static void lvgl_port_set_init_state(lvgl_port_init_state_t state) {
 }
 
 static bool lvgl_port_init_cleanup(bool tick_started) {
+    atomic_store_explicit(&s_panel_output_enabled, false,
+                          memory_order_release);
     if (s_tick_timer) {
         if (tick_started) {
             esp_err_t stop_err = esp_timer_stop(s_tick_timer);
@@ -229,16 +347,12 @@ static bool lvgl_port_init_cleanup(bool tick_started) {
         lv_display_delete(s_display);
         s_display = NULL;
     }
-    if (s_draw_buf1) {
-        heap_caps_free(s_draw_buf1);
-        s_draw_buf1 = NULL;
-    }
-    if (s_draw_buf2) {
-        heap_caps_free(s_draw_buf2);
-        s_draw_buf2 = NULL;
-    }
+    release_draw_buffer_pair(s_draw_buf1, s_draw_buf2, s_draw_buffers_split);
+    s_draw_buf1 = s_draw_buf2 = NULL;
+    s_draw_buffers_split = false;
     s_draw_buf1_internal = false;
     s_draw_buf2_internal = false;
+    s_driver_draw_buffer = NULL;
     taskENTER_CRITICAL(&s_pre_handler_mux);
     s_pre_handler_cb = NULL;
     s_pre_handler_user_data = NULL;
@@ -248,11 +362,12 @@ static bool lvgl_port_init_cleanup(bool tick_started) {
     s_flush_filter_user_data = NULL;
     taskEXIT_CRITICAL(&s_flush_filter_mux);
     s_display_last_keepalive_us = 0;
-    s_display_last_full_refresh_us = 0;
+    s_display_maintenance = (nuwax_display_maintenance_t){0};
     s_double_buffer_last_health_us = 0;
+    s_double_buffer_pressure.deadline_us = 0;
     s_double_buffer_restore_candidate_us = 0;
     s_double_buffer_released_us = 0;
-    s_internal_restore_last_log_us = 0;
+    s_internal_restore_incident_active = false;
     s_runtime_internal_preferred = !s_provisioning_memory_profile;
     atomic_store_explicit(&s_wake_timer_fired, false, memory_order_release);
     s_external_wake_streak = 0U;
@@ -284,6 +399,13 @@ static void perf_reset_window(int64_t now_us) {
     s_render_count = 0;
     s_render_total_us = 0;
     s_render_max_us = 0;
+    memset(s_refr_phase_us, 0, sizeof(s_refr_phase_us));
+    memset(s_refr_phase_max_us, 0, sizeof(s_refr_phase_max_us));
+    s_refr_parts = s_refr_culled = s_refr_cached = 0;
+    memset(s_sw_draw_us, 0, sizeof(s_sw_draw_us));
+    s_sw_draw_count = s_sw_draw_max_us = 0;
+    s_filter_us = s_owner_wait_us = s_render_work_us = 0;
+    s_filter_max_us = s_owner_wait_max_us = s_render_work_max_us = 0;
     s_flush_count = 0;
     s_flush_pixels = 0;
     s_flush_total_us = 0;
@@ -315,6 +437,8 @@ static void perf_display_event_cb(lv_event_t *e) {
     }
     if (code == LV_EVENT_RENDER_START) {
         s_render_start_us = now_us;
+        s_render_filter_start = s_filter_us;
+        s_render_wait_start = s_owner_wait_us;
         return;
     }
     if (code == LV_EVENT_RENDER_READY) {
@@ -322,6 +446,11 @@ static void perf_display_event_cb(lv_event_t *e) {
             const uint32_t elapsed_us = (uint32_t)(now_us - s_render_start_us);
             s_render_count++;
             s_render_total_us += elapsed_us;
+            const uint64_t accounted = (s_filter_us - s_render_filter_start) +
+                                       (s_owner_wait_us - s_render_wait_start);
+            const uint32_t work = accounted < elapsed_us ? elapsed_us - accounted : 0;
+            s_render_work_us += work;
+            if (work > s_render_work_max_us) s_render_work_max_us = work;
             if (elapsed_us > s_render_max_us) {
                 s_render_max_us = elapsed_us;
             }
@@ -436,7 +565,44 @@ static void record_handler_stats(uint32_t elapsed_us) {
                      (unsigned)CONFIG_NUWAX_UI_LONG_HANDLER_WARN_US,
                      (unsigned)s_handler_over_16ms,
                      (unsigned)s_handler_over_33ms);
+            report_ui_warning("long_handler", ESP_ERR_TIMEOUT);
         }
+        nuwax_display_perf_t display_perf;
+        ESP_LOGI(TAG, "ui stages draw_other_us=%llu draw_other_max_us=%u compose_us=%llu compose_max_us=%u owner_wait_us=%llu owner_wait_max_us=%u",
+                 (unsigned long long)s_render_work_us, (unsigned)s_render_work_max_us,
+                 (unsigned long long)s_filter_us, (unsigned)s_filter_max_us,
+                 (unsigned long long)s_owner_wait_us, (unsigned)s_owner_wait_max_us);
+        ESP_LOGI(TAG, "ui refresh parts=%u culled=%u cached_parts=%u cover_us=%llu cover_max_us=%u tree_us=%llu tree_max_us=%u drain_us=%llu drain_max_us=%u",
+                 (unsigned)s_refr_parts, (unsigned)s_refr_culled, (unsigned)s_refr_cached,
+                 (unsigned long long)s_refr_phase_us[0], (unsigned)s_refr_phase_max_us[0],
+                 (unsigned long long)s_refr_phase_us[1], (unsigned)s_refr_phase_max_us[1],
+                 (unsigned long long)s_refr_phase_us[2], (unsigned)s_refr_phase_max_us[2]);
+        ESP_LOGI(TAG, "ui sw draw tasks=%u max_us=%u fill_us=%llu border_us=%llu text_us=%llu image_us=%llu layer_us=%llu mask_us=%llu other_us=%llu buffers=%s/%s bytes_each=%u split_lease=%u",
+                 (unsigned)s_sw_draw_count, (unsigned)s_sw_draw_max_us,
+                 (unsigned long long)s_sw_draw_us[0], (unsigned long long)s_sw_draw_us[1],
+                 (unsigned long long)s_sw_draw_us[2], (unsigned long long)s_sw_draw_us[3],
+                 (unsigned long long)s_sw_draw_us[4], (unsigned long long)s_sw_draw_us[5],
+                 (unsigned long long)s_sw_draw_us[6],
+                 s_draw_buf1_internal ? "internal" : "psram",
+                 !s_draw_buf2 ? "none" : (s_draw_buf2_internal ? "internal" : "psram"),
+                 (unsigned)(s_draw_buffers_split ? DRAW_BUF_SPLIT_SIZE : DRAW_BUF_SIZE),
+                 s_draw_buffers_split ? 1U : 0U);
+        nuwax_display_perf_take(&display_perf);
+        ESP_LOGI(TAG, "panel complete frames=%u avg_us=%u max_us=%u shared_dma=%d",
+                 (unsigned)display_perf.frames,
+                 (unsigned)(display_perf.frames ? display_perf.frame_us / display_perf.frames : 0U),
+                 (unsigned)display_perf.frame_max_us, s_driver_draw_buffer != NULL);
+        ESP_LOGI(TAG,
+                 "display pipeline jobs=%u queue_us=%llu copy_us=%llu swap_us=%llu tx_wait_us=%llu bounce_bytes=%llu direct_bytes=%llu chunks=%u failures=%u",
+                 (unsigned)display_perf.jobs,
+                 (unsigned long long)display_perf.queue_us,
+                 (unsigned long long)display_perf.copy_us,
+                 (unsigned long long)display_perf.swap_us,
+                 (unsigned long long)display_perf.tx_wait_us,
+                 (unsigned long long)display_perf.bounce_bytes,
+                 (unsigned long long)display_perf.direct_bytes,
+                 (unsigned)display_perf.chunks,
+                 (unsigned)display_perf.failures);
         perf_reset_window(now_us);
     }
 }
@@ -453,16 +619,29 @@ static void record_flush_stats(uint32_t pixels, uint32_t elapsed_us) {
 
 /* --- Display flush pipeline --- */
 static esp_err_t lvgl_flush_write_job(const lvgl_flush_job_t *job) {
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+    const nuwax_display_perf_t perf = {
+        .queue_us = esp_timer_get_time() - job->queued_us,
+        .jobs = 1,
+    };
+    nuwax_display_perf_record(&perf);
+#endif
     const uint16_t *src = job->pixels;
     if (job->clip_x1 == job->x1 && job->clip_y1 == job->y1 &&
         job->clip_w == job->src_w && job->clip_h == job->src_h) {
-        return display_write_region_pixels((int16_t)job->clip_x1,
-                                           (int16_t)job->clip_y1,
-                                           (int16_t)job->clip_w,
-                                           (int16_t)job->clip_h,
-                                           src,
-                                           (size_t)job->clip_w *
-                                               (size_t)job->clip_h);
+        /* The flush job owns the draw buffer until its completion token is
+         * consumed, so the panel byte swap may happen in place and a
+         * DMA-capable internal buffer streams straight to the QSPI engine.
+         * PSRAM or misaligned buffers fall back to the copy path inside the
+         * display driver. */
+        return display_write_region_pixels_swapped_inplace(
+            (int16_t)job->clip_x1,
+            (int16_t)job->clip_y1,
+            (int16_t)job->clip_w,
+            (int16_t)job->clip_h,
+            (uint16_t *)src,
+            (size_t)job->clip_w *
+                (size_t)job->clip_h);
     }
 
     const size_t src_ofs =
@@ -479,6 +658,15 @@ static esp_err_t lvgl_flush_write_job(const lvgl_flush_job_t *job) {
 
 static void lvgl_flush_finish_job(const lvgl_flush_job_t *job,
                                   esp_err_t err) {
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+    if (err == ESP_OK && job->last_in_frame && job->frame_started_us > 0) {
+        const uint32_t duration = (uint32_t)(esp_timer_get_time() - job->frame_started_us);
+        const nuwax_display_perf_t complete = {
+            .frames = 1U, .frame_us = duration, .frame_max_us = duration,
+        };
+        nuwax_display_perf_record(&complete);
+    }
+#endif
     const uint32_t pixels =
         (uint32_t)job->clip_w * (uint32_t)job->clip_h;
     const uint32_t elapsed_us =
@@ -497,6 +685,7 @@ static void lvgl_flush_finish_job(const lvgl_flush_job_t *job,
                  (long)job->clip_h,
                  esp_err_to_name(err),
                  (unsigned)s_flush_errors);
+        report_ui_warning("flush_failed", err);
     }
 #if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
     record_flush_stats(pixels, elapsed_us);
@@ -549,6 +738,7 @@ static bool lvgl_async_flush_init(void) {
     if (!s_flush_queue || !s_flush_slots || !s_flush_done) {
         ESP_LOGW(TAG,
                  "async flush synchronization allocation failed; using synchronous flush");
+        report_ui_warning("async_sync_alloc", ESP_ERR_NO_MEM);
         if (s_flush_queue) vQueueDelete(s_flush_queue);
         if (s_flush_slots) vSemaphoreDelete(s_flush_slots);
         if (s_flush_done) vSemaphoreDelete(s_flush_done);
@@ -567,6 +757,7 @@ static bool lvgl_async_flush_init(void) {
     if (!s_flush_task_tcb || !s_flush_task_stack) {
         ESP_LOGW(TAG,
                  "async flush task allocation failed; using synchronous flush");
+        report_ui_warning("async_task_alloc", ESP_ERR_NO_MEM);
         heap_caps_free(s_flush_task_tcb);
         heap_caps_free(s_flush_task_stack);
         s_flush_task_tcb = NULL;
@@ -592,6 +783,7 @@ static bool lvgl_async_flush_init(void) {
     if (!s_flush_task) {
         ESP_LOGW(TAG,
                  "async flush task creation failed; using synchronous flush");
+        report_ui_warning("async_task_create", ESP_ERR_INVALID_STATE);
         heap_caps_free(s_flush_task_tcb);
         heap_caps_free(s_flush_task_stack);
         s_flush_task_tcb = NULL;
@@ -673,8 +865,16 @@ static void lvgl_flush_wait_cb(lv_display_t *disp) {
     if (!s_async_flush_active || !s_flush_done) {
         return;
     }
-    if (xSemaphoreTake(s_flush_done,
-                       delay_ticks_min1(FLUSH_WAIT_TIMEOUT_MS)) == pdTRUE) {
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+    const int64_t started = esp_timer_get_time();
+#endif
+    const BaseType_t done = xSemaphoreTake(s_flush_done, delay_ticks_min1(FLUSH_WAIT_TIMEOUT_MS));
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+    const uint32_t waited = (uint32_t)(esp_timer_get_time() - started);
+    s_owner_wait_us += waited;
+    if (waited > s_owner_wait_max_us) s_owner_wait_max_us = waited;
+#endif
+    if (done == pdTRUE) {
         return;
     }
 
@@ -716,43 +916,97 @@ static void lvgl_flush_pipeline_give(void) {
 }
 
 static void lvgl_maybe_rebalance_internal_buffers(int64_t now_us) {
+    /* A temporary DMA loan is rechecked after 10 ms, not at the ordinary
+     * 500 ms health cadence. New loans never extend a pending deadline. */
+    const int64_t health_interval_us = s_double_buffer_pressure.deadline_us
+        ? 10000LL : (int64_t)DOUBLE_BUFFER_HEALTH_INTERVAL_MS * 1000LL;
     if (s_double_buffer_last_health_us != 0 &&
         now_us - s_double_buffer_last_health_us <
-            (int64_t)DOUBLE_BUFFER_HEALTH_INTERVAL_MS * 1000LL) {
+            health_interval_us) {
         return;
     }
     s_double_buffer_last_health_us = now_us;
     size_t internal_free = heap_caps_get_free_size(
         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
-    if (s_draw_buf1_internal && s_draw_buf2 && s_draw_buf2_internal) {
+    if (s_draw_buf1_internal && s_draw_buf2 && s_draw_buf2_internal && !s_draw_buffers_split) {
         s_double_buffer_restore_candidate_us = 0;
-        if (internal_free >= LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE ||
+        if (!nuwax_ui_memory_release_due(&s_double_buffer_pressure, now_us,
+                internal_free, LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE,
+                nuwax_replay_dma_loan_bytes((uint32_t)now_us)) ||
             !lvgl_flush_pipeline_take(0)) {
             return;
         }
 
         uint8_t *released = s_draw_buf2;
-        lv_display_set_buffers(s_display, s_draw_buf1, NULL, DRAW_BUF_SIZE,
+        if (s_draw_buf2 == s_driver_draw_buffer) {
+            released = s_draw_buf1;
+            s_draw_buf1 = s_draw_buf2;
+        }
+        const size_t internal_largest_before = heap_caps_get_largest_free_block(
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        s_draw_buffers_split = s_draw_buf1 == s_driver_draw_buffer && DRAW_BUF_SPLIT_SIZE != 0U;
+        s_draw_buf2 = s_draw_buffers_split ? s_draw_buf1 + DRAW_BUF_SPLIT_SIZE : NULL;
+        s_draw_buf2_internal = s_draw_buffers_split;
+        lv_display_set_buffers(s_display, s_draw_buf1, s_draw_buf2,
+                               s_draw_buffers_split ? DRAW_BUF_SPLIT_SIZE : DRAW_BUF_SIZE,
                                LV_DISPLAY_RENDER_MODE_PARTIAL);
-        s_draw_buf2 = NULL;
-        s_draw_buf2_internal = false;
-        heap_caps_free(released);
+        release_draw_buffer(released);
         s_double_buffer_released_us = now_us;
+        s_double_buffer_pressure.deadline_us = 0;
         lvgl_flush_pipeline_give();
         ESP_LOGW(TAG,
-                 "LVGL second internal draw buffer released for system headroom free_before=%u free_after=%u threshold=%u",
+                 "LVGL second internal draw buffer released for system headroom free_before=%u free_after=%u threshold=%u split_lease=%u bytes_each=%u",
                  (unsigned)internal_free,
                  (unsigned)heap_caps_get_free_size(
                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-                 (unsigned)LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE);
+                     (unsigned)LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE,
+                     s_draw_buffers_split ? 1U : 0U,
+                     (unsigned)(s_draw_buffers_split ? DRAW_BUF_SPLIT_SIZE : DRAW_BUF_SIZE));
+        report_ui_warning_detail("second_buffer_released",
+                                 ESP_ERR_NO_MEM,
+                                 internal_free,
+                                 internal_largest_before,
+                                 LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE,
+                                 DRAW_BUF_SIZE);
         return;
     }
 
+    s_double_buffer_pressure.deadline_us = 0;
     if (!s_runtime_internal_preferred ||
         (s_draw_buf1_internal && !DRAW_BUF_DOUBLE_BUFFER_ENABLE)) {
         s_double_buffer_restore_candidate_us = 0;
+        s_internal_restore_incident_active = false;
         return;
+    }
+    /* Recover a pre-existing single borrowed buffer even when the heap is
+     * fragmented. Both halves remain internal/DMA-capable. Repartition only
+     * after every queued flush has completed; no allocation or cooldown needed. */
+    if (DRAW_BUF_DOUBLE_BUFFER_ENABLE && DRAW_BUF_SPLIT_SIZE != 0U &&
+        s_draw_buf1_internal && !s_draw_buf2 && s_draw_buf1 == s_driver_draw_buffer &&
+        lvgl_flush_pipeline_take(0)) {
+        s_draw_buf2 = s_draw_buf1 + DRAW_BUF_SPLIT_SIZE;
+        s_draw_buf2_internal = s_draw_buffers_split = true;
+        lv_display_set_buffers(s_display, s_draw_buf1, s_draw_buf2,
+                               DRAW_BUF_SPLIT_SIZE, LV_DISPLAY_RENDER_MODE_PARTIAL);
+        lvgl_flush_pipeline_give();
+        ESP_LOGI(TAG, "LVGL compact double buffer restored split_lease=1 bytes_each=%u extra_heap=0",
+                 (unsigned)DRAW_BUF_SPLIT_SIZE);
+        return;
+    }
+    if (s_draw_buf1_internal && !s_draw_buf2 && !s_driver_draw_buffer &&
+        DRAW_BUF_DOUBLE_BUFFER_ENABLE && lvgl_flush_pipeline_take(0)) {
+        uint8_t *loan = display_acquire_draw_buffer(DRAW_BUF_SIZE);
+        if (loan) {
+            s_driver_draw_buffer = loan;
+            s_draw_buf2 = loan;
+            s_draw_buf2_internal = true;
+            lv_display_set_buffers(s_display, s_draw_buf1, loan, DRAW_BUF_SIZE,
+                                   LV_DISPLAY_RENDER_MODE_PARTIAL);
+            ESP_LOGI(TAG, "LVGL shared DMA buffer restored without heap allocation");
+        }
+        lvgl_flush_pipeline_give();
+        if (loan) return;
     }
     if (s_double_buffer_released_us != 0 &&
         now_us - s_double_buffer_released_us <
@@ -768,17 +1022,27 @@ static void lvgl_maybe_rebalance_internal_buffers(int64_t now_us) {
         DOUBLE_BUFFER_RESTORE_HEADROOM;
     if (internal_free < required_free || internal_largest < DRAW_BUF_SIZE) {
         s_double_buffer_restore_candidate_us = 0;
-        if (!s_draw_buf1_internal &&
-            (s_internal_restore_last_log_us == 0 ||
-             now_us - s_internal_restore_last_log_us >=
-                 (int64_t)INTERNAL_RESTORE_LOG_INTERVAL_MS * 1000LL)) {
-            s_internal_restore_last_log_us = now_us;
+        const bool cooldown_elapsed =
+            s_buffer_restore_last_report_us == 0 ||
+            now_us - s_buffer_restore_last_report_us >=
+                (int64_t)DOUBLE_BUFFER_RESTORE_WARNING_COOLDOWN_MS * 1000LL;
+        if (!s_draw_buf1_internal && !s_internal_restore_incident_active) {
+            s_internal_restore_incident_active = true;
             ESP_LOGW(TAG,
                      "LVGL internal draw-buffer restore pending internal=%u largest=%u need=%u largest_need=%u",
                      (unsigned)internal_free,
                      (unsigned)internal_largest,
                      (unsigned)required_free,
                      (unsigned)DRAW_BUF_SIZE);
+            if (cooldown_elapsed) {
+                report_ui_warning_detail("buffer_restore_pending",
+                                         ESP_ERR_NO_MEM,
+                                         internal_free,
+                                         internal_largest,
+                                         required_free,
+                                         DRAW_BUF_SIZE);
+                s_buffer_restore_last_report_us = now_us;
+            }
         }
         return;
     }
@@ -797,8 +1061,14 @@ static void lvgl_maybe_rebalance_internal_buffers(int64_t now_us) {
         s_double_buffer_restore_candidate_us = 0;
         return;
     }
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
+        LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE + DOUBLE_BUFFER_RESTORE_HEADROOM) {
+        release_draw_buffer(restored);
+        s_double_buffer_restore_candidate_us = 0;
+        return;
+    }
     if (!lvgl_flush_pipeline_take(0)) {
-        heap_caps_free(restored);
+        release_draw_buffer(restored);
         return;
     }
 
@@ -816,13 +1086,14 @@ static void lvgl_maybe_rebalance_internal_buffers(int64_t now_us) {
         s_draw_buf2 = NULL;
         s_draw_buf1_internal = true;
         s_draw_buf2_internal = false;
-        heap_caps_free(previous1);
-        if (previous2) heap_caps_free(previous2);
+        release_draw_buffer_pair(previous1, previous2, s_draw_buffers_split);
     }
+    s_draw_buffers_split = false;
     lvgl_flush_pipeline_give();
     s_double_buffer_released_us = 0;
     s_double_buffer_restore_candidate_us = 0;
-    s_internal_restore_last_log_us = 0;
+    s_internal_restore_incident_active = false;
+    s_buffer_restore_last_report_us = 0;
     ESP_LOGI(TAG,
              "LVGL internal draw buffer restored mode=%s internal_free=%u largest=%u",
              s_draw_buf2 ? "double" : "single",
@@ -834,6 +1105,13 @@ static void lvgl_maybe_rebalance_internal_buffers(int64_t now_us) {
 
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
                           uint8_t *px_map) {
+    if (!atomic_load_explicit(&s_panel_output_enabled,
+                              memory_order_acquire)) {
+        /* Preserve the boot logo until the complete UI is publishable. LVGL
+         * still resolves its internal invalidation state. */
+        lv_display_flush_ready(disp);
+        return;
+    }
     const int32_t x1 = area->x1;
     const int32_t y1 = area->y1;
     const int32_t x2 = area->x2;
@@ -859,8 +1137,16 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
     flush_filter_user_data = s_flush_filter_user_data;
     taskEXIT_CRITICAL(&s_flush_filter_mux);
     if (flush_filter) {
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+        const int64_t started = esp_timer_get_time();
+#endif
         flush_filter(x1, y1, src_w, src_h, (uint16_t *)px_map,
                      (size_t)src_w, flush_filter_user_data);
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+        const uint32_t elapsed = (uint32_t)(esp_timer_get_time() - started);
+        s_filter_us += elapsed;
+        if (elapsed > s_filter_max_us) s_filter_max_us = elapsed;
+#endif
     }
 
     lvgl_flush_job_t job = {
@@ -876,14 +1162,22 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
         .clip_w = clip_x2 - clip_x1 + 1,
         .clip_h = clip_y2 - clip_y1 + 1,
         .queued_us = esp_timer_get_time(),
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+        .frame_started_us = s_refr_start_us,
+        .last_in_frame = lv_display_flush_is_last(disp),
+#endif
     };
 
     if (s_async_flush_active) {
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+        const int64_t owner_started = esp_timer_get_time();
+#endif
         if (xSemaphoreTake(s_flush_slots,
                            delay_ticks_min1(FLUSH_PIPELINE_WARN_MS)) !=
             pdTRUE) {
             ESP_LOGW(TAG,
                      "display flush ownership delayed; bounded recovery wait started");
+            report_ui_warning("flush_ownership_delayed", ESP_ERR_TIMEOUT);
             if (xSemaphoreTake(
                     s_flush_slots,
                     delay_ticks_min1(FLUSH_PIPELINE_FATAL_TIMEOUT_MS)) !=
@@ -897,6 +1191,11 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
                 return;
             }
         }
+#if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
+        const uint32_t owner_waited = (uint32_t)(esp_timer_get_time() - owner_started);
+        s_owner_wait_us += owner_waited;
+        if (owner_waited > s_owner_wait_max_us) s_owner_wait_max_us = owner_waited;
+#endif
         if (xQueueSend(s_flush_queue, &job, 0) == pdTRUE) {
             return;
         }
@@ -904,6 +1203,7 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
         ESP_LOGW(TAG,
                  "async flush queue unavailable; synchronous fallback count=%u",
                  (unsigned)s_flush_queue_fallbacks);
+        report_ui_warning("flush_queue_fallback", ESP_ERR_INVALID_STATE);
         const esp_err_t err = lvgl_flush_write_job(&job);
         lvgl_flush_finish_job(&job, err);
         xSemaphoreGive(s_flush_slots);
@@ -953,10 +1253,18 @@ static void lvgl_wait_until_due(uint32_t delay_ms) {
     }
 
     (void)esp_timer_stop(s_wake_timer);
-    /* The producer mailbox was drained immediately before lv_timer_handler().
-     * A token already pending here cannot make newer UI state visible, but it
-     * would bypass the high-resolution sleep and collapse animation pacing. */
+    /* Tokens coalesce. A completion/state change DURING the handler is new
+     * work even if its notify is already pending here. Compare the persistent
+     * generation after draining; a later producer's notify remains pending. */
     (void)ulTaskNotifyTake(pdTRUE, 0);
+    if (atomic_load_explicit(&s_external_wake_generation, memory_order_acquire) !=
+        s_external_wake_serviced) {
+        if (++s_external_wake_streak >= LVGL_EXTERNAL_WAKE_STREAK_LIMIT) {
+            s_external_wake_streak = 0U;
+            vTaskDelay(1);
+        }
+        return;
+    }
     atomic_store_explicit(&s_wake_timer_fired, false, memory_order_release);
     if (esp_timer_start_once(s_wake_timer,
                              (uint64_t)delay_ms * 1000ULL) != ESP_OK) {
@@ -1023,6 +1331,7 @@ static void lvgl_check_task_stack(int64_t now_us) {
                  (unsigned)reserve_bytes,
                  (unsigned)LVGL_TASK_STACK_WARN_BYTES,
                  (unsigned)LVGL_TASK_STACK_SIZE);
+        report_ui_warning("lvgl_stack_low", ESP_ERR_NO_MEM);
     }
 }
 
@@ -1033,6 +1342,8 @@ static void lvgl_task(void *arg) {
     ESP_LOGI(TAG, "LVGL task started on core %d", xPortGetCoreID());
     while (1) {
         if (xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(50))) {
+            s_external_wake_serviced = atomic_load_explicit(
+                &s_external_wake_generation, memory_order_acquire);
 #if CONFIG_NUWAX_UI_PERF_LOG_ENABLE
             const int64_t handler_start_us = esp_timer_get_time();
 #endif
@@ -1061,29 +1372,35 @@ static void lvgl_task(void *arg) {
                     if (err != ESP_OK) {
                         ESP_LOGW(TAG, "display keepalive failed: %s",
                                  esp_err_to_name(err));
+                        report_ui_warning("display_keepalive_failed", err);
                     }
                 } else {
                     ESP_LOGW(TAG,
                              "display keepalive skipped: flush pipeline busy");
+                    report_ui_warning("display_keepalive_skipped", ESP_ERR_TIMEOUT);
                 }
                 lv_obj_t *screen = lv_screen_active();
                 if (screen) {
-                    if (s_display_last_full_refresh_us == 0) {
-                        s_display_last_full_refresh_us = now_us;
-                    }
-                    if (now_us - s_display_last_full_refresh_us >= DISPLAY_FULL_REFRESH_KEEPALIVE_MS * 1000LL) {
-                        s_display_last_full_refresh_us = now_us;
-                        lv_obj_invalidate(screen);
-                    } else {
-                        lv_area_t area = {
-                            .x1 = 0,
-                            .y1 = 0,
-                            .x2 = DISPLAY_KEEPALIVE_REFRESH_PX - 1,
-                            .y2 = DISPLAY_KEEPALIVE_REFRESH_PX - 1,
-                        };
-                        lv_obj_invalidate_area(screen, &area);
-                    }
+                    lv_area_t area = {
+                        .x1 = 0, .y1 = 0,
+                        .x2 = DISPLAY_KEEPALIVE_REFRESH_PX - 1,
+                        .y2 = DISPLAY_KEEPALIVE_REFRESH_PX - 1,
+                    };
+                    lv_obj_invalidate_area(screen, &area);
                 }
+            }
+            /* Periodic maintenance stays on the LVGL owner and uses current
+             * pixels. Touch/animations defer it; normal redraw and recovery
+             * paths retain their existing full-screen invalidations. */
+            uint16_t first_row, last_row;
+            lv_obj_t *maintenance_screen = lv_screen_active();
+            if (nuwax_display_maintenance_next(&s_display_maintenance,
+                    (uintptr_t)maintenance_screen, now_us,
+                    nuwax_lvgl_port_background_work_deferred() || lv_anim_count_running() != 0U,
+                    DISP_HEIGHT, &first_row, &last_row)) {
+                const lv_area_t stripe = {.x1=0, .y1=first_row,
+                    .x2=DISP_WIDTH-1, .y2=last_row};
+                lv_obj_invalidate_area(maintenance_screen, &stripe);
             }
             lvgl_check_task_stack(now_us);
             xSemaphoreGive(s_lvgl_mutex);
@@ -1098,6 +1415,8 @@ static void lvgl_task(void *arg) {
 
 /* --- Public API --- */
 esp_err_t nuwax_lvgl_port_init(void) {
+    atomic_store_explicit(&s_panel_output_enabled, false,
+                          memory_order_release);
     taskENTER_CRITICAL(&s_init_mux);
     if (s_init_state == LVGL_PORT_READY) {
         taskEXIT_CRITICAL(&s_init_mux);
@@ -1164,16 +1483,20 @@ esp_err_t nuwax_lvgl_port_init(void) {
         buf1 = heap_caps_aligned_alloc(16, DRAW_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         if (buf1) {
             draw_buf1_internal = true;
-            const size_t after_first_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-            const size_t after_first_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-            if (DRAW_BUF_DOUBLE_BUFFER_ENABLE &&
-                after_first_free >= (DRAW_BUF_SIZE + LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE) &&
-                after_first_largest >= DRAW_BUF_SIZE) {
-                buf2 = heap_caps_aligned_alloc(16, DRAW_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            if (DRAW_BUF_DOUBLE_BUFFER_ENABLE) {
+                buf2 = display_acquire_draw_buffer(DRAW_BUF_SIZE);
+                if (buf2) s_driver_draw_buffer = buf2;
+                if (!buf2) {
+                    const size_t after_first_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                    const size_t after_first_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                    if (after_first_free >= DRAW_BUF_SIZE + LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE &&
+                        after_first_largest >= DRAW_BUF_SIZE)
+                        buf2 = heap_caps_aligned_alloc(16, DRAW_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                }
                 draw_buf2_internal = buf2 != NULL;
             }
         } else {
-            if (buf1) heap_caps_free(buf1);
+            if (buf1) release_draw_buffer(buf1);
             buf1 = NULL;
         }
     }
@@ -1186,7 +1509,7 @@ esp_err_t nuwax_lvgl_port_init(void) {
     }
     if (!buf1) {
         if (buf2) {
-            heap_caps_free(buf2);
+            release_draw_buffer(buf2);
         }
         ESP_LOGE(TAG, "Failed to allocate PSRAM draw buffer (%u bytes)", (unsigned)DRAW_BUF_SIZE);
         err = ESP_ERR_NO_MEM;
@@ -1197,14 +1520,16 @@ esp_err_t nuwax_lvgl_port_init(void) {
         buf2 = NULL;
     }
 
+    ESP_LOGI(TAG, "LVGL shared DMA buffer lease=%d bytes=%u", s_driver_draw_buffer != NULL, s_driver_draw_buffer ? (unsigned)DRAW_BUF_SIZE : 0U);
     s_draw_buf1 = buf1;
     s_draw_buf2 = buf2;
+    s_draw_buffers_split = false;
     s_draw_buf1_internal = draw_buf1_internal;
     s_draw_buf2_internal = draw_buf2_internal;
     s_runtime_internal_preferred = !s_provisioning_memory_profile;
     s_double_buffer_restore_candidate_us = 0;
     s_double_buffer_released_us = 0;
-    s_internal_restore_last_log_us = 0;
+    s_internal_restore_incident_active = false;
 
     /* Display */
     s_display = lv_display_create(DISP_WIDTH, DISP_HEIGHT);
@@ -1345,7 +1670,7 @@ esp_err_t nuwax_lvgl_port_init(void) {
     }
 
     lvgl_port_set_init_state(LVGL_PORT_READY);
-    ESP_LOGI(TAG, "LVGL port initialized successfully");
+    ESP_LOGI(TAG, "LVGL port initialized successfully style_cache=%d profile=cached-pipeline-v7", LV_OBJ_STYLE_CACHE);
     return ESP_OK;
 
 fail:
@@ -1366,6 +1691,26 @@ fail:
     ESP_LOGE(TAG, "LVGL port initialization rolled back: %s",
              esp_err_to_name(err));
     return err;
+}
+
+void nuwax_lvgl_port_set_panel_output_enabled(bool enabled)
+{
+    if (!nuwax_lvgl_port_lock_is_held_by_current_task()) {
+        ESP_LOGE(TAG,
+                 "panel output gate change rejected without LVGL mutex ownership");
+        return;
+    }
+    atomic_store_explicit(&s_panel_output_enabled, enabled,
+                          memory_order_release);
+    if (enabled) {
+        lv_obj_t *screen = lv_screen_active();
+        if (screen) {
+            lv_obj_invalidate(screen);
+        }
+        nuwax_lvgl_port_wake();
+    }
+    ESP_LOGI(TAG, "panel output gate=%s",
+             enabled ? "ui" : "held");
 }
 
 void nuwax_lvgl_port_set_provisioning_memory_profile(bool enabled) {
@@ -1416,18 +1761,10 @@ esp_err_t nuwax_lvgl_port_set_runtime_provisioning_memory(bool enabled) {
                      (unsigned)internal_largest,
                      (unsigned)DRAW_BUF_SIZE,
                      (unsigned)LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE);
+            report_ui_warning("runtime_buffer_restore_deferred", ESP_ERR_NO_MEM);
             return ESP_ERR_NO_MEM;
         }
-        if (target_buffer_count == 2U &&
-            internal_free < (2U * DRAW_BUF_SIZE) +
-                                LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE) {
-            target_buffer_count = 1U;
-            ESP_LOGW(TAG,
-                     "runtime draw buffer restore using single buffer internal=%u need_double=%u+%u",
-                     (unsigned)internal_free,
-                     (unsigned)(2U * DRAW_BUF_SIZE),
-                     (unsigned)LVGL_INTERNAL_DRAW_BUFFER_MIN_FREE);
-        }
+
     }
 
     const uint32_t caps = target_internal
@@ -1435,21 +1772,22 @@ esp_err_t nuwax_lvgl_port_set_runtime_provisioning_memory(bool enabled) {
                               : (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     uint8_t *next1 = heap_caps_aligned_alloc(16, DRAW_BUF_SIZE, caps);
     uint8_t *next2 = NULL;
-    if (next1 && target_buffer_count == 2U) {
+    if (next1 && target_buffer_count == 2U && !target_internal) {
         next2 = heap_caps_aligned_alloc(16, DRAW_BUF_SIZE, caps);
         if (!next2) {
             target_buffer_count = 1U;
             ESP_LOGW(TAG,
                      "runtime draw buffer second allocation failed target=%s; continuing single-buffered",
                      target_internal ? "internal" : "psram");
+            report_ui_warning("runtime_second_buffer_alloc", ESP_ERR_NO_MEM);
         }
     }
     if (!next1) {
         if (next1) {
-            heap_caps_free(next1);
+            release_draw_buffer(next1);
         }
         if (next2) {
-            heap_caps_free(next2);
+            release_draw_buffer(next2);
         }
         ESP_LOGE(TAG,
                  "runtime draw buffer migration allocation failed target=%s bytes=%u",
@@ -1459,27 +1797,29 @@ esp_err_t nuwax_lvgl_port_set_runtime_provisioning_memory(bool enabled) {
     }
 
     if (!nuwax_lvgl_port_lock(1000)) {
-        heap_caps_free(next1);
+        release_draw_buffer(next1);
         if (next2) {
-            heap_caps_free(next2);
+            release_draw_buffer(next2);
         }
         ESP_LOGE(TAG, "runtime draw buffer migration LVGL lock timeout");
         return ESP_ERR_TIMEOUT;
     }
     if (!lvgl_flush_pipeline_take(FLUSH_PIPELINE_CONTROL_TIMEOUT_MS)) {
         nuwax_lvgl_port_unlock();
-        heap_caps_free(next1);
-        if (next2) heap_caps_free(next2);
+        release_draw_buffer(next1);
+        if (next2) release_draw_buffer(next2);
         ESP_LOGE(TAG, "runtime draw buffer migration flush pipeline timeout");
         return ESP_ERR_TIMEOUT;
     }
 
     uint8_t *previous1 = s_draw_buf1;
     uint8_t *previous2 = s_draw_buf2;
+    const bool previous_split = s_draw_buffers_split;
     lv_display_set_buffers(s_display, next1, next2, DRAW_BUF_SIZE,
                            LV_DISPLAY_RENDER_MODE_PARTIAL);
     s_draw_buf1 = next1;
     s_draw_buf2 = next2;
+    s_draw_buffers_split = false;
     s_draw_buf1_internal = target_internal;
     s_draw_buf2_internal = next2 && target_internal;
     s_runtime_internal_preferred = target_internal;
@@ -1487,10 +1827,18 @@ esp_err_t nuwax_lvgl_port_set_runtime_provisioning_memory(bool enabled) {
     if (screen) {
         lv_obj_invalidate(screen);
     }
-    heap_caps_free(previous1);
-    if (previous2) {
-        heap_caps_free(previous2);
+    release_draw_buffer_pair(previous1, previous2, previous_split);
+    if (target_internal && want_double) {
+        uint8_t *loan = display_acquire_draw_buffer(DRAW_BUF_SIZE);
+        if (loan) {
+            s_driver_draw_buffer = loan;
+            s_draw_buf2 = loan;
+            s_draw_buf2_internal = true;
+            lv_display_set_buffers(s_display, s_draw_buf1, loan, DRAW_BUF_SIZE,
+                                   LV_DISPLAY_RENDER_MODE_PARTIAL);
+        }
     }
+    target_buffer_count = s_draw_buf2 ? 2U : 1U;
     lvgl_flush_pipeline_give();
     nuwax_lvgl_port_unlock();
     ESP_LOGI(TAG,
@@ -1520,6 +1868,7 @@ void nuwax_lvgl_port_set_flush_filter(
 }
 
 void nuwax_lvgl_port_wake(void) {
+    atomic_fetch_add_explicit(&s_external_wake_generation, 1U, memory_order_release);
     TaskHandle_t task = s_lvgl_task;
     if (task) {
         xTaskNotifyGive(task);

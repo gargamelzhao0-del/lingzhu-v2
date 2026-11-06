@@ -25,11 +25,14 @@ typedef struct {
 
 /* Policy layer over led_driver. Once initialized it must be the sole product
  * owner of the green LED; direct nuwax_led_* calls are reserved for isolated
- * hardware tests. It deliberately does not subscribe to the application state
- * machine yet, so callers can bind it later without changing the driver ABI. */
+ * hardware tests. The application battery listener binds measured charging;
+ * other indications remain explicit requests to this policy. */
 esp_err_t nuwax_led_status_init(const nuwax_led_status_config_t *config);
 esp_err_t nuwax_led_status_set(nuwax_led_status_t status);
 esp_err_t nuwax_led_status_set_sleeping(bool sleeping);
 esp_err_t nuwax_led_status_set_audio_rx(bool active);
+/* Independent request: clearing it restores the other requested indication.
+ * Priority: error/provisioning, audio, charging, sleeping, base. */
+esp_err_t nuwax_led_status_set_charging(bool active);
 nuwax_led_status_t nuwax_led_status_get(void);
 esp_err_t nuwax_led_status_deinit(void);

@@ -1,0 +1,58 @@
+{
+  "revision": "20260924-wake-evidence-v1",
+  "elfSha256": "1b54bd5377b18da26bc03b3996535f7dbf0b46c34276359f5e007acc011d0e7c",
+  "binSha256": "7b782e8840e1ee12effc26dcf9e0cdda03e5966029977c17774e8cdfc7de28d3",
+  "bytes": 3827104,
+  "workerStackFrame": 1952,
+  "workerStackBytes": 8192,
+  "modelThreshold": 0.08,
+  "acousticEvidenceRequired": true,
+  "hardwareValidated": false,
+  "sourceHashes": {
+    "main/wake_word_detector.c": "7ed6fae1ce274011dce799f37a03412c1f7224bfea53fc6dc1fb0f96f000acd4",
+    "main/conversation/wake_word_detection_policy.h": "0bc0a14ff7d5269cb3eeb8ff09feb7855a137eb1fd7d279d0054af1dc61a0620",
+    "main/wake_word_detection_policy_host_check.c": "f737733fe58f18733c2e463fe2f3d8ad791391fccdf9a54a7c10dc9d47a38c2f",
+    "tools/test-wake-evidence.py": "b78ecf322586ce691e506e2a8b686095855f0d74010ad95603048354829af63d",
+    "tools/verify-wake-evidence-build.py": "6480430558724a155f1b81bc056e24f234250ae59a317493e43aa1387f2a4415"
+  },
+  "images": [
+    {
+      "offset": "0x0",
+      "file": "bootloader/bootloader.bin",
+      "sha256": "9f248444739c1b246f979dd8470fd6c41b1de304940275c8dffcdf77bb5c5298"
+    },
+    {
+      "offset": "0x8000",
+      "file": "partition_table/partition-table.bin",
+      "sha256": "2d14d431e660392a4f6bd8610a97f298b6a7e5810dbdcaf5d16ab98089abb06d"
+    },
+    {
+      "offset": "0xf000",
+      "file": "ota_data_initial.bin",
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    },
+    {
+      "offset": "0x20000",
+      "file": "srmodels/srmodels.bin",
+      "sha256": "dec3196aaadcf4e6305434462f5735e1148e5ddfe1f6a0696776d666f9066d34"
+    },
+    {
+      "offset": "0x2c0000",
+      "file": "NuwaxAIPartner.bin",
+      "sha256": "7b782e8840e1ee12effc26dcf9e0cdda03e5966029977c17774e8cdfc7de28d3"
+    },
+    {
+      "offset": "0xb00000",
+      "file": "emotion_assets/emotion-assets.bin",
+      "sha256": "c8e9258f5963f6b08089ef80af6190ba1053e3e73dfc990d529d090a6f752897"
+    }
+  ],
+  "checks": {
+    "productHost": true,
+    "conversationHost": true,
+    "wakeEvidence": true,
+    "formalBuild": true,
+    "hardwareValidated": false,
+    "flashVerifyOnly": true
+  }
+}

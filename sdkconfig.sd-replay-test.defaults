@@ -1,0 +1,29 @@
+# LAN SD archive receiver only. The primary cloud still uses provisioned credentials.
+CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE=y
+CONFIG_NUWAX_SD_SESSION_ENABLE=y
+CONFIG_NUWAX_SD_CARD_HIGHSPEED_ENABLE=y
+# PC gateway upload stays enabled without the on-device developer test page.
+# CONFIG_NUWAX_TEST_PANEL_ENABLE is not set
+# CONFIG_NUWAX_TEST_NETWORK_ENABLE is not set
+CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_ENABLE=y
+# CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_FORMAL_ENABLE is not set
+CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_URL="ws://192.168.31.180:8810/api/device/ws"
+CONFIG_NUWAX_OFFLINE_AUDIO_REPLAY_TEST_TOKEN="offline-replay-test"
+CONFIG_NUWAX_OFFLINE_AUDIO_MAX_BYTES=1610612736
+CONFIG_NUWAX_MEETING_OFFLINE_MAX_HOURS=8
+CONFIG_NUWAX_MONITORING_OFFLINE_MAX_HOURS=8
+# 32 MSS of dynamically used TCP send space (was 4 MSS / 5760 bytes).
+# Test-build TCP default, including its cloud socket; not a per-socket option.
+# Keep Wi-Fi static internal buffers and task priorities at the product values.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=46080
+# Cache-line experiment for the LAN replay build. Keep the 32 KiB cache/heap
+# split; a 64 KiB cache would consume another 32 KiB of scarce internal RAM.
+CONFIG_ESP32S3_DATA_CACHE_32KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+# Keep throughput comparisons on the same internal RAM budget. Apply the
+# separate diagnostic defaults in a separate build when collecting a panic.
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
+# V28 UI performance telemetry for the display-driver optimization validation:
+# flush avg/max, render/refr fps, handler hz, dirty ratio, stack/heap per window.
+# Interval uses the Kconfig default 2000 ms. Diagnostic only; keep product builds quiet.
+CONFIG_NUWAX_UI_PERF_LOG_ENABLE=y

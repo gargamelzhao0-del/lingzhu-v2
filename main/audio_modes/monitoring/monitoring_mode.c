@@ -1,3 +1,4 @@
+#include "sd_audio_session.h"
 #include "monitoring_mode.h"
 
 #include <inttypes.h>
@@ -6,19 +7,26 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+#include "sd_audio_control_compat.h"
 
 #include "audio_frame.h"
 #include "conversation/audio_terminal_recovery.h"
+#include "device_error_report.h"
 #include "audio_uplink.h"
 #include "mic_input.h"
 #include "monitoring_speech_policy.h"
 #include "opus_encoder_wrapper.h"
 #include "session_protocol.h"
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE && !CONFIG_NUWAX_SD_SESSION_ENABLE
+#include "offline_audio_spool.h"
+#include "offline_audio_voice.h"
+#endif
 
 static const char *TAG = "nuwax_monitoring";
 
@@ -80,12 +88,7 @@ static const char *TAG = "nuwax_monitoring";
 #define CONFIG_NUWAX_MONITORING_ESP_VAD_ENABLE 1
 #endif
 
-#if CONFIG_NUWAX_MONITORING_ESP_VAD_ENABLE && defined(ESP_PLATFORM)
-#define NUWAX_MONITORING_USE_ESP_VAD 1
-#include "esp_vad.h"
-#else
-#define NUWAX_MONITORING_USE_ESP_VAD 0
-#endif
+#include "monitoring_speech_detector.h"
 
 #define NUWAX_MONITORING_EVENT_QUEUE_DEPTH 8U
 #define NUWAX_MONITORING_ACK_QUEUE_DEPTH 2U
@@ -112,20 +115,7 @@ typedef struct {
 } monitoring_pending_frame_t;
 
 #if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
-typedef struct {
-    uint32_t noise_floor_abs;
-    uint32_t consecutive_speech_frames;
-    uint32_t raw_vad_speech_frames;
-    uint32_t qualified_vad_speech_frames;
-    uint32_t rejected_vad_speech_frames;
-    bool noise_floor_initialized;
-    bool last_energy_speech;
-    bool last_vad_speech;
-    bool last_vad_qualified;
-#if NUWAX_MONITORING_USE_ESP_VAD
-    vad_handle_t vad;
-#endif
-} monitoring_speech_detector_t;
+
 
 typedef struct {
     bool active;
@@ -151,6 +141,7 @@ typedef struct {
     nuwax_audio_uplink_t *uplink;
     monitoring_pending_frame_t pending;
     uint32_t next_sequence;
+    uint32_t first_sequence;
     bool uplink_ready;
     bool have_pending;
     bool listen_started;
@@ -211,11 +202,23 @@ static const char *state_name(nuwax_monitoring_state_t state) {
     }
 }
 
+static void retire_active_result(nuwax_monitoring_mode_t *mode);
+
+
+static void send_ui_close_request(nuwax_monitoring_mode_t *mode, nuwax_ws_client_t *ws);
+
 static void set_state(nuwax_monitoring_mode_t *mode,
                       nuwax_monitoring_state_t state,
                       const char *reason) {
     if (!mode) {
         return;
+    }
+    if (state != NUWAX_MONITORING_STATE_ACTIVE) retire_active_result(mode);
+    if (state == NUWAX_MONITORING_STATE_STARTING) {
+        mode->pending_ui_close = false;
+        mode->close_request_id[0] = '\0';
+        mode->close_request_epoch = 0;
+        mode->close_survives_disconnect = false;
     }
     const bool changed = mode->state != state;
     if (changed) {
@@ -236,12 +239,26 @@ static bool can_start(const nuwax_monitoring_mode_t *mode) {
            mode->callbacks.can_start(mode->callbacks.ctx);
 }
 
+static bool is_state_sync_ack(const nuwax_monitoring_event_t *event) {
+    static const char prefix[] = "monitoring_sync_";
+    return event && event->type == NUWAX_MONITORING_EVENT_REQUEST_ACK &&
+        strncmp(event->request_id, prefix, sizeof(prefix) - 1U) == 0;
+}
+
 static void complete_queued_enable_event(
     nuwax_monitoring_mode_t *mode,
     const nuwax_monitoring_event_t *event) {
-    if (!mode || !event || event->type != NUWAX_MONITORING_EVENT_CLOUD_ENABLE) {
+    if (!mode || !event) return;
+    if (is_state_sync_ack(event)) {
+        uint32_t queued = atomic_load_explicit(&mode->queued_sync_acks, memory_order_acquire);
+        while (queued > 0U) {
+            if (atomic_compare_exchange_weak_explicit(&mode->queued_sync_acks,
+                    &queued, queued - 1U, memory_order_acq_rel, memory_order_acquire)) return;
+        }
+        ESP_LOGE(TAG, "monitoring state-sync ACK accounting underflow");
         return;
     }
+    if (event->type != NUWAX_MONITORING_EVENT_CLOUD_ENABLE) return;
     uint32_t pending = atomic_load_explicit(&mode->queued_enable_events,
                                             memory_order_acquire);
     while (pending > 0U) {
@@ -273,6 +290,8 @@ static bool queue_event(nuwax_monitoring_mode_t *mode,
     if (!mode->events) {
         return false;
     }
+    if (is_state_sync_ack(event))
+        atomic_fetch_add_explicit(&mode->queued_sync_acks, 1U, memory_order_acq_rel);
     if (event->type == NUWAX_MONITORING_EVENT_CLOUD_ENABLE) {
         atomic_fetch_add_explicit(&mode->queued_enable_events,
                                   1U,
@@ -321,10 +340,29 @@ static void clear_event_queue(nuwax_monitoring_mode_t *mode) {
     }
 }
 
+static void select_audio_session(nuwax_monitoring_mode_t *mode, const char *requested)
+{
+    const char *selected = requested;
+    if (mode->identity.session_id[0]) {
+        selected = mode->identity.session_id;
+        if (requested && requested[0] && strcmp(requested, selected) != 0) {
+            ESP_LOGW(TAG, "monitoring retains session=%s cloud_requested=%s",
+                     selected, requested);
+        }
+    }
+    copy_text(mode->audio_session_id, sizeof(mode->audio_session_id), selected);
+}
+
 static void reset_transient_state(nuwax_monitoring_mode_t *mode) {
     if (!mode) {
         return;
     }
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    nuwax_sd_session_release_start(NUWAX_OFFLINE_AUDIO_MODE_MONITORING);
+#endif
+    mode->sd_local = false;
+    mode->sd_start_ms = 0U;
+    memset(&mode->sd_sync, 0, sizeof(mode->sd_sync));
     mode->capture_running = false;
     mode->pending_command_ack = false;
     mode->pending_command_enabled = false;
@@ -368,7 +406,13 @@ static void set_stop_reason(nuwax_monitoring_mode_t *mode, const char *reason) {
 }
 
 static void make_audio_session_id(nuwax_monitoring_mode_t *mode) {
-    if (!mode || mode->audio_session_id[0] != '\0') {
+    if (!mode) return;
+    if (mode->identity.session_id[0]) {
+        copy_text(mode->audio_session_id, sizeof(mode->audio_session_id), mode->identity.session_id);
+        return;
+    }
+    if (mode->audio_session_id[0] != '\0') {
+        nuwax_audio_mode_identity_remember(&mode->identity, mode->audio_session_id);
         return;
     }
     const uint32_t sequence = ++mode->stream_sequence;
@@ -377,6 +421,7 @@ static void make_audio_session_id(nuwax_monitoring_mode_t *mode) {
              "monitoring_stream_%lu_%08lx",
              (unsigned long)sequence,
              (unsigned long)esp_random());
+    nuwax_audio_mode_identity_remember(&mode->identity, mode->audio_session_id);
 }
 
 static void make_capture_control_request_id(
@@ -400,6 +445,7 @@ static void begin_cloud_stop(nuwax_monitoring_mode_t *mode,
     if (!mode) {
         return;
     }
+    mode->pending_ui_close = false;
     set_stop_reason(mode,
                     event && event->reason[0] ? event->reason
                                               : "cloud_disable");
@@ -413,6 +459,25 @@ static void begin_cloud_stop(nuwax_monitoring_mode_t *mode,
     set_state(mode, NUWAX_MONITORING_STATE_STOPPING, mode->stop_reason);
 }
 
+static esp_err_t send_event_command_ack(nuwax_monitoring_mode_t *mode, nuwax_ws_client_t *ws,
+    const nuwax_monitoring_event_t *event, bool enabled, bool ok, const char *message, const char *session_id)
+{
+    const int64_t now = esp_timer_get_time();
+    nuwax_audio_command_deadline_t *c = mode ? &mode->command_deadline : NULL;
+    const bool same = c && nuwax_audio_command_matches(c, event->request_id);
+    const int64_t received = same ? c->received_us :
+        (now / 1000 - (uint32_t)((uint32_t)(now / 1000) - event->received_ms)) * 1000;
+    const int64_t limit = received + (int64_t)NUWAX_AUDIO_COMMAND_ACK_MS * 1000;
+    if (now >= limit || (same && c->attempts >= NUWAX_MONITORING_COMMAND_ACK_MAX_ATTEMPTS)) return ESP_ERR_TIMEOUT;
+    const int64_t deadline = limit - now < NUWAX_AUDIO_COMMAND_SEND_SLICE_US
+        ? limit : now + NUWAX_AUDIO_COMMAND_SEND_SLICE_US;
+    if (same) ++c->attempts;
+    const esp_err_t err = nuwax_monitoring_protocol_send_command_ack_until(ws, event->request_id,
+        enabled, ok, message, session_id, deadline, event->ws_connection_epoch);
+    if (same && err == ESP_OK) c->ack_pending = false;
+    return err;
+}
+
 static void clear_pending_command_ack(nuwax_monitoring_mode_t *mode) {
     if (!mode) {
         return;
@@ -424,6 +489,56 @@ static void clear_pending_command_ack(nuwax_monitoring_mode_t *mode) {
     mode->pending_command_request_id[0] = '\0';
 }
 
+static void retire_active_result(nuwax_monitoring_mode_t *mode)
+{
+    nuwax_audio_command_deadline_t *c = &mode->command_deadline;
+    nuwax_audio_command_retire_active(c);
+    nuwax_sd_control_retire_enabled(&mode->sd_sync, c, esp_timer_get_time());
+    if (c->retired && nuwax_audio_command_matches(c, mode->pending_command_request_id))
+        clear_pending_command_ack(mode);
+}
+
+static void service_command_result(nuwax_monitoring_mode_t *mode, nuwax_ws_client_t *ws)
+{
+    nuwax_audio_command_deadline_t *c = &mode->command_deadline;
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    if (mode->sd_local && !nuwax_offline_audio_capture_running()) retire_active_result(mode);
+#endif
+    if (c->ok && c->enabled && (c->retired || mode->state != NUWAX_MONITORING_STATE_ACTIVE ||
+        !mode->capture_running || (c->session_id[0] && strcmp(c->session_id, mode->audio_session_id)))) {
+        retire_active_result(mode);
+        return;
+    }
+    if (!c->tracked || !c->decided || !c->ack_pending) return;
+    const int64_t now = esp_timer_get_time();
+    const int64_t deadline = nuwax_audio_command_send_deadline(c, now);
+    if (!deadline || c->attempts >= NUWAX_MONITORING_COMMAND_ACK_MAX_ATTEMPTS) {
+        c->ack_pending = false;
+        if (nuwax_audio_command_matches(c, mode->pending_command_request_id)) clear_pending_command_ack(mode);
+        return;
+    }
+    if (ws && nuwax_ws_is_connected(ws) && c->ok &&
+        (!c->enabled || mode->state == NUWAX_MONITORING_STATE_ACTIVE))
+        c->epoch = nuwax_ws_connection_epoch(ws);
+    if (!ws || !nuwax_ws_is_connected(ws) || nuwax_ws_connection_epoch(ws) != c->epoch ||
+        (c->attempts && (int32_t)(now_ms() - c->retry_at_ms) < 0)) return;
+    ++c->attempts;
+    const esp_err_t err = nuwax_monitoring_protocol_send_command_ack_until(ws, c->request_id,
+        c->enabled, c->ok, c->message, c->session_id[0] ? c->session_id : NULL, deadline, c->epoch);
+    c->retry_at_ms = (uint32_t)(now / 1000) + NUWAX_AUDIO_COMMAND_RETRY_MS;
+    if (nuwax_audio_command_matches(c, mode->pending_command_request_id)) {
+        mode->pending_command_ack_attempts = c->attempts;
+        mode->pending_command_ack_deadline_ms = c->retry_at_ms;
+    }
+    if (err == ESP_OK) {
+        c->ack_pending = false;
+        if (nuwax_audio_command_matches(c, mode->pending_command_request_id)) clear_pending_command_ack(mode);
+    }
+    ESP_LOGI(TAG, "command result request=%s ok=%d elapsed_ms=%lu attempt=%u err=%s",
+        c->request_id, c->ok, (unsigned long)((esp_timer_get_time() - c->received_us) / 1000),
+        c->attempts, esp_err_to_name(err));
+}
+
 static void try_send_active_command_ack(nuwax_monitoring_mode_t *mode,
                                         nuwax_ws_client_t *ws,
                                         bool force) {
@@ -433,6 +548,14 @@ static void try_send_active_command_ack(nuwax_monitoring_mode_t *mode,
         !nuwax_ws_is_connected(ws)) {
         return;
     }
+    if (nuwax_audio_command_matches(&mode->command_deadline, mode->pending_command_request_id)) {
+        nuwax_monitoring_mode_service_command_deadline(mode, ws);
+        if (mode->state != NUWAX_MONITORING_STATE_ACTIVE) return;
+        nuwax_audio_command_decide(&mode->command_deadline, true, true, "active",
+            mode->sd_local ? mode->audio_session_id : NULL);
+        service_command_result(mode, ws);
+        return;
+    }
     const uint32_t now = now_ms();
     if (!force &&
         !deadline_expired(now, mode->pending_command_ack_deadline_ms)) {
@@ -440,12 +563,12 @@ static void try_send_active_command_ack(nuwax_monitoring_mode_t *mode,
     }
 
     mode->pending_command_ack_attempts++;
-    const esp_err_t ack_err = nuwax_monitoring_protocol_send_command_ack(
+    const esp_err_t ack_err = nuwax_monitoring_protocol_send_command_ack_with_session(
         ws,
         mode->pending_command_request_id,
         true,
         true,
-        "active");
+        "active", mode->sd_local ? mode->audio_session_id : NULL);
     if (ack_err == ESP_OK) {
         ESP_LOGI(TAG,
                  "monitoring active command ACK delivered request=%s attempts=%lu",
@@ -476,18 +599,89 @@ static void try_send_active_command_ack(nuwax_monitoring_mode_t *mode,
              esp_err_to_name(ack_err));
 }
 
-static void send_busy_ack(nuwax_monitoring_mode_t *mode,
-                          nuwax_ws_client_t *ws,
-                          const char *request_id) {
-    (void)mode;
-    if (ws && nuwax_ws_is_connected(ws) && request_id && request_id[0] != '\0') {
-        (void)nuwax_monitoring_protocol_send_command_ack(ws,
-                                                         request_id,
-                                                         false,
-                                                         false,
-                                                         "audio_mode_busy");
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+static void service_sd_cloud_sync(nuwax_monitoring_mode_t *mode, nuwax_ws_client_t *ws)
+{
+    if (!ws || !nuwax_ws_is_connected(ws)) return;
+    const bool enabled = mode->state == NUWAX_MONITORING_STATE_ACTIVE;
+    if (mode->state != NUWAX_MONITORING_STATE_DISABLED && !enabled) return;
+    /* No-card active streams use their existing opening/resume request.
+     * Never add a control send in the main-owned realtime capture loop. */
+    if (enabled && (!mode->sd_local || !mode->audio_session_id[0])) return;
+    if (!enabled && (mode->offline_resume_required || mode->identity.resuming)) return;
+    nuwax_sd_control_sync_t *sync = &mode->sd_sync;
+    const uint32_t now = now_ms();
+    nuwax_sd_control_sync_connect(sync, nuwax_ws_connection_epoch(ws), now,
+                                  atomic_load_explicit(&mode->control_rx_order, memory_order_relaxed));
+    if (sync->request_id[0] && sync->reported_enabled != enabled) {
+        sync->request_id[0] = '\0';
+        sync->confirmed = sync->reply_confirmed = sync->announced = false;
+        sync->timeout_reported = false;
+        sync->attempts = sync->send_failures = 0U;
+        sync->started_ms = sync->next_send_ms = now;
     }
+    sync->reported_enabled = enabled;
+    if (sync->announced && !sync->confirmed && !sync->timeout_reported &&
+        (uint32_t)(now - sync->started_ms) >= NUWAX_SD_CONTROL_SYNC_MS) {
+        sync->timeout_reported = true;
+        ESP_LOGW(TAG, "SD monitoring control sync timeout epoch=%lu state=%s session=%s; local state retained, commands remain available",
+                 (unsigned long)sync->epoch, enabled ? "enabled" : "disabled",
+                 enabled ? mode->audio_session_id : "-");
+    }
+    if (!nuwax_sd_control_sync_due(sync, now)) return;
+    if (!sync->request_id[0])
+        snprintf(sync->request_id, sizeof(sync->request_id), "monitoring_sync_%lu_%08lx",
+                 (unsigned long)++mode->request_sequence, (unsigned long)esp_random());
+    const esp_err_t err = enabled
+        ? nuwax_monitoring_protocol_send_resume_request(ws, sync->request_id, mode->audio_session_id)
+        : nuwax_monitoring_protocol_send_request(ws, sync->request_id, false, "device_state_sync");
+    nuwax_sd_control_sync_note_send(sync, now_ms(), err == ESP_OK);
+    ESP_LOGI(TAG, "SD monitoring control sync request=%s epoch=%lu state=%s session=%s attempt=%u announced=%u send_failures=%u err=%s",
+             sync->request_id, (unsigned long)sync->epoch, enabled ? "enabled" : "disabled",
+             enabled ? mode->audio_session_id : "-", sync->attempts,
+             (unsigned)sync->announced, (unsigned)sync->send_failures, esp_err_to_name(err));
 }
+
+
+static bool handle_sd_sync_ack(nuwax_monitoring_mode_t *mode, const nuwax_monitoring_event_t *event)
+{
+    nuwax_sd_control_sync_t *sync = &mode->sd_sync;
+    if (!sync->request_id[0] ||
+        event->ws_connection_epoch != sync->epoch ||
+        strcmp(event->request_id, sync->request_id) != 0) return false;
+    const bool accepted = event->ok &&
+        strcmp(event->state, sync->reported_enabled ? "enabled" : "disabled") == 0;
+    if (accepted)
+        nuwax_sd_control_sync_confirm_reply(sync, event->rx_order, event->audio_session_id);
+    ESP_LOGI(TAG, "SD monitoring control sync reply request=%s epoch=%lu accepted=%d session=%s cloud_session=%s control_session=%s; capture retained",
+             event->request_id, (unsigned long)sync->epoch, accepted,
+             mode->audio_session_id, event->audio_session_id[0] ? event->audio_session_id : "-",
+             sync->reply_session_id[0] ? sync->reply_session_id : "-");
+    return true;
+}
+
+static bool reject_sd_cloud_disable(nuwax_monitoring_mode_t *mode, nuwax_ws_client_t *ws,
+                                    const nuwax_monitoring_event_t *event)
+{
+    /* Handoffs are owner-generated events without a cloud request ID. */
+    if (!mode->sd_local || !event->request_id[0] ||
+        (mode->state != NUWAX_MONITORING_STATE_ACTIVE && mode->state != NUWAX_MONITORING_STATE_STARTING)) return false;
+    const char *reason = event->local_stop_generation != atomic_load_explicit(
+        &mode->local_stop_generation, memory_order_acquire) ? "local_stop_superseded" :
+        nuwax_sd_control_disable_rejection(&mode->sd_sync, event->rx_order, event->received_ms,
+            event->request_id, event->audio_session_id, mode->audio_session_id);
+    if (!reason) return false;
+    ESP_LOGW(TAG, "SD monitoring cloud disable rejected request=%s epoch=%lu target_session=%s local_session=%s reason=%s",
+             event->request_id, (unsigned long)event->ws_connection_epoch,
+             event->audio_session_id[0] ? event->audio_session_id : "-",
+             mode->audio_session_id[0] ? mode->audio_session_id : "-", reason);
+    (void)send_event_command_ack(mode, ws, event, true, false, reason, NULL);
+    return true;
+}
+#endif
+
+
+
 
 static void handle_event(nuwax_monitoring_mode_t *mode,
                          nuwax_ws_client_t *ws,
@@ -496,19 +690,111 @@ static void handle_event(nuwax_monitoring_mode_t *mode,
         return;
     }
 
+    if (event->type == NUWAX_MONITORING_EVENT_CLOUD_ENABLE ||
+        event->type == NUWAX_MONITORING_EVENT_CLOUD_DISABLE)
+        ESP_LOGI(TAG, "monitoring cloud control request=%s state=%s epoch=%lu target_session=%s local_session=%s sd=%d",
+                 event->request_id[0] ? event->request_id : "-", event->state,
+                 (unsigned long)event->ws_connection_epoch,
+                 event->audio_session_id[0] ? event->audio_session_id : "-",
+                 mode->audio_session_id[0] ? mode->audio_session_id : "-", (int)mode->sd_local);
+
+    if (event->type == NUWAX_MONITORING_EVENT_REQUEST_ACK) {
+        if (mode->close_request_id[0] && event->ws_connection_epoch == mode->close_request_epoch &&
+            !strcmp(event->request_id, mode->close_request_id)) {
+            mode->pending_ui_close = false;
+            mode->close_request_id[0] = '\0';
+            mode->close_request_epoch = 0;
+            return;
+        }
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+        (void)handle_sd_sync_ack(mode, event);
+#endif
+        return;
+    }
+
     if (event->type == NUWAX_MONITORING_EVENT_CAPTURE_CONTROL_ACK) {
         return;
     }
 
+    if (event->type == NUWAX_MONITORING_EVENT_CLOUD_ENABLE && event->local_stop_generation !=
+        atomic_load(&mode->local_stop_generation)) {
+        (void)send_event_command_ack(mode, ws, event, false, false, "local_stop_superseded", NULL);
+        return;
+    }
+    if (event->request_id[0]) {
+        nuwax_audio_command_deadline_t *c = &mode->command_deadline;
+        if (nuwax_audio_command_matches(c, event->request_id) && c->retired) return;
+        if (nuwax_audio_command_matches(c, event->request_id) &&
+            (!c->decided || !c->ok || mode->state != NUWAX_MONITORING_STATE_ACTIVE)) {
+            /* Retry keeps the first RX time and the immutable terminal result. */
+            if (c->decided && !c->ack_pending && nuwax_audio_command_send_deadline(c, esp_timer_get_time())) {
+                c->ack_pending = true;
+                c->retry_at_ms = now_ms();
+            }
+            service_command_result(mode, ws);
+            return;
+        }
+        if (nuwax_audio_command_failed(c, event->request_id)) return;
+        if ((uint32_t)(now_ms() - event->received_ms) >= NUWAX_AUDIO_COMMAND_EXECUTE_MS) {
+            /* The event never acquired ownership. Do not stop the active mode. */
+            nuwax_audio_command_deadline_t expired = {0};
+            nuwax_audio_command_begin(&expired, event->request_id, event->received_ms,
+                event->ws_connection_epoch, event->local_stop_generation, esp_timer_get_time());
+            nuwax_audio_command_failure_t *f = &c->failed[c->failed_next++ % NUWAX_AUDIO_COMMAND_FAILURE_CACHE];
+            copy_text(f->request_id, sizeof(f->request_id), event->request_id);
+            f->received_us = expired.received_us;
+            const int64_t deadline = nuwax_audio_command_send_deadline(&expired, esp_timer_get_time());
+            if (deadline) (void)nuwax_monitoring_protocol_send_command_ack_until(ws, event->request_id,
+                false, false, "mode_handoff_failed", NULL, deadline, event->ws_connection_epoch);
+            return;
+        }
+    }
+
     if (event->type == NUWAX_MONITORING_EVENT_CLOUD_ENABLE) {
+        if (event->local_stop_generation != atomic_load_explicit(
+                &mode->local_stop_generation, memory_order_acquire)) {
+            if (ws && event->request_id[0]) {
+                (void)send_event_command_ack(mode, ws, event, false, false, "local_stop_superseded", NULL);
+            }
+            ESP_LOGI(TAG, "queued monitoring enable cancelled by local stop request=%s",
+                     event->request_id);
+            return;
+        }
+        bool sd_admission = false;
+        (void)sd_admission;
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+        sd_admission = mode->sd_local ||
+            (mode->state == NUWAX_MONITORING_STATE_DISABLED && !mode->identity.resuming &&
+             nuwax_sd_session_prefers_local());
+        if (sd_admission) {
+            const char *rejection = nuwax_sd_control_enable_rejection(mode->sd_local,
+                mode->audio_session_id, &mode->sd_sync, event->audio_session_id);
+            if (rejection) {
+                ESP_LOGW(TAG, "SD monitoring enable rejected request=%s reason=%s", event->request_id, rejection);
+                (void)send_event_command_ack(mode, ws, event, mode->state == NUWAX_MONITORING_STATE_ACTIVE, false, rejection, NULL);
+                return;
+            }
+        }
+#endif
         if (mode->state == NUWAX_MONITORING_STATE_ACTIVE) {
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+            if (mode->sd_local) {
+                nuwax_sd_control_track_enabled(&mode->sd_sync, event->request_id);
+                /* An accepted enable is itself an authoritative state sync.
+                 * Legacy clouds may reject the parallel resume request. Do
+                 * not keep rejecting newer App stops after agreeing enabled. */
+                nuwax_sd_control_sync_connect(&mode->sd_sync, event->ws_connection_epoch,
+                                               now_ms(), event->rx_order);
+                const bool was_confirmed = mode->sd_sync.confirmed;
+                nuwax_sd_control_sync_confirm(&mode->sd_sync, event->rx_order, event->audio_session_id);
+                if (!was_confirmed)
+                    ESP_LOGI(TAG, "SD monitoring control confirmed by cloud enable request=%s epoch=%lu session=%s",
+                             event->request_id, (unsigned long)event->ws_connection_epoch, mode->audio_session_id);
+            }
+#endif
             if (ws && event->request_id[0] != '\0') {
                 const esp_err_t ack_err =
-                    nuwax_monitoring_protocol_send_command_ack(ws,
-                                                               event->request_id,
-                                                               true,
-                                                               true,
-                                                               "already_active");
+                    send_event_command_ack(mode, ws, event, true, true, "already_active", mode->sd_local ? mode->audio_session_id : NULL);
                 if (ack_err == ESP_OK && mode->pending_command_ack &&
                     mode->pending_command_enabled &&
                     strcmp(event->request_id,
@@ -527,7 +813,7 @@ static void handle_event(nuwax_monitoring_mode_t *mode,
             return;
         }
         if (mode->state != NUWAX_MONITORING_STATE_DISABLED || !can_start(mode)) {
-            send_busy_ack(mode, ws, event->request_id);
+            (void)send_event_command_ack(mode, ws, event, false, false, "audio_mode_busy", NULL);
             ESP_LOGW(TAG,
                      "cloud monitoring enable rejected state=%s exclusive_owner_busy=%d",
                      state_name(mode->state),
@@ -535,13 +821,49 @@ static void handle_event(nuwax_monitoring_mode_t *mode,
             return;
         }
 
+        /* Preserve the normal foreground and immutable request outcome when
+         * the card has already failed its write/readback qualification. */
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+        const esp_err_t storage_fault = sd_admission ? nuwax_sd_session_start_fault() : ESP_OK;
+        if (storage_fault != ESP_OK) {
+            nuwax_audio_command_begin(&mode->command_deadline, event->request_id, event->received_ms,
+                event->ws_connection_epoch, event->local_stop_generation, esp_timer_get_time());
+            nuwax_audio_command_decide(&mode->command_deadline, false, false, "sd_start_failed", NULL);
+            ESP_LOGW(TAG, "SD monitoring start refused before handoff request=%s media_err=%s",
+                event->request_id, esp_err_to_name(storage_fault));
+            service_command_result(mode, ws);
+            return;
+        }
+#endif
         reset_transient_state(mode);
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+        mode->sd_local = sd_admission;
+        if (sd_admission) mode->sd_start_ms = now_ms();
+#endif
+        if (mode->sd_local)
+            copy_text(mode->audio_session_id, sizeof(mode->audio_session_id), event->audio_session_id);
+        else
+            select_audio_session(mode, event->audio_session_id);
         mode->pending_command_ack = event->request_id[0] != '\0';
         mode->pending_command_enabled = true;
         copy_text(mode->pending_command_request_id,
                   sizeof(mode->pending_command_request_id),
                   event->request_id);
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+        nuwax_sd_control_sync_connect(&mode->sd_sync, event->ws_connection_epoch, now_ms(), event->rx_order);
+        nuwax_sd_control_sync_confirm(&mode->sd_sync, event->rx_order, event->audio_session_id);
+        mode->sd_sync.announced = true; /* Fresh cloud opening, not a reconnect report. */
+        mode->sd_sync.reported_enabled = true;
+        if (sd_admission && nuwax_sd_control_prepare_legacy_id(&mode->sd_sync, mode->audio_session_id, "monitor"))
+            ESP_LOGI(TAG, "SD monitoring assigned recording ID request=%s cloud_session=%s local_session=%s",
+                event->request_id, mode->sd_sync.cloud_session_id[0] ? mode->sd_sync.cloud_session_id : "<missing>",
+                mode->audio_session_id);
+#endif
+        nuwax_audio_command_begin(&mode->command_deadline, event->request_id, event->received_ms,
+            event->ws_connection_epoch, event->local_stop_generation, esp_timer_get_time());
         set_state(mode, NUWAX_MONITORING_STATE_STARTING, "cloud_enable");
+        nuwax_monitoring_mode_service_command_deadline(mode, ws);
+        if (mode->state != NUWAX_MONITORING_STATE_STARTING) return;
         if (mode->callbacks.is_playback_active &&
             mode->callbacks.is_playback_active(mode->callbacks.ctx) &&
             mode->callbacks.fade_and_cancel_playback) {
@@ -552,13 +874,12 @@ static void handle_event(nuwax_monitoring_mode_t *mode,
         return;
     }
 
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    if (reject_sd_cloud_disable(mode, ws, event)) return;
+#endif
     if (mode->state == NUWAX_MONITORING_STATE_DISABLED) {
         if (ws && event->request_id[0] != '\0') {
-            (void)nuwax_monitoring_protocol_send_command_ack(ws,
-                                                             event->request_id,
-                                                             false,
-                                                             true,
-                                                             "already_disabled");
+            (void)send_event_command_ack(mode, ws, event, false, true, "already_disabled", NULL);
         }
         return;
     }
@@ -571,18 +892,26 @@ static void handle_event(nuwax_monitoring_mode_t *mode,
         return;
     }
     if (mode->state == NUWAX_MONITORING_STATE_STOPPING) {
-        send_busy_ack(mode, ws, event->request_id);
+        (void)send_event_command_ack(mode, ws, event, false, false, "audio_mode_busy", NULL);
         return;
     }
+    retire_active_result(mode);
     if (mode->pending_command_ack && mode->pending_command_enabled &&
         mode->pending_command_request_id[0] != '\0' && ws &&
         nuwax_ws_is_connected(ws)) {
-        (void)nuwax_monitoring_protocol_send_command_ack(
-            ws,
-            mode->pending_command_request_id,
-            false,
-            false,
-            "superseded_by_disable");
+        if (nuwax_audio_command_matches(&mode->command_deadline, mode->pending_command_request_id)) {
+            nuwax_audio_command_decide(&mode->command_deadline, false, false, "superseded_by_disable", NULL);
+            service_command_result(mode, ws);
+        } else {
+            (void)nuwax_monitoring_protocol_send_command_ack(ws, mode->pending_command_request_id,
+                false, false, "superseded_by_disable");
+        }
+    }
+    if (event->request_id[0]) {
+        nuwax_audio_command_begin(&mode->command_deadline, event->request_id, event->received_ms,
+            event->ws_connection_epoch, event->local_stop_generation, esp_timer_get_time());
+        mode->command_deadline.enabled = false;
+        mode->command_deadline.prepared = true;
     }
     begin_cloud_stop(mode, event);
 }
@@ -591,19 +920,84 @@ static void drain_events(nuwax_monitoring_mode_t *mode, nuwax_ws_client_t *ws) {
     if (!mode || !mode->events) {
         return;
     }
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    if (mode->sd_local && ws && nuwax_ws_is_connected(ws))
+        nuwax_sd_control_sync_connect(&mode->sd_sync, nuwax_ws_connection_epoch(ws), now_ms(),
+                                      atomic_load_explicit(&mode->control_rx_order, memory_order_relaxed));
+#endif
     nuwax_monitoring_event_t event;
     uint32_t drained = 0U;
     while (drained < NUWAX_MONITORING_MAX_EVENTS_PER_LOOP &&
            xQueueReceive(mode->events, &event, 0) == pdTRUE) {
         drained++;
         if (event_matches_connection(&event, ws)) {
+            nuwax_monitoring_mode_service_command_deadline(mode, ws);
             handle_event(mode, ws, &event);
+            nuwax_monitoring_mode_service_command_deadline(mode, ws);
         }
         complete_queued_enable_event(mode, &event);
     }
 }
 
+void nuwax_monitoring_mode_sync_current_state(nuwax_monitoring_mode_t *mode,
+                                             nuwax_ws_client_t *ws)
+{
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    if (!mode || !mode->initialized || !ws || !nuwax_ws_is_connected(ws)) return;
+    /* Do not execute controls from the reporting service. A control at the
+     * queue head keeps its original owner/handoff path; ACKs behind it wait. */
+    nuwax_monitoring_event_t event;
+    for (unsigned i = 0U; i < 4U && mode->events &&
+         xQueuePeek(mode->events, &event, 0) == pdTRUE &&
+         is_state_sync_ack(&event); ++i) {
+        if (xQueueReceive(mode->events, &event, 0) != pdTRUE) break;
+        complete_queued_enable_event(mode, &event);
+        if (event_matches_connection(&event, ws)) (void)handle_sd_sync_ack(mode, &event);
+    }
+    service_sd_cloud_sync(mode, ws);
+#else
+    (void)mode; (void)ws;
+#endif
+}
+
+static void send_ui_close_request(nuwax_monitoring_mode_t *mode, nuwax_ws_client_t *ws)
+{
+    if (!mode->pending_ui_close) return;
+    if (!mode->close_request_id[0] && mode->stop_reason[0])
+        copy_text(mode->close_reason, sizeof(mode->close_reason), mode->stop_reason);
+    if (!ws || !nuwax_ws_is_connected(ws)) {
+        if (!mode->close_survives_disconnect) mode->pending_ui_close = false;
+        return;
+    }
+    const uint32_t now = now_ms(), epoch = nuwax_ws_connection_epoch(ws);
+    if (mode->close_survives_disconnect && epoch != mode->close_request_epoch)
+        mode->close_request_id[0] = '\0';
+    if (!mode->close_request_id[0]) {
+        snprintf(mode->close_request_id, sizeof(mode->close_request_id), "monitoring_close_%lu_%08lx",
+            (unsigned long)++mode->request_sequence, (unsigned long)esp_random());
+        mode->close_request_epoch = epoch;
+        mode->close_started_ms = now;
+        mode->close_retry_ms = now;
+        mode->close_attempts = 0;
+        if (!mode->close_reason[0]) copy_text(mode->close_reason, sizeof(mode->close_reason), "capture_done");
+    }
+    if (epoch != mode->close_request_epoch || mode->close_attempts >= 5U ||
+        (uint32_t)(now - mode->close_started_ms) >= 5000U) {
+        mode->pending_ui_close = false; return;
+    }
+    if ((int32_t)(now - mode->close_retry_ms) < 0) return;
+    ++mode->close_attempts;
+    const esp_err_t err = nuwax_monitoring_protocol_send_request(ws, mode->close_request_id,
+        false, mode->close_reason);
+    mode->close_retry_ms = now_ms() + NUWAX_AUDIO_COMMAND_RETRY_MS;
+    if (err == ESP_OK) mode->pending_ui_close = false;
+    ESP_LOGI(TAG, "local close request=%s attempt=%u err=%s", mode->close_request_id,
+        mode->close_attempts, esp_err_to_name(err));
+}
+
 static const char *start_failure_message(const nuwax_monitoring_mode_t *mode) {
+    if (mode && (!strcmp(mode->stop_reason, "audio_session_required") ||
+                 !strcmp(mode->stop_reason, "invalid_audio_session_id"))) return mode->stop_reason;
     if (mode && strcmp(mode->stop_reason, "playback_stop_failed") == 0) {
         return "playback_stop_failed";
     }
@@ -616,18 +1010,31 @@ static void finish_state(nuwax_monitoring_mode_t *mode,
     if (!mode) {
         return;
     }
-    if (mode->pending_command_ack && mode->pending_command_request_id[0] != '\0' &&
-        ws && nuwax_ws_is_connected(ws)) {
-        const bool command_ok = !mode->pending_command_enabled && capture_ok;
+    if (mode->sd_local && mode->state == NUWAX_MONITORING_STATE_ACTIVE) {
+        mode->pending_ui_close = true;
+        mode->close_survives_disconnect = true;
+        mode->close_request_id[0] = '\0';
+    }
+    retire_active_result(mode);
+    send_ui_close_request(mode, ws);
+    if (mode->pending_command_ack && mode->pending_command_request_id[0] != '\0') {
+        bool stopped_ok = capture_ok;
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+        if (mode->sd_local && !mode->pending_command_enabled)
+            stopped_ok = nuwax_sd_session_stopped();
+#endif
+        const bool command_ok = !mode->pending_command_enabled && stopped_ok;
         const char *message = mode->pending_command_enabled
                                   ? start_failure_message(mode)
-                                  : (capture_ok ? "disabled" : "capture_failed");
-        esp_err_t ack_err = nuwax_monitoring_protocol_send_command_ack(
-            ws,
-            mode->pending_command_request_id,
-            false,
-            command_ok,
-            message);
+                                  : (stopped_ok ? "disabled" : "capture_failed");
+        esp_err_t ack_err = ESP_OK;
+        if (nuwax_audio_command_matches(&mode->command_deadline, mode->pending_command_request_id)) {
+            nuwax_audio_command_decide(&mode->command_deadline, false, command_ok, message, NULL);
+            service_command_result(mode, ws);
+        } else if (ws && nuwax_ws_is_connected(ws)) {
+            ack_err = nuwax_monitoring_protocol_send_command_ack(ws, mode->pending_command_request_id,
+                false, command_ok, message);
+        }
         if (ack_err != ESP_OK) {
             ESP_LOGW(TAG,
                      "monitoring final command ACK failed request=%s err=%s",
@@ -640,14 +1047,87 @@ static void finish_state(nuwax_monitoring_mode_t *mode,
     copy_text(final_reason,
               sizeof(final_reason),
               mode->stop_reason[0] ? mode->stop_reason : "capture_done");
+    const bool retry_start = mode->identity.resuming && !capture_ok &&
+                            mode->capture_frames == 0U &&
+                            strcmp(final_reason, "cloud_stop") != 0 &&
+                            strcmp(final_reason, "ui_close") != 0;
+    if (!retry_start && (!mode->offline_resume_required || (ws && nuwax_ws_is_connected(ws)))) {
+        nuwax_audio_mode_identity_clear(&mode->identity);
+    }
     reset_transient_state(mode);
     set_state(mode,
               capture_ok ? NUWAX_MONITORING_STATE_DISABLED
                          : NUWAX_MONITORING_STATE_ERROR,
               final_reason);
     if (!capture_ok) {
+        (void)nuwax_device_error_report_enqueue(
+            "error", "monitoring", "capture", ESP_FAIL,
+            "monitoring", 0U, NULL);
         set_state(mode, NUWAX_MONITORING_STATE_DISABLED, "capture_error_reset");
     }
+}
+
+void nuwax_monitoring_mode_service_command_deadline(nuwax_monitoring_mode_t *mode, nuwax_ws_client_t *ws)
+{
+    if (!mode || !mode->initialized) return;
+    if (mode->state == NUWAX_MONITORING_STATE_DISABLED) send_ui_close_request(mode, ws);
+    nuwax_audio_command_deadline_t *c = &mode->command_deadline;
+    /* An admitted stop must complete locally even if its connection is lost. */
+    const bool closing = !c->enabled && mode->state == NUWAX_MONITORING_STATE_STOPPING;
+    if (c->tracked && !c->decided && !closing) {
+        const bool stale = !ws || !nuwax_ws_is_connected(ws) ||
+            nuwax_ws_connection_epoch(ws) != c->epoch ||
+            atomic_load(&mode->local_stop_generation) != c->local_stop_generation;
+        bool failed = nuwax_audio_command_expired(c, esp_timer_get_time()) || stale;
+        if (!failed && !c->prepared && mode->state == NUWAX_MONITORING_STATE_STARTING) {
+            esp_err_t err = ESP_OK;
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+            if (mode->sd_local && !mode->sd_sync.identity_ready) {
+                err = nuwax_sd_session_poll_identity(NUWAX_OFFLINE_AUDIO_MODE_MONITORING,
+                    mode->audio_session_id, nuwax_audio_command_execution_deadline(c));
+                if (err == ESP_ERR_INVALID_STATE && nuwax_sd_control_rotate_used_id(
+                        &mode->sd_sync, mode->audio_session_id, "monitor")) {
+                    ESP_LOGI(TAG, "SD monitoring replaced used recording ID request=%s local_session=%s",
+                        c->request_id, mode->audio_session_id);
+                    err = ESP_ERR_NOT_FINISHED;
+                }
+                if (err == ESP_OK) mode->sd_sync.identity_ready = true;
+            }
+#endif
+            if (err == ESP_OK && mode->callbacks.prepare_cloud_start)
+                err = mode->callbacks.prepare_cloud_start(mode->callbacks.ctx, ws, mode->sd_local, mode->audio_session_id);
+            if (err == ESP_OK) {
+                c->prepared = true;
+                /* Keep preflight time out of the SD readiness window, while
+                 * retaining the original total command execution deadline. */
+                if (mode->sd_local) mode->sd_start_ms = now_ms();
+            }
+            else if (err != ESP_ERR_NOT_FINISHED) failed = true;
+            failed = failed || nuwax_audio_command_expired(c, esp_timer_get_time()) ||
+                !nuwax_ws_is_connected(ws) || nuwax_ws_connection_epoch(ws) != c->epoch ||
+                atomic_load(&mode->local_stop_generation) != c->local_stop_generation;
+        }
+        if (failed) {
+            const bool cancelled_start = c->enabled;
+            (void)cancelled_start;
+            nuwax_audio_command_decide(c, false, false, "mode_handoff_failed", NULL);
+            ESP_LOGW(TAG, "command cancelled request=%s elapsed_ms=%lu capture=%d",
+                c->request_id, (unsigned long)((esp_timer_get_time() - c->received_us) / 1000), mode->capture_running);
+            clear_pending_command_ack(mode);
+            mode->offline_resume_required = false;
+            nuwax_audio_mode_identity_clear(&mode->identity);
+            if (mode->capture_running) {
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+                if (mode->sd_local) nuwax_sd_session_stop(!cancelled_start);
+#endif
+                set_stop_reason(mode, "mode_handoff_failed");
+                set_state(mode, NUWAX_MONITORING_STATE_STOPPING, "mode_handoff_failed");
+            } else {
+                reset_to_disabled(mode, "mode_handoff_failed", false);
+            }
+        }
+    }
+    service_command_result(mode, ws);
 }
 
 static esp_err_t fail_capture_start(nuwax_monitoring_mode_t *mode,
@@ -658,6 +1138,9 @@ static esp_err_t fail_capture_start(nuwax_monitoring_mode_t *mode,
         return err;
     }
     set_stop_reason(mode, reason ? reason : "capture_failed");
+    (void)nuwax_device_error_report_enqueue(
+        "error", "monitoring", reason && reason[0] ? reason : "capture_start",
+        err, "monitoring", 0U, NULL);
     finish_state(mode, ws, false);
     return err;
 }
@@ -688,12 +1171,7 @@ static uint8_t frame_flags(bool first, bool final) {
 }
 
 #if CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC
-static uint32_t pcm16_abs(int16_t sample) {
-    if (sample == INT16_MIN) {
-        return 32768U;
-    }
-    return sample < 0 ? (uint32_t)(-sample) : (uint32_t)sample;
-}
+
 
 static const char *capture_phase_name(nuwax_monitoring_capture_phase_t phase) {
     switch (phase) {
@@ -742,152 +1220,6 @@ static bool capture_phase_buffers_preroll(
     nuwax_monitoring_capture_phase_t phase) {
     return phase == NUWAX_MONITORING_CAPTURE_PAUSED ||
            phase == NUWAX_MONITORING_CAPTURE_RESUME_PENDING;
-}
-
-static void monitoring_speech_detector_init(
-    monitoring_speech_detector_t *detector) {
-    if (!detector) {
-        return;
-    }
-    memset(detector, 0, sizeof(*detector));
-#if NUWAX_MONITORING_USE_ESP_VAD
-    detector->vad = vad_create(VAD_MODE_0);
-    if (!detector->vad) {
-        ESP_LOGW(TAG,
-                 "ESP VAD unavailable; monitoring uses adaptive energy fallback");
-    }
-#endif
-}
-
-static void monitoring_speech_detector_deinit(
-    monitoring_speech_detector_t *detector) {
-    if (!detector) {
-        return;
-    }
-#if NUWAX_MONITORING_USE_ESP_VAD
-    if (detector->vad) {
-        vad_destroy(detector->vad);
-        detector->vad = NULL;
-    }
-#endif
-}
-
-static void monitoring_speech_detector_reset_decision(
-    monitoring_speech_detector_t *detector) {
-    if (!detector) {
-        return;
-    }
-    detector->consecutive_speech_frames = 0U;
-    detector->last_energy_speech = false;
-    detector->last_vad_speech = false;
-    detector->last_vad_qualified = false;
-#if NUWAX_MONITORING_USE_ESP_VAD
-    if (detector->vad) {
-        vad_reset_trigger(detector->vad);
-    }
-#endif
-}
-
-static bool monitoring_detect_speech(monitoring_speech_detector_t *detector,
-                                     const int16_t *samples,
-                                     size_t sample_count,
-                                     uint32_t *avg_abs_out,
-                                     uint32_t *peak_out) {
-    if (!detector || !samples || sample_count == 0U) {
-        return false;
-    }
-
-    uint64_t sum_abs = 0U;
-    uint32_t peak = 0U;
-    for (size_t i = 0U; i < sample_count; ++i) {
-        const uint32_t value = pcm16_abs(samples[i]);
-        sum_abs += value;
-        if (value > peak) {
-            peak = value;
-        }
-    }
-    const uint32_t avg_abs = (uint32_t)(sum_abs / sample_count);
-
-    if (!detector->noise_floor_initialized) {
-        const uint32_t seed_limit = CONFIG_NUWAX_MONITORING_SPEECH_MIN_AVG_ABS / 2U;
-        detector->noise_floor_abs = avg_abs < seed_limit ? avg_abs : seed_limit;
-        detector->noise_floor_initialized = true;
-    } else if (avg_abs < detector->noise_floor_abs) {
-        detector->noise_floor_abs =
-            (detector->noise_floor_abs * 15U + avg_abs) / 16U;
-    } else {
-        detector->noise_floor_abs =
-            (detector->noise_floor_abs * 63U + avg_abs) / 64U;
-    }
-
-    const uint32_t adaptive_threshold =
-        detector->noise_floor_abs + CONFIG_NUWAX_MONITORING_SPEECH_NOISE_MARGIN_ABS;
-    const uint32_t speech_threshold =
-        adaptive_threshold > CONFIG_NUWAX_MONITORING_SPEECH_MIN_AVG_ABS
-            ? adaptive_threshold
-            : CONFIG_NUWAX_MONITORING_SPEECH_MIN_AVG_ABS;
-    const bool speech_energy =
-        avg_abs >= speech_threshold &&
-        peak >= CONFIG_NUWAX_MONITORING_SPEECH_MIN_PEAK;
-    const bool strong_peak =
-        peak >= CONFIG_NUWAX_MONITORING_SPEECH_MIN_PEAK * 2U &&
-        avg_abs >= CONFIG_NUWAX_MONITORING_SPEECH_MIN_AVG_ABS / 2U;
-    const bool energy_speech = speech_energy || strong_peak;
-    bool vad_speech = false;
-#if NUWAX_MONITORING_USE_ESP_VAD
-    if (detector->vad) {
-        vad_speech =
-            vad_process(detector->vad,
-                        (int16_t *)samples,
-                        CONFIG_NUWAX_VOICE_SAMPLE_RATE,
-                        CONFIG_NUWAX_VOICE_FRAME_DURATION_MS) == VAD_SPEECH;
-    }
-#endif
-
-    /* ESP VAD mode 0 intentionally hears weak voices, but on this microphone
-     * it can also report several consecutive speech frames for a quiet room.
-     * Require only a weak, adaptive amount of real PCM energy before accepting
-     * VAD. The gate stays well below the standalone energy detector so distant
-     * speech remains eligible. */
-    const bool vad_qualified =
-        vad_speech && nuwax_monitoring_vad_energy_qualified(
-                          detector->noise_floor_abs,
-                          avg_abs,
-                          peak,
-                          CONFIG_NUWAX_MONITORING_SPEECH_MIN_AVG_ABS,
-                          CONFIG_NUWAX_MONITORING_SPEECH_MIN_PEAK,
-                          CONFIG_NUWAX_MONITORING_SPEECH_NOISE_MARGIN_ABS);
-    const bool speech = energy_speech || vad_qualified;
-
-    detector->last_energy_speech = energy_speech;
-    detector->last_vad_speech = vad_speech;
-    detector->last_vad_qualified = vad_qualified;
-    if (vad_speech) {
-        if (detector->raw_vad_speech_frames < UINT32_MAX) {
-            detector->raw_vad_speech_frames++;
-        }
-        uint32_t *counter = vad_qualified
-                                ? &detector->qualified_vad_speech_frames
-                                : &detector->rejected_vad_speech_frames;
-        if (*counter < UINT32_MAX) {
-            (*counter)++;
-        }
-    }
-    if (speech) {
-        if (detector->consecutive_speech_frames < UINT32_MAX) {
-            detector->consecutive_speech_frames++;
-        }
-    } else {
-        detector->consecutive_speech_frames = 0U;
-    }
-
-    if (avg_abs_out) {
-        *avg_abs_out = avg_abs;
-    }
-    if (peak_out) {
-        *peak_out = peak;
-    }
-    return speech;
 }
 
 static bool monitoring_resume_speech_confirmed(
@@ -1111,7 +1443,7 @@ static esp_err_t monitoring_stream_enqueue(monitoring_stream_t *stream,
     }
 
     if (stream->have_pending) {
-        uint8_t flags = frame_flags(stream->pending.sequence == 0U, false);
+        uint8_t flags = frame_flags(stream->pending.sequence == stream->first_sequence, false);
         if (stream->pending.speech) {
             flags |= NUWAX_AUDIO_FLAG_VAD_SPEECH;
         }
@@ -1139,6 +1471,7 @@ static esp_err_t monitoring_stream_enqueue(monitoring_stream_t *stream,
     stream->pending.sequence = stream->next_sequence++;
     stream->pending.speech = speech;
     stream->have_pending = true;
+
     return ESP_OK;
 }
 
@@ -1180,14 +1513,16 @@ static esp_err_t monitoring_stream_open(monitoring_stream_t *stream,
     if (ws_epoch == 0U) {
         return ESP_ERR_INVALID_STATE;
     }
+    /* Pause/resume and reconnect both open a fresh listen transport. */
     stream->next_sequence = 0U;
+    stream->first_sequence = stream->next_sequence;
     stream->have_pending = false;
     stream->listen_started = false;
+
     stream->ws_epoch = ws_epoch;
     if (audio_session_id && audio_session_id[0] != '\0') {
-        copy_text(mode->audio_session_id,
-                  sizeof(mode->audio_session_id),
-                  audio_session_id);
+        select_audio_session(mode, audio_session_id);
+        nuwax_audio_mode_identity_remember(&mode->identity, mode->audio_session_id);
     } else {
         make_audio_session_id(mode);
     }
@@ -1274,6 +1609,7 @@ static esp_err_t monitoring_stream_open(monitoring_stream_t *stream,
         goto prepare_failed;
     }
     stream->listen_started = true;
+
     return ESP_OK;
 
 prepare_failed:
@@ -1301,7 +1637,7 @@ static esp_err_t monitoring_stream_close(monitoring_stream_t *stream,
     bool end_committed = false;
     const uint32_t ws_epoch = stream->ws_epoch;
     if (stream->have_pending && stream->uplink_ready) {
-        uint8_t flags = frame_flags(stream->pending.sequence == 0U, true);
+        uint8_t flags = frame_flags(stream->pending.sequence == stream->first_sequence, true);
         if (stream->pending.speech) {
             flags |= NUWAX_AUDIO_FLAG_VAD_SPEECH;
         }
@@ -1396,6 +1732,7 @@ static esp_err_t monitoring_stream_close(monitoring_stream_t *stream,
                  (unsigned long)ws_epoch);
     }
     stream->listen_started = false;
+
     stream->ws_epoch = 0U;
     stream->have_pending = false;
     stream->next_sequence = 0U;
@@ -1485,6 +1822,29 @@ static esp_err_t capture_session(nuwax_monitoring_mode_t *mode,
     }
 
     bool mic_ready = false;
+    make_audio_session_id(mode);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE && !CONFIG_NUWAX_SD_SESSION_ENABLE
+    nuwax_offline_voice_t voice_archive = {0};
+    bool voice_archive_ready = false;
+    const esp_err_t voice_init_err =
+        nuwax_offline_voice_init(&voice_archive, mode->audio_session_id,
+                                 CONFIG_NUWAX_VOICE_SAMPLE_RATE,
+                                 CONFIG_NUWAX_VOICE_FRAME_DURATION_MS);
+    if (voice_init_err == ESP_OK) {
+        voice_archive_ready = true;
+    } else {
+        /* Cloud monitoring may continue when the optional local archive
+         * cannot reserve PSRAM, but never silently claim that local capture
+         * is active. Keep the degradation observable without changing the
+         * cloud control protocol or preventing the online stream. */
+        ESP_LOGW(TAG,
+                 "monitoring local voice archive unavailable err=%s; continuing cloud-only",
+                 esp_err_to_name(voice_init_err));
+        (void)nuwax_device_error_report_enqueue(
+            "warning", "monitoring", "offline_voice_archive_unavailable",
+            voice_init_err, mode->audio_session_id, 0U, NULL);
+    }
+#endif
     size_t current_samples = 0U;
     uint32_t read_discontinuities = 0U;
     uint32_t consecutive_read_discontinuities = 0U;
@@ -1510,16 +1870,18 @@ static esp_err_t capture_session(nuwax_monitoring_mode_t *mode,
               sizeof(first_stream_request_id),
               mode->pending_command_request_id);
 
-    err = nuwax_mic_input_init_with_owner(&mic, NUWAX_MIC_OWNER_MONITORING_CAPTURE);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "monitoring mic init failed: %s", esp_err_to_name(err));
-        set_stop_reason(mode, "mic_init_failed");
-        goto cleanup;
-    }
-    mic_ready = true;
     monitoring_speech_detector_init(&detector);
     mode->capture_running = true;
 
+    if (mode->state == NUWAX_MONITORING_STATE_STOPPING || mode->state == NUWAX_MONITORING_STATE_DISABLED ||
+        nuwax_audio_command_expired(&mode->command_deadline, esp_timer_get_time())) {
+        nuwax_audio_command_decide(&mode->command_deadline, false, false, "mode_handoff_failed", NULL);
+        set_stop_reason(mode, "mode_handoff_failed");
+        mode->offline_resume_required = false;
+        nuwax_audio_mode_identity_clear(&mode->identity);
+        err = ESP_ERR_TIMEOUT;
+        goto cleanup;
+    }
     err = monitoring_stream_open(&stream,
                                  mode,
                                  ws,
@@ -1537,6 +1899,26 @@ static esp_err_t capture_session(nuwax_monitoring_mode_t *mode,
                                         &policy,
                                         NUWAX_MONITORING_CAPTURE_STREAMING,
                                         "stream_opened");
+    err = mode->callbacks.acquire_mic
+        ? mode->callbacks.acquire_mic(mode->callbacks.ctx, &mic, NUWAX_MIC_OWNER_MONITORING_CAPTURE)
+        : nuwax_mic_input_init_with_owner(&mic, NUWAX_MIC_OWNER_MONITORING_CAPTURE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "monitoring mic init failed: %s", esp_err_to_name(err));
+        set_stop_reason(mode, "mic_init_failed");
+        goto cleanup;
+    }
+    mic_ready = true;
+    if (mode->state == NUWAX_MONITORING_STATE_STOPPING || mode->state == NUWAX_MONITORING_STATE_DISABLED ||
+        nuwax_audio_command_expired(&mode->command_deadline, esp_timer_get_time())) {
+        nuwax_audio_command_decide(&mode->command_deadline, false, false, "mode_handoff_failed", NULL);
+        set_stop_reason(mode, "mode_handoff_failed");
+        mode->offline_resume_required = false;
+        nuwax_audio_mode_identity_clear(&mode->identity);
+        err = ESP_ERR_TIMEOUT;
+        goto cleanup;
+    }
+
+
     set_state(mode, NUWAX_MONITORING_STATE_ACTIVE, "streaming");
     try_send_active_command_ack(mode, ws, true);
 
@@ -1698,6 +2080,9 @@ static esp_err_t capture_session(nuwax_monitoring_mode_t *mode,
             current_samples = 0U;
             monitoring_speech_detector_reset_decision(&detector);
             monitoring_preroll_reset(&preroll);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE && !CONFIG_NUWAX_SD_SESSION_ENABLE
+            nuwax_offline_voice_reset(&voice_archive);
+#endif
             mode->consecutive_read_timeouts++;
 
             const uint32_t stalled_ms =
@@ -1762,7 +2147,16 @@ static esp_err_t capture_session(nuwax_monitoring_mode_t *mode,
             monitoring_resume_speech_confirmed(&detector);
         const bool stream_activity_confirmed =
             monitoring_stream_activity_confirmed(&detector);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE && !CONFIG_NUWAX_SD_SESSION_ENABLE
+        /* Runs once per physical frame, independently of cloud ACK/phase.
+         * Uplink preroll replay must never duplicate these archive samples. */
+        if (voice_archive_ready) {
+            nuwax_offline_voice_process(&voice_archive, current, samples_read,
+                                        speech, mode->identity.next_capture_sequence, now_ms());
+        }
+#endif
         mode->capture_frames++;
+        mode->identity.next_capture_sequence++;
 
         if (capture_phase_buffers_preroll(policy.phase)) {
             monitoring_preroll_push(&preroll, current, speech);
@@ -1948,6 +2342,9 @@ cleanup:
             }
         }
     }
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE && !CONFIG_NUWAX_SD_SESSION_ENABLE
+    nuwax_offline_voice_deinit(&voice_archive, err == ESP_OK);
+#endif
     monitoring_speech_detector_deinit(&detector);
     monitoring_free(current);
     monitoring_free(pending);
@@ -1955,7 +2352,30 @@ cleanup:
     monitoring_free(preroll_speech);
     mode->capture_running = false;
 
-    const bool capture_ok = err == ESP_OK;
+    const bool ws_disconnected = !ws || !nuwax_ws_is_connected(ws);
+    const bool intentional_stop =
+        strcmp(mode->stop_reason, "ui_close") == 0 ||
+        strcmp(mode->stop_reason, "cloud_stop") == 0 ||
+        (mode->pending_command_ack && !mode->pending_command_enabled);
+    const bool transport_boundary_reason =
+        ws_disconnected && !intentional_stop;
+    if (transport_boundary_reason) {
+        mode->offline_resume_required = true;
+        mode->identity.resuming = mode->identity.session_id[0] != '\0';
+    }
+    /* A WebSocket loss is the ownership boundary for the SD-only handoff,
+     * not a monitoring capture fault.  Keep genuine MIC/SD failures visible,
+     * but do not publish a transient ERROR state for the expected transport
+     * teardown that precedes offline capture. */
+    const bool offline_transport_handoff =
+        ws_disconnected && mode->offline_resume_required &&
+        transport_boundary_reason;
+    if (offline_transport_handoff && err != ESP_OK) {
+        ESP_LOGI(TAG,
+                 "monitoring transport boundary reserved for offline handoff; suppressing transient capture error err=%s",
+                 esp_err_to_name(err));
+    }
+    const bool capture_ok = err == ESP_OK || offline_transport_handoff;
     ESP_LOGI(TAG,
              "monitoring capture done ok=%d reason=%s frames=%lu uploaded=%lu dropped=%lu pauses=%lu resumes=%lu control_retries=%lu read_discontinuities=%lu discarded_partial_samples=%llu err=%s",
              capture_ok ? 1 : 0,
@@ -1971,6 +2391,153 @@ cleanup:
              esp_err_to_name(err));
     finish_state(mode, ws, capture_ok);
     return err;
+#endif
+}
+
+
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+/* Connection-owner only, also called by the offline SD tick. A valid stop
+ * already received for this scene must survive transport teardown. No starts
+ * or unrelated request ACKs are executed on a disconnected transport. */
+static void preserve_sd_stop_on_disconnect(nuwax_monitoring_mode_t *mode)
+{
+    if (!mode || !mode->sd_local ||
+        (mode->state != NUWAX_MONITORING_STATE_ACTIVE &&
+         mode->state != NUWAX_MONITORING_STATE_STARTING)) return;
+    nuwax_monitoring_event_t event;
+    while (mode->events && xQueueReceive(mode->events, &event, 0) == pdTRUE) {
+        complete_queued_enable_event(mode, &event);
+        if (event.type == NUWAX_MONITORING_EVENT_REQUEST_ACK) {
+            (void)handle_sd_sync_ack(mode, &event);
+            continue;
+        }
+        if (event.type != NUWAX_MONITORING_EVENT_CLOUD_DISABLE ||
+            mode->state == NUWAX_MONITORING_STATE_STOPPING) continue;
+        nuwax_audio_command_deadline_t *c = &mode->command_deadline;
+        const char *rejection = NULL;
+        if (!event.ws_connection_epoch || event.ws_connection_epoch !=
+            atomic_load_explicit(&mode->control_rx_epoch, memory_order_acquire))
+            rejection = "stale_connection";
+        else if (event.local_stop_generation != atomic_load(&mode->local_stop_generation))
+            rejection = "local_stop_superseded";
+        else if ((uint32_t)(now_ms() - event.received_ms) >= NUWAX_AUDIO_COMMAND_EXECUTE_MS)
+            rejection = "command_expired";
+        else if (nuwax_audio_command_failed(c, event.request_id) ||
+                 (nuwax_audio_command_matches(c, event.request_id) &&
+                  (c->retired || c->enabled)))
+            rejection = "retired_request";
+        else if (event.request_id[0])
+            rejection = nuwax_sd_control_disable_rejection(&mode->sd_sync,
+                event.rx_order, event.received_ms, event.request_id,
+                event.audio_session_id, mode->audio_session_id);
+        if (rejection) {
+            ESP_LOGW(TAG, "SD monitoring disconnected stop rejected request=%s reason=%s",
+                     event.request_id, rejection);
+            continue;
+        }
+        retire_active_result(mode);
+        if (c->tracked && !c->decided)
+            nuwax_audio_command_decide(c, false, false, "superseded_by_disable", NULL);
+        clear_pending_command_ack(mode);
+        if (event.request_id[0]) {
+            nuwax_audio_command_begin(c, event.request_id, event.received_ms,
+                event.ws_connection_epoch, event.local_stop_generation, esp_timer_get_time());
+            c->enabled = false;
+            c->prepared = true;
+        }
+        begin_cloud_stop(mode, &event);
+        ESP_LOGI(TAG, "SD monitoring stop retained across disconnect request=%s session=%s",
+                 event.request_id[0] ? event.request_id : "-", mode->audio_session_id);
+    }
+}
+#endif
+
+void nuwax_monitoring_mode_service_sd(nuwax_monitoring_mode_t *mode, nuwax_ws_client_t *ws)
+{
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    if (!mode || !mode->initialized) return;
+    if (!mode->sd_local) {
+        if (mode->state != NUWAX_MONITORING_STATE_STARTING || !nuwax_sd_session_prefers_local() || mode->identity.resuming) return;
+        mode->sd_local = true;
+        mode->sd_start_ms = now_ms();
+        /* A card can become available after cloud-command admission. Apply
+         * the same temporary mapping before owner handoff/catalog validation. */
+        if (mode->pending_command_enabled &&
+            nuwax_sd_control_prepare_legacy_id(&mode->sd_sync, mode->audio_session_id, "monitor"))
+            ESP_LOGI(TAG, "SD monitoring assigned recording ID after card detection request=%s cloud_session=%s local_session=%s",
+                mode->pending_command_request_id,
+                mode->sd_sync.cloud_session_id[0] ? mode->sd_sync.cloud_session_id : "<missing>", mode->audio_session_id);
+        ESP_LOGI(TAG, "SD capture route selected ready=%d wait_limit_ms=5000", nuwax_sd_session_available());
+        if (mode->command_deadline.tracked && !mode->command_deadline.decided)
+            mode->command_deadline.prepared = false;
+    }
+    if (ws && nuwax_ws_is_connected(ws)) drain_events(mode, ws);
+    else preserve_sd_stop_on_disconnect(mode);
+    nuwax_monitoring_mode_service_command_deadline(mode, ws);
+    if (!mode->sd_local) return;
+    if (mode->state == NUWAX_MONITORING_STATE_STOPPING) {
+        if (mode->capture_running) nuwax_sd_session_stop(true);
+        if ((!mode->capture_running || !nuwax_sd_session_active()) && nuwax_sd_session_stopped()) {
+            mode->capture_running = false;
+            finish_state(mode, ws, nuwax_sd_session_complete());
+        }
+        return;
+    }
+    if (mode->state == NUWAX_MONITORING_STATE_STARTING && !mode->capture_running) {
+        const esp_err_t storage_fault = nuwax_sd_session_start_fault();
+        if (storage_fault != ESP_OK) {
+            (void)fail_capture_start(mode, ws, storage_fault, "sd_start_failed");
+            return;
+        }
+        if (mode->command_deadline.tracked && !mode->command_deadline.decided &&
+            !mode->command_deadline.prepared) return;
+        if (mode->callbacks.is_playback_active && mode->callbacks.is_playback_active(mode->callbacks.ctx)) {
+            if ((uint32_t)(now_ms() - mode->sd_start_ms) >= 5000U)
+                (void)fail_capture_start(mode, ws, ESP_ERR_TIMEOUT, "playback_stop_failed");
+            return;
+        }
+        /* Admission assigns a recording ID even without a control ID. */
+        if (mode->pending_command_enabled && !sd_audio_identity_valid(mode->audio_session_id)) {
+            (void)fail_capture_start(mode, ws, ESP_ERR_INVALID_ARG,
+                mode->audio_session_id[0] ? "invalid_audio_session_id" : "audio_session_required");
+            return;
+        }
+        const int64_t start_deadline = mode->command_deadline.tracked && !mode->command_deadline.decided
+            ? nuwax_audio_command_execution_deadline(&mode->command_deadline) : 0;
+        esp_err_t err = nuwax_sd_session_prepare_start(NUWAX_OFFLINE_AUDIO_MODE_MONITORING, start_deadline);
+        if (err == ESP_OK) err = start_deadline
+            ? nuwax_sd_session_start_until(NUWAX_OFFLINE_AUDIO_MODE_MONITORING, mode->audio_session_id, start_deadline)
+            : nuwax_sd_session_start(NUWAX_OFFLINE_AUDIO_MODE_MONITORING, mode->audio_session_id);
+        /* Recheck after the bounded launch lock. If a task was admitted on
+         * the boundary, retain its owner until its normal cancellation seals. */
+        if (err == ESP_OK) mode->capture_running = true;
+        nuwax_monitoring_mode_service_command_deadline(mode, ws);
+        if (mode->state != NUWAX_MONITORING_STATE_STARTING) return;
+        if (err == ESP_ERR_NOT_FINISHED && (uint32_t)(now_ms() - mode->sd_start_ms) < 5000U) return;
+        if (err != ESP_OK) {
+            (void)fail_capture_start(mode, ws, err, "sd_start_failed");
+            return;
+        }
+        mode->capture_running = true;
+        nuwax_audio_mode_identity_remember(&mode->identity, mode->audio_session_id);
+        mode->identity.resuming = false;
+    }
+    if (mode->capture_running && !nuwax_sd_session_active()) {
+        mode->capture_running = false;
+        set_stop_reason(mode, nuwax_offline_audio_limit_reached() ? "duration_limit" : "sd_capture_ended");
+        finish_state(mode, ws, nuwax_sd_session_complete() && nuwax_offline_audio_capture_health() != NUWAX_OFFLINE_CAPTURE_UNAVAILABLE);
+        return;
+    }
+    if (mode->capture_running && mode->state == NUWAX_MONITORING_STATE_STARTING &&
+        nuwax_offline_capture_health_is_recording(nuwax_offline_audio_capture_health())) {
+        set_state(mode, NUWAX_MONITORING_STATE_ACTIVE, "sd_recording");
+        nuwax_sd_session_release_start(NUWAX_OFFLINE_AUDIO_MODE_MONITORING);
+        ESP_LOGI(TAG, "SD monitoring started session=%s network_independent=1", mode->audio_session_id);
+    }
+    try_send_active_command_ack(mode, ws, false);
+    service_sd_cloud_sync(mode, ws);
+#else
+    (void)mode; (void)ws;
 #endif
 }
 
@@ -2000,6 +2567,10 @@ esp_err_t nuwax_monitoring_mode_init(
     atomic_init(&mode->state, NUWAX_MONITORING_STATE_DISABLED);
     atomic_init(&mode->capture_phase, NUWAX_MONITORING_CAPTURE_INACTIVE);
     atomic_init(&mode->queued_enable_events, 0U);
+    atomic_init(&mode->queued_sync_acks, 0U);
+    atomic_init(&mode->local_stop_generation, 0U);
+    atomic_init(&mode->control_rx_order, 0U);
+    atomic_init(&mode->control_rx_epoch, 0U);
     mode->initialized = true;
     return ESP_OK;
 }
@@ -2008,6 +2579,9 @@ void nuwax_monitoring_mode_deinit(nuwax_monitoring_mode_t *mode) {
     if (!mode) {
         return;
     }
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    nuwax_sd_session_release_start(NUWAX_OFFLINE_AUDIO_MODE_MONITORING);
+#endif
     if (mode->events) {
         vQueueDelete(mode->events);
     }
@@ -2031,11 +2605,13 @@ nuwax_monitoring_capture_phase_t nuwax_monitoring_mode_capture_phase(
 }
 
 bool nuwax_monitoring_mode_has_pending(const nuwax_monitoring_mode_t *mode) {
-    if (!mode || !mode->initialized) {
-        return false;
-    }
-    return mode->state != NUWAX_MONITORING_STATE_DISABLED ||
-           (mode->events && uxQueueMessagesWaiting(mode->events) > 0U);
+    if (!mode || !mode->initialized) return false;
+    if (mode->state != NUWAX_MONITORING_STATE_DISABLED ||
+        atomic_load_explicit(&mode->queued_enable_events, memory_order_acquire) > 0U) return true;
+    const uint32_t queued = (mode->events ? (uint32_t)uxQueueMessagesWaiting(mode->events) : 0U);
+    /* State-report ACKs do not reserve MIC or interrupt normal conversation.
+     * Other commands/ACKs retain the existing owner-dispatch behavior. */
+    return queued > atomic_load_explicit(&mode->queued_sync_acks, memory_order_acquire);
 }
 
 bool nuwax_monitoring_mode_has_audio_claim(
@@ -2058,6 +2634,82 @@ bool nuwax_monitoring_mode_should_preempt_normal(
     return nuwax_monitoring_mode_has_pending(mode);
 }
 
+esp_err_t nuwax_monitoring_mode_request_ui(nuwax_monitoring_mode_t *mode,
+                                           nuwax_ws_client_t *ws,
+                                           bool enabled) {
+    if (!mode || !mode->initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    if (enabled && !mode->identity.resuming && nuwax_sd_session_prefers_local() && mode->state == NUWAX_MONITORING_STATE_DISABLED && can_start(mode)) {
+        reset_transient_state(mode);
+        mode->sd_local = true;
+        mode->sd_start_ms = now_ms();
+        ESP_LOGI(TAG, "SD capture route selected ready=%d wait_limit_ms=5000", nuwax_sd_session_available());
+
+        set_state(mode, NUWAX_MONITORING_STATE_STARTING, "local_sd_enable");
+        if (mode->callbacks.fade_and_cancel_playback)
+            mode->callbacks.fade_and_cancel_playback(mode->callbacks.ctx, 100U, "local_sd_enable");
+        return ESP_OK;
+    }
+#endif
+    if (!enabled) {
+        /* Fence RX work already received, including a producer paused before
+         * queue publication. The owner still drains each event exactly once. */
+        atomic_fetch_add_explicit(&mode->local_stop_generation, 1U,
+                                  memory_order_acq_rel);
+        mode->offline_resume_required = false;
+        if (mode->state == NUWAX_MONITORING_STATE_DISABLED) {
+            nuwax_audio_mode_identity_clear(&mode->identity);
+        }
+        if (mode->state != NUWAX_MONITORING_STATE_DISABLED) {
+            /* Local UI shutdown must also release an offline SD capture owner
+             * after a reconnect boundary.  The run loop performs the actual
+             * MIC/uplink teardown in order, so this only changes the state
+             * machine and never blocks the UI caller. */
+            mode->pending_ui_close = mode->sd_local;
+            mode->close_survives_disconnect = mode->sd_local;
+            mode->close_request_id[0] = '\0';
+            set_stop_reason(mode, "ui_close");
+            set_state(mode, NUWAX_MONITORING_STATE_STOPPING,
+                      mode->stop_reason);
+        }
+        return ESP_OK;
+    }
+    if (!ws || !nuwax_ws_is_connected(ws) ||
+        nuwax_ws_connection_epoch(ws) == 0U) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (mode->state != NUWAX_MONITORING_STATE_DISABLED) {
+        return mode->state == NUWAX_MONITORING_STATE_ACTIVE
+                   ? ESP_OK
+                   : ESP_ERR_INVALID_STATE;
+    }
+    if (!can_start(mode)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char request_id[NUWAX_MONITORING_REQUEST_ID_BYTES] = {0};
+    const uint32_t sequence = ++mode->request_sequence;
+    snprintf(request_id, sizeof(request_id), "mon_open_%lu_%08lx",
+             (unsigned long)sequence, (unsigned long)esp_random());
+    const esp_err_t err = mode->identity.resuming
+        ? nuwax_monitoring_protocol_send_resume_request(ws, request_id, mode->identity.session_id)
+        : nuwax_monitoring_protocol_send_request(ws, request_id, true, "offline_audio_recovered");
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "monitoring resume request sent request=%s epoch=%lu",
+                 request_id,
+                 (unsigned long)nuwax_ws_connection_epoch(ws));
+    } else {
+        ESP_LOGW(TAG,
+                 "monitoring resume request failed request=%s err=%s",
+                 request_id,
+                 esp_err_to_name(err));
+    }
+    return err;
+}
+
 bool nuwax_monitoring_mode_handle_protocol_text(nuwax_monitoring_mode_t *mode,
                                                 nuwax_ws_client_t *ws,
                                                 const char *payload,
@@ -2065,6 +2717,10 @@ bool nuwax_monitoring_mode_handle_protocol_text(nuwax_monitoring_mode_t *mode,
     if (!mode || !mode->initialized) {
         return false;
     }
+    const uint32_t local_stop_generation = atomic_load_explicit(
+        &mode->local_stop_generation, memory_order_acquire);
+    const uint32_t rx_order = atomic_fetch_add_explicit(&mode->control_rx_order, 1U, memory_order_relaxed) + 1U;
+    const uint32_t received_ms = now_ms();
     nuwax_monitoring_protocol_event_t parsed = {0};
     if (!nuwax_monitoring_protocol_parse(payload, len, &parsed)) {
         return false;
@@ -2073,14 +2729,22 @@ bool nuwax_monitoring_mode_handle_protocol_text(nuwax_monitoring_mode_t *mode,
     if (parsed.type == NUWAX_MONITORING_PROTOCOL_EVENT_SET_COMMAND &&
         parsed.enabled && mode->state == NUWAX_MONITORING_STATE_DISABLED &&
         !can_start(mode)) {
-        send_busy_ack(mode, ws, parsed.request_id);
+        nuwax_monitoring_event_t rejected = {.received_ms = received_ms,
+            .ws_connection_epoch = ws ? nuwax_ws_connection_epoch(ws) : 0U};
+        copy_text(rejected.request_id, sizeof(rejected.request_id), parsed.request_id);
+        (void)send_event_command_ack(NULL, ws, &rejected, false, false, "audio_mode_busy", NULL);
         return true;
     }
 
     nuwax_monitoring_event_t event = {0};
+    event.local_stop_generation = local_stop_generation;
+    event.rx_order = rx_order;
+    event.received_ms = received_ms;
     if (parsed.type ==
         NUWAX_MONITORING_PROTOCOL_EVENT_CAPTURE_CONTROL_ACK) {
         event.type = NUWAX_MONITORING_EVENT_CAPTURE_CONTROL_ACK;
+    } else if (parsed.type == NUWAX_MONITORING_PROTOCOL_EVENT_REQUEST_ACK) {
+        event.type = NUWAX_MONITORING_EVENT_REQUEST_ACK;
     } else if (parsed.type == NUWAX_MONITORING_PROTOCOL_EVENT_SET_COMMAND) {
         event.type = parsed.enabled ? NUWAX_MONITORING_EVENT_CLOUD_ENABLE
                                     : NUWAX_MONITORING_EVENT_CLOUD_DISABLE;
@@ -2103,7 +2767,18 @@ bool nuwax_monitoring_mode_handle_protocol_text(nuwax_monitoring_mode_t *mode,
               parsed.audio_session_id);
     copy_text(event.reason, sizeof(event.reason), parsed.reason);
     event.ok = parsed.ok;
+    if (event.type == NUWAX_MONITORING_EVENT_CLOUD_ENABLE || event.type == NUWAX_MONITORING_EVENT_CLOUD_DISABLE) {
+        atomic_store_explicit(&mode->control_rx_epoch, event.ws_connection_epoch, memory_order_release);
+        ESP_LOGI(TAG, "command received request=%s enabled=%d epoch=%lu target_session=%s",
+                 event.request_id, event.type == NUWAX_MONITORING_EVENT_CLOUD_ENABLE,
+                 (unsigned long)event.ws_connection_epoch,
+                 event.audio_session_id[0] ? event.audio_session_id : "-");
+    }
     if (!queue_event(mode, &event)) {
+        if (is_state_sync_ack(&event)) {
+            ESP_LOGW(TAG, "monitoring state-sync ACK dropped while queue full request=%s", event.request_id);
+            return true;
+        }
         if (event.type == NUWAX_MONITORING_EVENT_CAPTURE_CONTROL_ACK && ws &&
             event.ws_connection_epoch != 0U) {
             ESP_LOGE(TAG,
@@ -2113,15 +2788,16 @@ bool nuwax_monitoring_mode_handle_protocol_text(nuwax_monitoring_mode_t *mode,
                 ws, event.ws_connection_epoch);
         } else if (ws &&
             nuwax_ws_is_connected(ws)) {
-            (void)nuwax_monitoring_protocol_send_command_ack(
-                ws,
-                event.request_id,
-                parsed.enabled,
-                false,
-                "control_queue_full");
+            (void)send_event_command_ack(NULL, ws, &event, parsed.enabled, false, "control_queue_full", NULL);
         }
     }
     return true;
+}
+
+void nuwax_monitoring_mode_poll_control_events(nuwax_monitoring_mode_t *mode,
+                                             nuwax_ws_client_t *ws)
+{
+    if (mode && mode->initialized && ws && nuwax_ws_is_connected(ws)) drain_events(mode, ws);
 }
 
 esp_err_t nuwax_monitoring_mode_run(nuwax_monitoring_mode_t *mode,
@@ -2134,6 +2810,15 @@ esp_err_t nuwax_monitoring_mode_run(nuwax_monitoring_mode_t *mode,
             mode->callbacks.poll_controls(mode->callbacks.ctx, ws);
         }
         drain_events(mode, ws);
+        nuwax_monitoring_mode_service_command_deadline(mode, ws);
+        if (mode->state == NUWAX_MONITORING_STATE_STARTING && mode->command_deadline.tracked &&
+            !mode->command_deadline.decided && !mode->command_deadline.prepared) {
+            vTaskDelay(pdMS_TO_TICKS(20U)); return ESP_OK;
+        }
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+        nuwax_monitoring_mode_service_sd(mode, ws);
+        if (mode->sd_local) { vTaskDelay(pdMS_TO_TICKS(20U)); return ESP_OK; }
+#endif
         if (mode->state == NUWAX_MONITORING_STATE_DISABLED) {
             return ESP_OK;
         }
@@ -2244,13 +2929,8 @@ esp_err_t nuwax_monitoring_mode_abort_pending_controls(
                 const bool enabled =
                     event.type == NUWAX_MONITORING_EVENT_CLOUD_ENABLE;
                 const esp_err_t ack_err =
-                    nuwax_monitoring_protocol_send_command_ack(
-                        ws,
-                        event.request_id,
-                        enabled,
-                        false,
-                        reason && reason[0] ? reason
-                                            : "device_recovery_timeout");
+                    send_event_command_ack(mode, ws, &event, enabled, false,
+                        reason && reason[0] ? reason : "device_recovery_timeout", NULL);
                 if (ack_err != ESP_OK && result == ESP_OK) {
                     result = ack_err;
                 }
@@ -2265,9 +2945,46 @@ esp_err_t nuwax_monitoring_mode_abort_pending_controls(
 }
 
 void nuwax_monitoring_mode_notify_ws_disconnected(nuwax_monitoring_mode_t *mode) {
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    preserve_sd_stop_on_disconnect(mode);
+    /* Publish the nonblocking capture cancellation before any reconnect
+     * work. The storage owner still drains/seals before a success ACK. */
+    if (mode && mode->sd_local && mode->state == NUWAX_MONITORING_STATE_STOPPING &&
+        mode->capture_running) nuwax_sd_session_stop(true);
+#endif
+    if (mode && !mode->close_survives_disconnect) mode->pending_ui_close = false;
+    nuwax_monitoring_mode_service_command_deadline(mode, NULL);
+#if CONFIG_NUWAX_SD_SESSION_ENABLE
+    if (mode && mode->sd_local) {
+        clear_event_queue(mode);
+        /* Keep the original opening ACK while this SD scene remains active. */
+        return;
+    }
+#endif
     if (!mode || !mode->initialized) {
         return;
     }
+    if (mode->state != NUWAX_MONITORING_STATE_DISABLED &&
+        strcmp(mode->stop_reason, "cloud_stop") != 0 && strcmp(mode->stop_reason, "ui_close") != 0) {
+        nuwax_audio_mode_identity_remember(&mode->identity, mode->audio_session_id);
+        mode->identity.resuming = mode->identity.session_id[0] != '\0';
+    }
     clear_event_queue(mode);
     reset_to_disabled(mode, "ws_disconnected", false);
+}
+
+bool nuwax_monitoring_mode_take_offline_resume(nuwax_monitoring_mode_t *mode)
+{
+    if (!mode) {
+        return false;
+    }
+    const bool required = mode->offline_resume_required;
+    mode->offline_resume_required = false;
+    return required;
+}
+
+bool nuwax_monitoring_mode_offline_resume_pending(
+    const nuwax_monitoring_mode_t *mode)
+{
+    return mode && mode->initialized && mode->offline_resume_required;
 }

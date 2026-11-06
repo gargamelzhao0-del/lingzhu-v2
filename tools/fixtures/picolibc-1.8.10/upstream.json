@@ -1,0 +1,10 @@
+{
+  "bufio.c": {
+    "url": "https://github.com/picolibc/picolibc/blob/1.8.10/newlib/libc/tinystdio/bufio.c",
+    "sha256": "d67c3647c8e1d1d173130ac35dbbbe114035511a6bc32a0034cf9cc92c8b5b8b"
+  },
+  "ftell.c": {
+    "url": "https://github.com/picolibc/picolibc/blob/1.8.10/newlib/libc/tinystdio/ftell.c",
+    "sha256": "f49de56b984bdfd9d681b9199519b7d171b3ebc7809ed2b3e3f9e1097dcf19f5"
+  }
+}

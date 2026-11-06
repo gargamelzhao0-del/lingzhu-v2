@@ -1,0 +1,7 @@
+miss drop=1 hz=2.00 phase=0 skip_phase=0
+miss drop=1 hz=2.00 phase=1 skip_phase=2
+miss drop=1 hz=2.00 phase=1 skip_phase=3
+miss drop=1 hz=2.00 phase=2 skip_phase=0
+miss drop=1 hz=2.00 phase=3 skip_phase=2
+miss drop=1 hz=2.00 phase=3 skip_phase=3
+SUMMARY baseline=60/60 periodic20percent=54/60

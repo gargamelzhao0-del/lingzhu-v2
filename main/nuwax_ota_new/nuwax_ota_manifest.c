@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "json_resource_budget.h"
 #include "esp_log.h"
 
 static const char *TAG = "nuwax_ota_manifest";
@@ -207,7 +208,7 @@ esp_err_t nuwax_ota_manifest_parse(const char *json, size_t json_len,
     memset(out, 0, sizeof(*out));
 
     const char *parse_end = NULL;
-    cJSON *root = cJSON_ParseWithLengthOpts(json, json_len, &parse_end, false);
+    cJSON *root = nuwax_json_parse_with_length_opts(json, json_len, &parse_end, false);
     if (root == NULL || !cJSON_IsObject(root)) {
         size_t offset = parse_end != NULL && parse_end >= json
                             ? (size_t)(parse_end - json)

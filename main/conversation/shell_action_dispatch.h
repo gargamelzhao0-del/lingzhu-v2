@@ -16,7 +16,10 @@ typedef struct {
     void (*request_head_touch_agent)(void *ctx, nuwax_ws_client_t *ws);
     void (*request_shake_agent)(void *ctx, nuwax_ws_client_t *ws);
     void (*apply_volume_percent)(void *ctx, int volume_percent);
+    void (*apply_volume_commit_percent)(void *ctx, int volume_percent, uint32_t sequence);
+    void (*cycle_brightness)(void *ctx);
     void (*set_meeting_mode)(void *ctx, nuwax_ws_client_t *ws, bool enabled);
+    void (*set_simulated_offline)(void *ctx, nuwax_ws_client_t *ws, bool enabled);
     void (*select_wifi)(void *ctx, int index);
     void (*connect_saved_wifi)(void *ctx, int index);
     void (*set_reprovisioning)(void *ctx, bool enabled);

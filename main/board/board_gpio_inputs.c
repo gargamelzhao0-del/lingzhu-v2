@@ -38,8 +38,11 @@ static nuwax_board_input_callback_t s_callback;
 static void *s_user_ctx;
 static nuwax_head_touch_event_cb_t s_head_touch_callback;
 static void *s_head_touch_user_ctx;
-static uint32_t s_head_touch_long_press_ms = 1000U;
-static uint32_t s_head_touch_gap_tolerance_ms = 750U;
+static uint32_t s_head_touch_long_press_ms = 650U;
+/* gap_tolerance_ms is retained in the public struct for source compatibility;
+ * product qualification intentionally requires continuous contact. */
+static StaticSemaphore_t s_lifecycle_storage;
+static SemaphoreHandle_t s_lifecycle;
 static uint32_t s_head_touch_max_valid_duration_ms = 5000U;
 static portMUX_TYPE s_head_touch_config_lock = portMUX_INITIALIZER_UNLOCKED;
 static atomic_bool s_initialized = ATOMIC_VAR_INIT(false);
@@ -218,7 +221,7 @@ static void input_task(void *arg)
     vTaskSuspend(NULL);
 }
 
-esp_err_t nuwax_board_gpio_inputs_init(nuwax_board_input_callback_t callback,
+static esp_err_t board_gpio_inputs_init_locked(nuwax_board_input_callback_t callback,
                                        void *user_ctx)
 {
     if (atomic_load_explicit(&s_initialized, memory_order_acquire)) {
@@ -271,11 +274,12 @@ esp_err_t nuwax_board_gpio_inputs_init(nuwax_board_input_callback_t callback,
     return ESP_OK;
 }
 
-esp_err_t nuwax_board_gpio_inputs_deinit(void)
+static esp_err_t board_gpio_inputs_deinit_locked(void)
 {
     if (!atomic_load_explicit(&s_initialized, memory_order_acquire)) {
         return ESP_OK;
     }
+    if (s_task == xTaskGetCurrentTaskHandle()) return ESP_ERR_INVALID_STATE;
     atomic_store_explicit(&s_stop_requested, true, memory_order_release);
     if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(250)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
@@ -297,6 +301,36 @@ esp_err_t nuwax_board_gpio_inputs_deinit(void)
     return ESP_OK;
 }
 
+static SemaphoreHandle_t lifecycle_lock(void)
+{
+    portENTER_CRITICAL(&s_head_touch_config_lock);
+    if (!s_lifecycle) s_lifecycle = xSemaphoreCreateMutexStatic(&s_lifecycle_storage);
+    SemaphoreHandle_t result = s_lifecycle;
+    portEXIT_CRITICAL(&s_head_touch_config_lock);
+    return result;
+}
+
+esp_err_t nuwax_board_gpio_inputs_init(nuwax_board_input_callback_t callback,
+                                      void *user_ctx)
+{
+    SemaphoreHandle_t lock = lifecycle_lock();
+    if (!lock) return ESP_ERR_NO_MEM;
+    if (xSemaphoreTake(lock, pdMS_TO_TICKS(500)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    const esp_err_t err = board_gpio_inputs_init_locked(callback, user_ctx);
+    xSemaphoreGive(lock);
+    return err;
+}
+
+esp_err_t nuwax_board_gpio_inputs_deinit(void)
+{
+    SemaphoreHandle_t lock = lifecycle_lock();
+    if (!lock) return ESP_ERR_NO_MEM;
+    if (xSemaphoreTake(lock, pdMS_TO_TICKS(500)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    const esp_err_t err = board_gpio_inputs_deinit_locked();
+    xSemaphoreGive(lock);
+    return err;
+}
+
 esp_err_t nuwax_head_touch_set_event_callback(nuwax_head_touch_event_cb_t callback,
                                               void *user_ctx)
 {
@@ -309,10 +343,12 @@ esp_err_t nuwax_head_touch_set_event_callback(nuwax_head_touch_event_cb_t callba
 
 esp_err_t nuwax_head_touch_set_config(const nuwax_head_touch_config_t *config)
 {
+    /* The legacy gap field has no timing effect. Keep its range validation,
+     * but do not reject a shorter continuous-contact qualification merely
+     * because an existing caller still supplies the old 750 ms gap value. */
     if (!config || config->long_press_ms < 100U ||
         config->long_press_ms > 10000U ||
         config->gap_tolerance_ms > 2000U ||
-        config->gap_tolerance_ms > config->long_press_ms ||
         config->max_valid_duration_ms < 100U ||
         config->max_valid_duration_ms > 60000U ||
         config->max_valid_duration_ms <= config->long_press_ms) {
@@ -320,7 +356,6 @@ esp_err_t nuwax_head_touch_set_config(const nuwax_head_touch_config_t *config)
     }
     portENTER_CRITICAL(&s_head_touch_config_lock);
     s_head_touch_long_press_ms = config->long_press_ms;
-    s_head_touch_gap_tolerance_ms = config->gap_tolerance_ms;
     s_head_touch_max_valid_duration_ms = config->max_valid_duration_ms;
     portEXIT_CRITICAL(&s_head_touch_config_lock);
     return ESP_OK;

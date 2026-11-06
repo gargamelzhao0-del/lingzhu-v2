@@ -115,6 +115,7 @@ typedef struct {
     nuwax_meeting_ui_state_t meeting;
     nuwax_monitoring_ui_state_t monitoring;
     uint8_t volume;
+    uint8_t brightness_percent;
     bool low_power;
     bool app_low_power;
     bool battery_low;
@@ -129,11 +130,15 @@ typedef struct {
     int8_t wifi_rssi_dbm;
     nuwax_wifi_signal_t wifi_signal;
     bool provisioning_active;
+    bool provisioning_starting;
     uint32_t touch_sequence;
     bool touch_emotion_active;
     bool speaking_pcm_active;
     bool ota_update_active;
     uint8_t ota_update_percent;
+    /* Test-only cloud isolation flag.  The physical STA link remains up so
+     * an offline replay gateway can be reached after the test is disabled. */
+    bool simulated_offline;
 } nuwax_device_state_t;
 
 typedef void (*nuwax_state_listener_t)(const nuwax_device_state_t *state, void *user_data);

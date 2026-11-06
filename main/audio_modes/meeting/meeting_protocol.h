@@ -46,3 +46,15 @@ esp_err_t nuwax_meeting_protocol_send_command_ack(nuwax_ws_client_t *ws,
                                                   bool enabled,
                                                   bool ok,
                                                   const char *message);
+
+esp_err_t nuwax_meeting_protocol_send_command_ack_with_session(nuwax_ws_client_t *ws,
+    const char *request_id, bool enabled, bool ok, const char *message,
+    const char *audio_session_id);
+
+esp_err_t nuwax_meeting_protocol_send_resume_request(nuwax_ws_client_t *ws,
+    const char *request_id, const char *audio_session_id);
+
+/* Same wire ACK, bounded by the original command deadline and connection. */
+esp_err_t nuwax_meeting_protocol_send_command_ack_until(nuwax_ws_client_t *ws,
+    const char *request_id, bool enabled, bool ok, const char *message,
+    const char *audio_session_id, int64_t deadline_us, uint32_t expected_epoch);

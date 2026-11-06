@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,6 +11,8 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
+#include "device_error_report.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -56,6 +59,58 @@ static const char *owner_name(nuwax_mic_owner_t owner) {
     }
 }
 
+static void report_mic_fault(const char *code, esp_err_t result,
+                             nuwax_mic_owner_t owner) {
+    char detail[NUWAX_DEVICE_ERROR_RESULT_BYTES];
+    snprintf(detail,
+             sizeof(detail),
+             "%s;owner=%s",
+             esp_err_to_name(result),
+             owner_name(owner));
+    (void)nuwax_device_error_report_enqueue_detail(
+        "error", "microphone", code, result, detail, owner_name(owner), 0U,
+        NULL);
+}
+
+static void report_mic_warning(const char *code, esp_err_t result,
+                               nuwax_mic_owner_t owner) {
+    char detail[NUWAX_DEVICE_ERROR_RESULT_BYTES];
+    snprintf(detail,
+             sizeof(detail),
+             "%s;owner=%s",
+             esp_err_to_name(result),
+             owner_name(owner));
+    (void)nuwax_device_warning_report_enqueue_detail(
+        "microphone", code, result, detail, owner_name(owner), 0U, NULL);
+}
+
+static void report_mic_overflow(const char *code,
+                                esp_err_t result,
+                                nuwax_mic_owner_t owner,
+                                const char *phase,
+                                uint32_t count,
+                                uint32_t delta,
+                                uint32_t events) {
+    char detail[NUWAX_DEVICE_ERROR_RESULT_BYTES];
+    snprintf(detail,
+             sizeof(detail),
+             "%s;owner=%s;phase=%s;count=%lu;delta=%lu;events=%lu",
+             esp_err_to_name(result),
+             owner_name(owner),
+             phase ? phase : "unknown",
+             (unsigned long)count,
+             (unsigned long)delta,
+             (unsigned long)events);
+    if (strcmp(code, "dma_overflow") == 0) {
+        (void)nuwax_device_error_report_enqueue_detail(
+            "error", "microphone", code, result, detail, owner_name(owner),
+            0U, NULL);
+    } else {
+        (void)nuwax_device_warning_report_enqueue_detail(
+            "microphone", code, result, detail, owner_name(owner), 0U, NULL);
+    }
+}
+
 static esp_err_t ensure_owner_lock(void) {
     if (s_mic_owner_lock) {
         return ESP_OK;
@@ -80,6 +135,7 @@ static esp_err_t acquire_owner(nuwax_mic_input_t *mic, nuwax_mic_owner_t owner) 
     ESP_RETURN_ON_ERROR(ensure_owner_lock(), TAG, "create mic owner lock failed");
     if (xSemaphoreTake(s_mic_owner_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
         ESP_LOGW(TAG, "I2S mic owner lock timeout requested=%s", owner_name(owner));
+        report_mic_warning("owner_lock_timeout", ESP_ERR_TIMEOUT, owner);
         return ESP_ERR_TIMEOUT;
     }
     if (s_active_owner != NUWAX_MIC_OWNER_NONE) {
@@ -87,9 +143,13 @@ static esp_err_t acquire_owner(nuwax_mic_input_t *mic, nuwax_mic_owner_t owner) 
                  "I2S mic owner busy requested=%s active=%s",
                  owner_name(owner),
                  owner_name(s_active_owner));
+        report_mic_warning("owner_busy", ESP_ERR_INVALID_STATE, owner);
         xSemaphoreGive(s_mic_owner_lock);
         return ESP_ERR_INVALID_STATE;
     }
+    /* Only initialize storage after exclusive ownership was admitted. A
+     * rejected duplicate init must leave the live instance releasable. */
+    memset(mic, 0, sizeof(*mic));
     s_active_owner = owner;
     mic->owner = owner;
     mic->owner_acquired = true;
@@ -112,6 +172,8 @@ static void release_owner(nuwax_mic_input_t *mic) {
                      "I2S mic owner release mismatch owner=%s active=%s",
                      owner_name(owner),
                      owner_name(s_active_owner));
+            report_mic_warning("owner_release_mismatch", ESP_ERR_INVALID_STATE,
+                               owner);
         }
         xSemaphoreGive(s_mic_owner_lock);
     }
@@ -140,11 +202,14 @@ static bool is_i2s_read_error_usable(esp_err_t err, size_t bytes_read) {
 #define NUWAX_MIC_RX_STARTUP_DRAIN_READS 8U
 #define NUWAX_MIC_RX_STARTUP_RESYNC_MAX 2U
 
+#include "mic_dma_reader.inc"
+
 static size_t mic_rx_drain_queued_audio(nuwax_mic_input_t *mic)
 {
     if (!mic || !mic->rx_handle || !mic->raw_samples || mic->raw_capacity == 0U) {
         return 0U;
     }
+    mic_dma_cache_reset(mic);
     size_t drained = 0U;
     size_t drain_read_bytes =
         (size_t)CONFIG_NUWAX_VOCAT_AUDIO_DMA_FRAME_NUM *
@@ -172,6 +237,7 @@ static void mic_rx_overflow_note(nuwax_mic_input_t *mic,
                                  uint32_t current,
                                  const char *phase)
 {
+    mic_dma_cache_reset(mic);
     const uint32_t delta = current - mic->rx_overflow_count;
     mic->rx_overflow_events += delta;
     mic->rx_overflow_count = current;
@@ -191,6 +257,9 @@ static void mic_rx_overflow_note(nuwax_mic_input_t *mic,
                      (unsigned long)current,
                      (unsigned long)delta,
                      (unsigned long)mic->rx_overflow_events);
+            report_mic_overflow("dma_startup_overflow", ESP_ERR_TIMEOUT,
+                                mic->owner, phase, current, delta,
+                                mic->rx_overflow_events);
         } else {
             ESP_LOGE(TAG,
                      "RX DMA overflow owner=%s phase=%s count=%lu delta=%lu events=%lu; recovery read forced",
@@ -199,6 +268,9 @@ static void mic_rx_overflow_note(nuwax_mic_input_t *mic,
                      (unsigned long)current,
                      (unsigned long)delta,
                      (unsigned long)mic->rx_overflow_events);
+            report_mic_overflow("dma_overflow", ESP_ERR_INVALID_STATE,
+                                mic->owner, phase, current, delta,
+                                mic->rx_overflow_events);
         }
         mic->rx_overflow_last_report_event = mic->rx_overflow_events;
     }
@@ -230,6 +302,7 @@ static esp_err_t mic_rx_overflow_end(nuwax_mic_input_t *mic,
     }
 
     if (discontinuous_before_read || discontinuous_during_read) {
+        mic_dma_cache_reset(mic);
         /* Always consume one DMA buffer before rejecting a discontinuity.
          * Rejecting before i2s_channel_read() caused a permanent overflow
          * loop because the consumer could never catch up with RX. */
@@ -253,6 +326,8 @@ static esp_err_t mic_rx_overflow_end(nuwax_mic_input_t *mic,
                      (unsigned)drained,
                      (unsigned long)mic->rx_startup_resyncs,
                      (unsigned)NUWAX_MIC_RX_STARTUP_RESYNC_MAX);
+            report_mic_warning("dma_startup_resync", ESP_ERR_TIMEOUT,
+                               mic->owner);
             return ESP_ERR_TIMEOUT;
         }
         return ESP_ERR_INVALID_RESPONSE;
@@ -343,7 +418,6 @@ esp_err_t nuwax_mic_input_init_with_owner(nuwax_mic_input_t *mic, nuwax_mic_owne
     if (!mic) {
         return ESP_ERR_INVALID_ARG;
     }
-    memset(mic, 0, sizeof(*mic));
     esp_err_t owner_err = acquire_owner(mic, owner);
     if (owner_err != ESP_OK) {
         return owner_err;
@@ -354,9 +428,10 @@ esp_err_t nuwax_mic_input_init_with_owner(nuwax_mic_input_t *mic, nuwax_mic_owne
      * an own I2S channel; acquire the ES7210 RX channel from audio_board and
      * read it as 4-slot TDM, downmixing to mono PCM16 for the existing ASR. */
     {
-        esp_err_t board_err = nuwax_audio_board_init();
+        esp_err_t board_err = nuwax_audio_board_init(&mic->board_ref);
         if (board_err != ESP_OK) {
             ESP_LOGE(TAG, "vocat audio board init failed: %s", esp_err_to_name(board_err));
+            report_mic_fault("audio_board_init", board_err, owner);
             release_owner(mic);
             return board_err;
         }
@@ -364,19 +439,20 @@ esp_err_t nuwax_mic_input_init_with_owner(nuwax_mic_input_t *mic, nuwax_mic_owne
         esp_err_t acq = nuwax_audio_board_acquire_rx(&rx, &mic->board_lease);
         if (acq != ESP_OK || !rx) {
             ESP_LOGE(TAG, "vocat shared RX acquire failed: %s", esp_err_to_name(acq));
-            nuwax_audio_board_deinit();
+            report_mic_fault("rx_acquire", acq, owner);
+            nuwax_audio_board_deinit(&mic->board_ref);
             release_owner(mic);
             return acq == ESP_OK ? ESP_ERR_INVALID_STATE : acq;
         }
         mic->raw_capacity = CONFIG_NUWAX_VOICE_MAX_SAMPLES_PER_FRAME *
                             NUWAX_VOCAT_MIC_SLOTS * sizeof(int16_t);
-        mic->raw_samples = heap_caps_malloc(mic->raw_capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        mic->raw_samples = heap_caps_malloc(mic->raw_capacity + MIC_DMA_BLOCK_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!mic->raw_samples) {
-            mic->raw_samples = heap_caps_malloc(mic->raw_capacity, MALLOC_CAP_8BIT);
+            mic->raw_samples = heap_caps_malloc(mic->raw_capacity + MIC_DMA_BLOCK_BYTES, MALLOC_CAP_8BIT);
         }
         if (!mic->raw_samples) {
             (void)nuwax_audio_board_release(&mic->board_lease);
-            nuwax_audio_board_deinit();
+            nuwax_audio_board_deinit(&mic->board_ref);
             release_owner(mic);
             return ESP_ERR_NO_MEM;
         }
@@ -416,6 +492,7 @@ esp_err_t nuwax_mic_input_init_with_owner(nuwax_mic_input_t *mic, nuwax_mic_owne
     if (err != ESP_OK) {
         release_owner(mic);
         ESP_LOGE(TAG, "create I2S RX channel failed: %s", esp_err_to_name(err));
+        report_mic_fault("rx_channel_create", err, owner);
         return err;
     }
 
@@ -446,6 +523,7 @@ esp_err_t nuwax_mic_input_init_with_owner(nuwax_mic_input_t *mic, nuwax_mic_owne
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        report_mic_fault("rx_std_init", err, owner);
         i2s_del_channel(rx_handle);
         release_owner(mic);
         return err;
@@ -522,11 +600,8 @@ esp_err_t nuwax_mic_input_read_pcm16(nuwax_mic_input_t *mic,
         const bool discontinuous_before_read =
             mic_rx_overflow_begin(mic, &overflow_before);
         size_t bytes_read = 0;
-        esp_err_t err = i2s_channel_read((i2s_chan_handle_t)mic->rx_handle,
-                                         mic->raw_samples,
-                                         want * NUWAX_VOCAT_MIC_SLOTS * sizeof(int16_t),
-                                         &bytes_read,
-                                         timeout_ms);
+        esp_err_t err = mic_read_dma_blocks(mic, want * NUWAX_VOCAT_MIC_SLOTS * sizeof(int16_t),
+                                         timeout_ms, &bytes_read);
         esp_err_t continuity_err = mic_rx_overflow_end(mic,
                                                        samples_read,
                                                        overflow_before,
@@ -703,11 +778,8 @@ esp_err_t nuwax_mic_input_read_vocat_mr_pcm16(nuwax_mic_input_t *mic,
     const bool discontinuous_before_read =
         mic_rx_overflow_begin(mic, &overflow_before);
     size_t bytes_read = 0;
-    esp_err_t err = i2s_channel_read((i2s_chan_handle_t)mic->rx_handle,
-                                     mic->raw_samples,
-                                     want * NUWAX_VOCAT_MIC_SLOTS * sizeof(int16_t),
-                                     &bytes_read,
-                                     timeout_ms);
+    esp_err_t err = mic_read_dma_blocks(mic, want * NUWAX_VOCAT_MIC_SLOTS * sizeof(int16_t),
+                                         timeout_ms, &bytes_read);
     esp_err_t continuity_err = mic_rx_overflow_end(mic,
                                                    samples_read,
                                                    overflow_before,
@@ -800,11 +872,8 @@ esp_err_t nuwax_mic_input_read_vocat_mic12_pcm16(nuwax_mic_input_t *mic,
     const bool discontinuous_before_read =
         mic_rx_overflow_begin(mic, &overflow_before);
     size_t bytes_read = 0;
-    esp_err_t err = i2s_channel_read((i2s_chan_handle_t)mic->rx_handle,
-                                     mic->raw_samples,
-                                     want * NUWAX_VOCAT_MIC_SLOTS * sizeof(int16_t),
-                                     &bytes_read,
-                                     timeout_ms);
+    esp_err_t err = mic_read_dma_blocks(mic, want * NUWAX_VOCAT_MIC_SLOTS * sizeof(int16_t),
+                                         timeout_ms, &bytes_read);
     esp_err_t continuity_err = mic_rx_overflow_end(mic,
                                                    samples_read,
                                                    overflow_before,
@@ -920,11 +989,8 @@ esp_err_t nuwax_mic_input_read_vocat_mic12_ref_pcm16(nuwax_mic_input_t *mic,
     const bool discontinuous_before_read =
         mic_rx_overflow_begin(mic, &overflow_before);
     size_t bytes_read = 0;
-    esp_err_t err = i2s_channel_read((i2s_chan_handle_t)mic->rx_handle,
-                                     mic->raw_samples,
-                                     want * NUWAX_VOCAT_MIC_SLOTS * sizeof(int16_t),
-                                     &bytes_read,
-                                     timeout_ms);
+    esp_err_t err = mic_read_dma_blocks(mic, want * NUWAX_VOCAT_MIC_SLOTS * sizeof(int16_t),
+                                         timeout_ms, &bytes_read);
     esp_err_t continuity_err = mic_rx_overflow_end(mic,
                                                    samples_read,
                                                    overflow_before,
@@ -1026,14 +1092,10 @@ esp_err_t nuwax_mic_input_deinit(nuwax_mic_input_t *mic) {
     }
 #if CONFIG_NUWAX_BOARD_ESP_VOCAT_V1_0
     if (mic->vocat_shared_rx) {
-        /* Shared RX is owned by audio_board: release + drop refcount, never
-         * delete. Cleanup is intentionally retryable. A failed physical board
-         * teardown leaves vocat_shared_rx set with an empty lease, allowing a
-         * later deinit or the next board init to retry teardown. The process-
-         * wide MIC owner is released after this task has stopped using RX even
-         * when the lower layer reports an error; otherwise that error would
-         * permanently block every future microphone user before audio_board
-         * gets a chance to recover its pending teardown. */
+        /* Consume this instance's board reference once. Physical teardown
+         * failure belongs to audio_board; no old MIC object may retry release
+         * against a new generation. Release the process-wide capture owner
+         * after this task stops using RX so the next init can recover. */
         esp_err_t result = ESP_OK;
         if (mic->board_lease.token != 0) {
             esp_err_t release_err = nuwax_audio_board_release(&mic->board_lease);
@@ -1045,6 +1107,7 @@ esp_err_t nuwax_mic_input_deinit(nuwax_mic_input_t *mic) {
                 heap_caps_free(mic->raw_samples);
                 mic->raw_samples = NULL;
                 mic->raw_capacity = 0U;
+                mic_dma_cache_reset(mic);
                 mic->rx_handle = NULL;
                 mic->initialized = false;
                 mic->rx_audio_started = false;
@@ -1056,7 +1119,7 @@ esp_err_t nuwax_mic_input_deinit(nuwax_mic_input_t *mic) {
             }
         }
         if (mic->board_lease.token == 0) {
-            esp_err_t board_err = nuwax_audio_board_deinit();
+            esp_err_t board_err = nuwax_audio_board_deinit(&mic->board_ref);
             if (board_err != ESP_OK) {
                 if (result == ESP_OK) {
                     result = board_err;
@@ -1070,11 +1133,12 @@ esp_err_t nuwax_mic_input_deinit(nuwax_mic_input_t *mic) {
         heap_caps_free(mic->raw_samples);
         mic->raw_samples = NULL;
         mic->raw_capacity = 0U;
+        mic_dma_cache_reset(mic);
         mic->rx_handle = NULL;
         mic->initialized = false;
         mic->rx_audio_started = false;
         release_owner(mic);
-        if (result == ESP_OK) {
+        if (mic->board_ref.token == 0) {
             memset(mic, 0, sizeof(*mic));
         }
         return result;

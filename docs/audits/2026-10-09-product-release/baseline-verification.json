@@ -1,0 +1,11 @@
+{
+  "version": "7.0.113",
+  "source_files": 636,
+  "source_manifest_sha256": "46be7efdf44b4dd9bbc5f159734070db9fcaacbf8b5f85856e8419488fdb1d9a",
+  "recorded_release_source_files": 19,
+  "changed_recorded_release_sources": [],
+  "release_files_checked": 33,
+  "release_checksum_failures": [],
+  "tracked_modified_or_deleted": 284,
+  "source_snapshot_scope": "First-party source, tools and build configuration; third-party source content not exhaustively snapshotted."
+}

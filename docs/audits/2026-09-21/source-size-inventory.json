@@ -1,0 +1,1210 @@
+[
+  {
+    "file": "main\\nuwax_ai_partner_main.c",
+    "lines": 34969
+  },
+  {
+    "file": "main\\conversation\\speaker_playback.c",
+    "lines": 5845
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_drawer.c",
+    "lines": 4837
+  },
+  {
+    "file": "main\\offline_audio_spool.c",
+    "lines": 4711
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\face\\emotion_animation_player.c",
+    "lines": 4341
+  },
+  {
+    "file": "main\\conversation\\live_aec.c",
+    "lines": 3544
+  },
+  {
+    "file": "main\\wake_word_detector.c",
+    "lines": 3210
+  },
+  {
+    "file": "main\\ws_transport.c",
+    "lines": 3147
+  },
+  {
+    "file": "main\\nuwax_provision_new\\nuwax_provision_main.c",
+    "lines": 3026
+  },
+  {
+    "file": "main\\board\\vocat_audio_board.c",
+    "lines": 2609
+  },
+  {
+    "file": "main\\session_protocol.c",
+    "lines": 2489
+  },
+  {
+    "file": "main\\conversation\\audio_uplink.c",
+    "lines": 2457
+  },
+  {
+    "file": "main\\audio_modes\\monitoring\\monitoring_mode.c",
+    "lines": 2309
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\face\\conversation_visual_assets.h",
+    "lines": 2191
+  },
+  {
+    "file": "main\\nuwax_lvgl_port.c",
+    "lines": 1891
+  },
+  {
+    "file": "main\\app_shell.c",
+    "lines": 1795
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_device.c",
+    "lines": 1764
+  },
+  {
+    "file": "main\\wifi_manager.c",
+    "lines": 1761
+  },
+  {
+    "file": "main\\display.c",
+    "lines": 1666
+  },
+  {
+    "file": "main\\audio_modes\\meeting\\meeting_mode.c",
+    "lines": 1656
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\test\\nuwax_font_test_panel_11.c",
+    "lines": 1345
+  },
+  {
+    "file": "main\\conversation\\audio_cleaner.c",
+    "lines": 1336
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_main.c",
+    "lines": 1316
+  },
+  {
+    "file": "main\\conversation\\p5_fullduplex_overlap_probe.c",
+    "lines": 1221
+  },
+  {
+    "file": "main\\mic_input.c",
+    "lines": 1218
+  },
+  {
+    "file": "main\\device_error_report.c",
+    "lines": 1179
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\face\\emotion_asset_pack.c",
+    "lines": 1145
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_state_bridge.c",
+    "lines": 1134
+  },
+  {
+    "file": "main\\speaker_output.c",
+    "lines": 1009
+  },
+  {
+    "file": "main\\conversation\\barge_in_controller.c",
+    "lines": 995
+  },
+  {
+    "file": "main\\touch_input.c",
+    "lines": 982
+  },
+  {
+    "file": "main\\conversation\\session_dispatch.c",
+    "lines": 922
+  },
+  {
+    "file": "main\\p3_softref_aec_diag.c",
+    "lines": 889
+  },
+  {
+    "file": "main\\board\\bq27220_driver.c",
+    "lines": 807
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_transport.c",
+    "lines": 783
+  },
+  {
+    "file": "main\\board\\nuwax_power_ctrl.c",
+    "lines": 748
+  },
+  {
+    "file": "main\\p3_software_ref.c",
+    "lines": 733
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_face.c",
+    "lines": 727
+  },
+  {
+    "file": "main\\conversation\\touch_gesture.c",
+    "lines": 721
+  },
+  {
+    "file": "main\\p3_nearend_candidate.c",
+    "lines": 707
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_manifest.c",
+    "lines": 582
+  },
+  {
+    "file": "main\\board\\battery_service.c",
+    "lines": 568
+  },
+  {
+    "file": "main\\conversation\\notification_playback.c",
+    "lines": 563
+  },
+  {
+    "file": "main\\music_playback\\music_playback.c",
+    "lines": 560
+  },
+  {
+    "file": "main\\conversation\\barge_in_dispatcher.c",
+    "lines": 527
+  },
+  {
+    "file": "main\\board\\audio_board.c",
+    "lines": 520
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_firmware_report.c",
+    "lines": 514
+  },
+  {
+    "file": "main\\board\\sd_card_driver.c",
+    "lines": 505
+  },
+  {
+    "file": "main\\conversation\\conversation_metrics.c",
+    "lines": 502
+  },
+  {
+    "file": "main\\conversation\\aec_delay_shadow.c",
+    "lines": 501
+  },
+  {
+    "file": "main\\conversation\\audio_uplink.h",
+    "lines": 482
+  },
+  {
+    "file": "main\\conversation\\adaptive_endpoint.c",
+    "lines": 479
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota.c",
+    "lines": 460
+  },
+  {
+    "file": "main\\conversation\\audio_terminal_recovery.c",
+    "lines": 448
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\emotion_display_policy.c",
+    "lines": 442
+  },
+  {
+    "file": "main\\conversation\\sleep_transaction.c",
+    "lines": 426
+  },
+  {
+    "file": "main\\conversation\\head_touch_agent_intent.c",
+    "lines": 421
+  },
+  {
+    "file": "main\\music_url_test\\music_url_test.c",
+    "lines": 361
+  },
+  {
+    "file": "main\\board\\i2c_bus_manager.c",
+    "lines": 357
+  },
+  {
+    "file": "main\\board\\qmi8658a_driver.c",
+    "lines": 354
+  },
+  {
+    "file": "main\\mcp_server.c",
+    "lines": 337
+  },
+  {
+    "file": "main\\audio_modes\\monitoring\\monitoring_protocol.c",
+    "lines": 337
+  },
+  {
+    "file": "main\\board\\hardware_selftest.c",
+    "lines": 330
+  },
+  {
+    "file": "main\\board\\board_gpio_inputs.c",
+    "lines": 327
+  },
+  {
+    "file": "main\\conversation\\playback_terminal_guard.c",
+    "lines": 318
+  },
+  {
+    "file": "main\\board\\led_driver.c",
+    "lines": 316
+  },
+  {
+    "file": "main\\nuwax_provision_new\\nuwax_cloud_config.c",
+    "lines": 309
+  },
+  {
+    "file": "main\\conversation\\turn_guard.c",
+    "lines": 309
+  },
+  {
+    "file": "main\\conversation\\speaker_playback.h",
+    "lines": 308
+  },
+  {
+    "file": "main\\p3_afe_l3.c",
+    "lines": 306
+  },
+  {
+    "file": "main\\conversation\\head_touch_control.c",
+    "lines": 305
+  },
+  {
+    "file": "main\\conversation\\live_aec.h",
+    "lines": 301
+  },
+  {
+    "file": "main\\session_protocol.h",
+    "lines": 280
+  },
+  {
+    "file": "main\\board\\shake_detector.c",
+    "lines": 277
+  },
+  {
+    "file": "main\\audio_modes\\meeting\\meeting_protocol.c",
+    "lines": 276
+  },
+  {
+    "file": "main\\conversation\\conversation_audio_health.c",
+    "lines": 272
+  },
+  {
+    "file": "main\\conversation\\notification_rx_barrier.c",
+    "lines": 252
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\face\\emotion_component_bridge_policy.h",
+    "lines": 250
+  },
+  {
+    "file": "main\\conversation\\conversation_endpoint_policy.h",
+    "lines": 250
+  },
+  {
+    "file": "main\\ws_transport.h",
+    "lines": 243
+  },
+  {
+    "file": "main\\conversation\\speaker_generation_policy.h",
+    "lines": 238
+  },
+  {
+    "file": "main\\conversation\\barge_in_controller.h",
+    "lines": 237
+  },
+  {
+    "file": "main\\audio_modes\\monitoring\\monitoring_speech_detector.h",
+    "lines": 232
+  },
+  {
+    "file": "main\\conversation\\listen_resume_state.c",
+    "lines": 229
+  },
+  {
+    "file": "main\\board\\uart_driver.c",
+    "lines": 222
+  },
+  {
+    "file": "main\\conversation\\barge_in_detector.c",
+    "lines": 220
+  },
+  {
+    "file": "main\\conversation\\speaker_jitter_policy.h",
+    "lines": 218
+  },
+  {
+    "file": "main\\conversation\\short_speech_tracker.c",
+    "lines": 217
+  },
+  {
+    "file": "main\\audio_modes\\meeting\\meeting_processor.c",
+    "lines": 214
+  },
+  {
+    "file": "main\\conversation\\capture_phase_handoff.h",
+    "lines": 208
+  },
+  {
+    "file": "main\\nuwax_provision_new\\nuwax_device_uid.c",
+    "lines": 206
+  },
+  {
+    "file": "main\\conversation\\wake_word_interrupt_filter.c",
+    "lines": 205
+  },
+  {
+    "file": "main\\offline_audio_spool.h",
+    "lines": 204
+  },
+  {
+    "file": "main\\board\\led_status.c",
+    "lines": 203
+  },
+  {
+    "file": "main\\lvgl_psram_mem.c",
+    "lines": 198
+  },
+  {
+    "file": "main\\conversation\\conversation_metrics.h",
+    "lines": 196
+  },
+  {
+    "file": "main\\conversation\\speaker_stream_policy.h",
+    "lines": 193
+  },
+  {
+    "file": "main\\nuwax_provision_new\\nuwax_provision_policy.h",
+    "lines": 190
+  },
+  {
+    "file": "main\\board\\vocat_audio_board.h",
+    "lines": 185
+  },
+  {
+    "file": "main\\app_shell.h",
+    "lines": 181
+  },
+  {
+    "file": "main\\conversation\\preroll_window.c",
+    "lines": 179
+  },
+  {
+    "file": "main\\conversation\\notification_playback.h",
+    "lines": 178
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\face\\conversation_visual.c",
+    "lines": 177
+  },
+  {
+    "file": "main\\conversation\\head_touch_agent_intent.h",
+    "lines": 176
+  },
+  {
+    "file": "main\\opus_encoder_wrapper.c",
+    "lines": 171
+  },
+  {
+    "file": "main\\cloud_protocol_compat.c",
+    "lines": 168
+  },
+  {
+    "file": "main\\conversation\\live_aec_output_provenance.c",
+    "lines": 167
+  },
+  {
+    "file": "main\\audio_frame.c",
+    "lines": 167
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\ota_progress.c",
+    "lines": 166
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_device_state.h",
+    "lines": 162
+  },
+  {
+    "file": "main\\conversation\\sleep_transaction.h",
+    "lines": 161
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_app.c",
+    "lines": 161
+  },
+  {
+    "file": "main\\conversation\\conversation_visual_round.h",
+    "lines": 156
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\face\\emotion_asset_pack.h",
+    "lines": 154
+  },
+  {
+    "file": "main\\board\\battery_policy.h",
+    "lines": 152
+  },
+  {
+    "file": "main\\conversation\\aec_delay_shadow.h",
+    "lines": 148
+  },
+  {
+    "file": "main\\conversation\\speech_confirmation.c",
+    "lines": 146
+  },
+  {
+    "file": "main\\audio_modes\\monitoring\\monitoring_mode.h",
+    "lines": 144
+  },
+  {
+    "file": "main\\conversation\\awake_session_state.c",
+    "lines": 143
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_device_state.c",
+    "lines": 143
+  },
+  {
+    "file": "main\\conversation\\touch_cancel_recovery.c",
+    "lines": 142
+  },
+  {
+    "file": "main\\conversation\\session_dispatch.h",
+    "lines": 139
+  },
+  {
+    "file": "main\\offline_archive_directory.h",
+    "lines": 136
+  },
+  {
+    "file": "main\\conversation\\prelisten_state.c",
+    "lines": 135
+  },
+  {
+    "file": "main\\board\\audio_board.h",
+    "lines": 133
+  },
+  {
+    "file": "main\\conversation\\adaptive_endpoint.h",
+    "lines": 133
+  },
+  {
+    "file": "main\\audio_modes\\meeting\\meeting_mode.h",
+    "lines": 132
+  },
+  {
+    "file": "main\\board\\sd_dma_bulk.c",
+    "lines": 132
+  },
+  {
+    "file": "main\\conversation\\wake_word_config.c",
+    "lines": 127
+  },
+  {
+    "file": "main\\board\\board_drivers.h",
+    "lines": 127
+  },
+  {
+    "file": "main\\conversation\\playback_terminal_guard.h",
+    "lines": 126
+  },
+  {
+    "file": "main\\wake_word_detector.h",
+    "lines": 126
+  },
+  {
+    "file": "main\\diagnostics.c",
+    "lines": 121
+  },
+  {
+    "file": "main\\conversation\\emotion_ui_pending.h",
+    "lines": 117
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_firmware_identity_policy.h",
+    "lines": 116
+  },
+  {
+    "file": "main\\nuwax_provision_new\\nuwax_provision_main.h",
+    "lines": 114
+  },
+  {
+    "file": "main\\conversation\\audio_cleaner.h",
+    "lines": 113
+  },
+  {
+    "file": "main\\ws_send_failure_policy.h",
+    "lines": 111
+  },
+  {
+    "file": "main\\conversation\\shell_action_dispatch.c",
+    "lines": 110
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\face\\emotion_delta_format.h",
+    "lines": 110
+  },
+  {
+    "file": "main\\board\\battery_insights.c",
+    "lines": 107
+  },
+  {
+    "file": "main\\nuwax_provision_new\\nuwax_provision_usb_control.c",
+    "lines": 106
+  },
+  {
+    "file": "main\\offline_audio_voice.c",
+    "lines": 104
+  },
+  {
+    "file": "main\\board\\battery_service.h",
+    "lines": 102
+  },
+  {
+    "file": "main\\conversation\\wake_word_alias_policy.h",
+    "lines": 102
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\emotion_display_policy.h",
+    "lines": 102
+  },
+  {
+    "file": "main\\p6_gray_confirm.c",
+    "lines": 101
+  },
+  {
+    "file": "main\\conversation\\conversation_latency_contract.h",
+    "lines": 99
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\test\\nuwax_test_panel.c",
+    "lines": 97
+  },
+  {
+    "file": "main\\filter_conservative.c",
+    "lines": 95
+  },
+  {
+    "file": "main\\p3_softref_aec_diag.h",
+    "lines": 94
+  },
+  {
+    "file": "main\\nuwax_provision_new\\nuwax_provision_qr_payload.h",
+    "lines": 94
+  },
+  {
+    "file": "main\\mic_input.h",
+    "lines": 93
+  },
+  {
+    "file": "main\\nuwax_lvgl_port.h",
+    "lines": 93
+  },
+  {
+    "file": "main\\ws_close_policy.h",
+    "lines": 92
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_firmware_report_policy.h",
+    "lines": 90
+  },
+  {
+    "file": "main\\conversation\\preroll_window.h",
+    "lines": 88
+  },
+  {
+    "file": "main\\conversation\\notification_rx_barrier.h",
+    "lines": 87
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota.h",
+    "lines": 87
+  },
+  {
+    "file": "main\\conversation\\aec_fir_delay_control.c",
+    "lines": 86
+  },
+  {
+    "file": "main\\p3_software_ref.h",
+    "lines": 86
+  },
+  {
+    "file": "main\\board\\nuwax_board.c",
+    "lines": 85
+  },
+  {
+    "file": "main\\device_error_report.h",
+    "lines": 85
+  },
+  {
+    "file": "main\\conversation\\turn_guard.h",
+    "lines": 83
+  },
+  {
+    "file": "main\\board\\esp_vocat_v1_0_pins.h",
+    "lines": 83
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\menu\\nuwax_device_qr_view.c",
+    "lines": 83
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_main.h",
+    "lines": 80
+  },
+  {
+    "file": "main\\conversation\\short_speech_tracker.h",
+    "lines": 80
+  },
+  {
+    "file": "main\\conversation\\listen_resume_state.h",
+    "lines": 80
+  },
+  {
+    "file": "main\\conversation\\touch_cancel_recovery.h",
+    "lines": 80
+  },
+  {
+    "file": "main\\conversation\\conversation_audio_health.h",
+    "lines": 79
+  },
+  {
+    "file": "main\\product_ready.c",
+    "lines": 77
+  },
+  {
+    "file": "main\\conversation\\audio_uplink_terminal.c",
+    "lines": 77
+  },
+  {
+    "file": "main\\display.h",
+    "lines": 74
+  },
+  {
+    "file": "main\\conversation\\barge_in_detector.h",
+    "lines": 72
+  },
+  {
+    "file": "main\\conversation\\barge_in_dispatcher.h",
+    "lines": 71
+  },
+  {
+    "file": "main\\audio_modes\\meeting\\meeting_processor.h",
+    "lines": 71
+  },
+  {
+    "file": "main\\conversation\\audio_terminal_recovery_policy.h",
+    "lines": 71
+  },
+  {
+    "file": "main\\conversation\\audio_terminal_recovery.h",
+    "lines": 71
+  },
+  {
+    "file": "main\\p6_gray_confirm.h",
+    "lines": 70
+  },
+  {
+    "file": "main\\conversation\\wake_word_detection_policy.h",
+    "lines": 70
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\menu\\nuwax_detail_style.h",
+    "lines": 68
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_device.h",
+    "lines": 67
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_release_policy.h",
+    "lines": 66
+  },
+  {
+    "file": "main\\conversation\\aec_reference_provenance.h",
+    "lines": 66
+  },
+  {
+    "file": "main\\mcp_server.h",
+    "lines": 65
+  },
+  {
+    "file": "main\\conversation\\mic_level.c",
+    "lines": 64
+  },
+  {
+    "file": "main\\conversation\\aec_fir_delay_control.h",
+    "lines": 64
+  },
+  {
+    "file": "main\\p5_live_fast_gate_fixtures.h",
+    "lines": 63
+  },
+  {
+    "file": "main\\conversation\\p5_fullduplex_overlap_probe.h",
+    "lines": 63
+  },
+  {
+    "file": "main\\ws_mask.h",
+    "lines": 62
+  },
+  {
+    "file": "main\\conversation\\live_aec_output_provenance.h",
+    "lines": 61
+  },
+  {
+    "file": "main\\board\\battery_insights.h",
+    "lines": 59
+  },
+  {
+    "file": "main\\audio_modes\\monitoring\\monitoring_protocol.h",
+    "lines": 58
+  },
+  {
+    "file": "main\\board\\nuwax_power_ctrl.h",
+    "lines": 58
+  },
+  {
+    "file": "main\\conversation\\wake_word_probe_policy.h",
+    "lines": 58
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\face\\emotion_segment_policy.h",
+    "lines": 58
+  },
+  {
+    "file": "main\\state_cmd_fast.c",
+    "lines": 57
+  },
+  {
+    "file": "main\\conversation\\speech_confirmation.h",
+    "lines": 56
+  },
+  {
+    "file": "main\\wifi_manager.h",
+    "lines": 56
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_retry_policy.h",
+    "lines": 56
+  },
+  {
+    "file": "main\\conversation\\deferred_state_pending.h",
+    "lines": 55
+  },
+  {
+    "file": "main\\time_sync.c",
+    "lines": 55
+  },
+  {
+    "file": "main\\nuwax_provision_new\\nuwax_device_uid.h",
+    "lines": 55
+  },
+  {
+    "file": "main\\audio_frame.h",
+    "lines": 54
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_manifest.h",
+    "lines": 53
+  },
+  {
+    "file": "main\\board\\board_gpio_inputs.h",
+    "lines": 53
+  },
+  {
+    "file": "main\\conversation\\wake_word_input_policy.h",
+    "lines": 53
+  },
+  {
+    "file": "main\\product_ready.h",
+    "lines": 52
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_drawer.h",
+    "lines": 52
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_state_bridge.h",
+    "lines": 51
+  },
+  {
+    "file": "main\\audio_modes\\meeting\\meeting_protocol.h",
+    "lines": 51
+  },
+  {
+    "file": "main\\offline_io_schedule.h",
+    "lines": 49
+  },
+  {
+    "file": "main\\conversation\\awake_session_state.h",
+    "lines": 49
+  },
+  {
+    "file": "main\\cloud_connection_epoch_policy.h",
+    "lines": 48
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_power_policy.h",
+    "lines": 48
+  },
+  {
+    "file": "main\\board\\hardware_selftest.h",
+    "lines": 47
+  },
+  {
+    "file": "main\\audio_reliable_playback.c",
+    "lines": 47
+  },
+  {
+    "file": "main\\offline_audio_policy.h",
+    "lines": 46
+  },
+  {
+    "file": "main\\wifi_saved_network_list_internal.h",
+    "lines": 46
+  },
+  {
+    "file": "main\\conversation\\conversation_state.c",
+    "lines": 46
+  },
+  {
+    "file": "main\\audio_runtime_memory_policy.h",
+    "lines": 45
+  },
+  {
+    "file": "main\\nuwax_provision_new\\nuwax_cloud_config.h",
+    "lines": 43
+  },
+  {
+    "file": "main\\p3_nearend_candidate.h",
+    "lines": 43
+  },
+  {
+    "file": "main\\ctype_compat.c",
+    "lines": 43
+  },
+  {
+    "file": "main\\speaker_output.h",
+    "lines": 43
+  },
+  {
+    "file": "main\\audio_reliable_capture.c",
+    "lines": 43
+  },
+  {
+    "file": "main\\audio_modes\\monitoring\\monitoring_speech_policy.h",
+    "lines": 40
+  },
+  {
+    "file": "main\\conversation\\ui_sync_pending.h",
+    "lines": 40
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\ui_bridge_revision_policy.h",
+    "lines": 40
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_firmware_report.h",
+    "lines": 39
+  },
+  {
+    "file": "main\\board\\sd_card_driver.h",
+    "lines": 38
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\face\\conversation_visual.h",
+    "lines": 38
+  },
+  {
+    "file": "main\\conversation\\prelisten_state.h",
+    "lines": 36
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\face\\emotion_animation_player.h",
+    "lines": 36
+  },
+  {
+    "file": "main\\conversation\\wake_word_interrupt_filter.h",
+    "lines": 35
+  },
+  {
+    "file": "main\\board\\led_status.h",
+    "lines": 35
+  },
+  {
+    "file": "main\\touch_input.h",
+    "lines": 33
+  },
+  {
+    "file": "main\\conversation\\d1_playback_path.c",
+    "lines": 33
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_theme.h",
+    "lines": 33
+  },
+  {
+    "file": "main\\offline_audio_voice.h",
+    "lines": 32
+  },
+  {
+    "file": "main\\board\\shake_detector.h",
+    "lines": 32
+  },
+  {
+    "file": "main\\opus_encoder_wrapper.h",
+    "lines": 32
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_transport.h",
+    "lines": 32
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_face.h",
+    "lines": 30
+  },
+  {
+    "file": "main\\conversation\\head_touch_control_policy.c",
+    "lines": 30
+  },
+  {
+    "file": "main\\board\\sd_event_profile.c",
+    "lines": 30
+  },
+  {
+    "file": "main\\synthetic_audio.c",
+    "lines": 30
+  },
+  {
+    "file": "main\\conversation\\shell_action_dispatch.h",
+    "lines": 30
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_ui_config.h",
+    "lines": 29
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_gesture.c",
+    "lines": 29
+  },
+  {
+    "file": "main\\conversation\\wake_word_config.h",
+    "lines": 28
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_anim.c",
+    "lines": 28
+  },
+  {
+    "file": "main\\audio_mode_identity.h",
+    "lines": 28
+  },
+  {
+    "file": "main\\board\\uart_driver.h",
+    "lines": 28
+  },
+  {
+    "file": "main\\boot_logo.c",
+    "lines": 27
+  },
+  {
+    "file": "main\\conversation\\realtime_log.h",
+    "lines": 27
+  },
+  {
+    "file": "main\\conversation\\conversation_state.h",
+    "lines": 27
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\control_center_timing_policy.h",
+    "lines": 27
+  },
+  {
+    "file": "main\\app_state.c",
+    "lines": 26
+  },
+  {
+    "file": "main\\ws_receive_deadline_policy.h",
+    "lines": 26
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_dialog_policy.h",
+    "lines": 26
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_result_ack_policy.h",
+    "lines": 26
+  },
+  {
+    "file": "main\\conversation\\rt_capture_wait_policy.h",
+    "lines": 26
+  },
+  {
+    "file": "main\\board\\nuwax_board.h",
+    "lines": 24
+  },
+  {
+    "file": "main\\conversation\\audio_uplink_terminal.h",
+    "lines": 24
+  },
+  {
+    "file": "main\\board\\i2c_bus_manager.h",
+    "lines": 23
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_app.h",
+    "lines": 23
+  },
+  {
+    "file": "main\\offline_replay_metadata.h",
+    "lines": 23
+  },
+  {
+    "file": "main\\lvgl_env_probe.c",
+    "lines": 23
+  },
+  {
+    "file": "main\\diagnostics.h",
+    "lines": 22
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_identity_recovery_policy.h",
+    "lines": 21
+  },
+  {
+    "file": "main\\test_controls.h",
+    "lines": 20
+  },
+  {
+    "file": "main\\conversation\\speaker_backpressure_policy.h",
+    "lines": 20
+  },
+  {
+    "file": "main\\cloud_protocol_compat.h",
+    "lines": 20
+  },
+  {
+    "file": "main\\conversation\\head_touch_control_policy.h",
+    "lines": 19
+  },
+  {
+    "file": "main\\offline_replay_identity.h",
+    "lines": 19
+  },
+  {
+    "file": "main\\nuwax_provision_new\\nuwax_provision_usb_control.h",
+    "lines": 18
+  },
+  {
+    "file": "main\\board\\sd_dma_bulk.h",
+    "lines": 18
+  },
+  {
+    "file": "main\\music_url_test\\music_url_test.h",
+    "lines": 17
+  },
+  {
+    "file": "main\\conversation\\mic_level.h",
+    "lines": 16
+  },
+  {
+    "file": "main\\nuwax_ota_new\\nuwax_ota_ui_policy.h",
+    "lines": 16
+  },
+  {
+    "file": "main\\conversation\\head_touch_control.h",
+    "lines": 16
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_gesture.h",
+    "lines": 16
+  },
+  {
+    "file": "main\\app_state.h",
+    "lines": 15
+  },
+  {
+    "file": "main\\synthetic_audio.h",
+    "lines": 14
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\menu\\nuwax_device_qr_view.h",
+    "lines": 14
+  },
+  {
+    "file": "main\\boot_logo.h",
+    "lines": 14
+  },
+  {
+    "file": "main\\board\\sd_event_profile.h",
+    "lines": 14
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_anim.h",
+    "lines": 14
+  },
+  {
+    "file": "main\\music_playback\\music_playback.h",
+    "lines": 14
+  },
+  {
+    "file": "main\\touch_read_policy.h",
+    "lines": 13
+  },
+  {
+    "file": "main\\p3_afe_l3.h",
+    "lines": 13
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\test\\nuwax_test_panel.h",
+    "lines": 12
+  },
+  {
+    "file": "main\\full_duplex_coord.c",
+    "lines": 12
+  },
+  {
+    "file": "main\\ws_archive_batch.h",
+    "lines": 10
+  },
+  {
+    "file": "main\\conversation\\touch_gesture.h",
+    "lines": 10
+  },
+  {
+    "file": "main\\ws_send_metrics.h",
+    "lines": 10
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\ota_progress.h",
+    "lines": 10
+  },
+  {
+    "file": "main\\nuwax_ui_v28\\nuwax_theme.c",
+    "lines": 8
+  },
+  {
+    "file": "main\\lvgl_env_probe.h",
+    "lines": 6
+  },
+  {
+    "file": "main\\time_sync.h",
+    "lines": 5
+  }
+]

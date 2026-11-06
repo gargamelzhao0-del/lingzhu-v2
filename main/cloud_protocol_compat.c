@@ -6,6 +6,18 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "json_resource_budget.h"
+
+bool nuwax_cloud_peer_close_requires_provision(uint16_t code,
+    const uint8_t *reason, size_t reason_bytes)
+{
+    static const char expected[] = "device binding changed";
+    if (code != 1008U || !reason || reason_bytes != sizeof(expected) - 1U)
+        return false;
+    for (size_t i = 0; i < sizeof(expected) - 1U; ++i)
+        if (reason[i] != (uint8_t)expected[i]) return false;
+    return true;
+}
 
 static bool json_object_is_complete(const char *payload,
                                     int len,
@@ -65,7 +77,9 @@ static bool is_auth_rejection_value(const cJSON *item)
 static bool is_provision_required_code(const cJSON *item)
 {
     return cJSON_IsString(item) && item->valuestring != NULL &&
-           strcmp(item->valuestring, "DEVICE_NOT_BOUND") == 0;
+           (strcmp(item->valuestring, "DEVICE_NOT_BOUND") == 0 ||
+            strcmp(item->valuestring, "DEVICE_SECRET_INVALID") == 0 ||
+            strcmp(item->valuestring, "DEVICE_AUTH_FAILED") == 0);
 }
 
 nuwax_cloud_message_kind_t nuwax_cloud_classify_message(
@@ -78,7 +92,7 @@ nuwax_cloud_message_kind_t nuwax_cloud_classify_message(
     }
 
     const char *parse_end = NULL;
-    cJSON *root = cJSON_ParseWithLengthOpts(payload, (size_t)len,
+    cJSON *root = nuwax_json_parse_with_length_opts(payload, (size_t)len,
                                              &parse_end, false);
     if (root == NULL || !cJSON_IsObject(root) ||
         !json_object_is_complete(payload, len, parse_end)) {
@@ -128,6 +142,13 @@ nuwax_cloud_message_kind_t nuwax_cloud_classify_message(
             kind = NUWAX_CLOUD_MESSAGE_HELLO_OK;
         } else {
             kind = NUWAX_CLOUD_MESSAGE_HELLO_REJECTED;
+            if (unique_fields && cJSON_IsFalse(ok) &&
+                object_key_count(root, "code") <= 1U &&
+                object_key_count(root, "error") <= 1U &&
+                (is_provision_required_code(cJSON_GetObjectItemCaseSensitive(root, "code")) ||
+                 is_provision_required_code(cJSON_GetObjectItemCaseSensitive(root, "error")))) {
+                kind = NUWAX_CLOUD_MESSAGE_PROVISION_REQUIRED;
+            }
         }
     } else if (strcmp(type->valuestring, "pong") == 0) {
         kind = NUWAX_CLOUD_MESSAGE_PONG;
@@ -136,7 +157,7 @@ nuwax_cloud_message_kind_t nuwax_cloud_classify_message(
         const cJSON *error = cJSON_GetObjectItemCaseSensitive(root, "error");
         if (object_key_count(root, "code") <= 1U &&
             object_key_count(root, "error") <= 1U) {
-            if (is_provision_required_code(code)) {
+            if (is_provision_required_code(code) || is_provision_required_code(error)) {
                 kind = NUWAX_CLOUD_MESSAGE_PROVISION_REQUIRED;
             } else if (is_auth_rejection_value(code) ||
                        is_auth_rejection_value(error)) {

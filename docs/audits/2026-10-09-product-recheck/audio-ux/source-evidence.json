@@ -1,0 +1,28 @@
+{
+  "candidate": "R1-RECHECK-REAL-WAIT-v1",
+  "sourceSha256": "0087ce87987ffcc75b0cfbf7d1e4b28767c0bb166873c06f9a0fb9597651162a",
+  "extractedFunctionSha256Utf8LF": {
+    "clear_conversation_visual_round": "ec7097123524e28c0fac837e82eef7eccc1ded5c5469b6371011adc303544143",
+    "clear_active_turn_guard": "f0d2157b41a21f8669630255ef3baab1ca41f8ebda0808a988cfedbc7eff52e1",
+    "begin_active_turn_guard": "469f6867b4eba9ab97d23ecb82843b858130d66ee501631840c71669f82ae40c",
+    "begin_awake_session": "0514cbe0c2e4d82d9360c56959de4bf9481e9c042189c4456fc0de50db68052d",
+    "begin_conversation_visual_round": "2f6a349d9eb73d3972bedeaef4898a9bf6fbf3b1da9ecbd71037a01e6ff60c62",
+    "start_prelisten_window": "045b5878b122253655eb66a48b6509e03fe35891e1c15069932ae83a573bf785",
+    "return_to_listening_after_cancel": "afa389043722dd0a3cc7b9dcb4845f0e6bdeb2e25ee4f82b459556d844951277",
+    "recover_normal_conversation_after_playback_abort": "f17caf62681753699f20abe2b51268174d6b83e54fb6b89c2d5d76c174cb821f",
+    "awake_idle_sleep_admitted": "3d0060179e67f7637a1a3df7c76566d59083ba92900fca91f0ad8bb8b6c5a668",
+    "maybe_enter_idle_sleep": "a3d8b3fe2633990c3dc67efa644da7657c20f6b3280b3c014688667386042bdb",
+    "ensure_sleep_wake_word_detector": "e5765adea8cb936fe896056a678c133ad101e5b681c193a470a8883dcea7000c",
+    "check_conversation_turn_timeout": "fe90484c521b23c7b2857fe19c7febe574fc4d2973c51ed5b2a6d575f27def39",
+    "send_wake_word_greeting": "a03c8dccbcb3b9e0a5c75809d63f372779f760d3ec00c2239cca89ff22c31edc",
+    "wait_for_mic_start_action": "ae0ece347c1872f2aaa627afe5ecbddc3f8b823790b9eb5689b7f9a75dae5749"
+  },
+  "hardwareValidated": false,
+  "simulationMillisecondsPerBaseline": 600000,
+  "limitations": [
+    "RTOS queues/time, cloud transport, hardware speaker and unrelated idle services are stubbed.",
+    "No response case executes real wait, wake send, awake begin, visual ownership, timeout, clear guard, recovery, idle and wake-supervisor admission functions.",
+    "TTS-pending case injects the same production turn transition; does not run the entire cloud event decoder.",
+    "Harness ends baseline by explicitly disconnecting only after 600000 simulated ms; it is not a device timeout."
+  ]
+}

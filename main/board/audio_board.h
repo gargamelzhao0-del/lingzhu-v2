@@ -76,12 +76,16 @@ typedef enum {
     NUWAX_AUDIO_BOARD_LEASE_RX = 1U << 0,
     NUWAX_AUDIO_BOARD_LEASE_TX = 1U << 1,
     NUWAX_AUDIO_BOARD_LEASE_DIAGNOSTIC = 1U << 2,
+    NUWAX_AUDIO_BOARD_LEASE_MUSIC = 1U << 3,
 } nuwax_audio_board_lease_channel_t;
 
 /*
  * An audio channel lease is valid only for one initialized board generation.
  * The token prevents a stale owner from releasing a channel reacquired by a
  * newer owner after recovery or reinitialization.
+ * Zero-initialize before first acquire; move, never copy a live lease.
+ * Acquire rejects a nonempty lease without changing it or handle outputs.
+ * Release it before reuse, including when requesting a different channel.
  */
 typedef struct {
     uint32_t generation;
@@ -89,9 +93,19 @@ typedef struct {
     uint8_t channels;
 } nuwax_audio_board_lease_t;
 
-/* Refcounted: first call brings the backend up, last deinit tears it down. */
-esp_err_t nuwax_audio_board_init(void);
-esp_err_t nuwax_audio_board_deinit(void);
+typedef struct {
+    uint32_t generation;
+    uint32_t token;
+} nuwax_audio_board_ref_t;
+
+/* Zero-initialize refs; move, never copy a live ref. Each successful init owns
+ * one reference. Deinit consumes it once (zeroes it), even if final physical
+ * teardown fails. A nonzero ref after an error still belongs to the caller.
+ * Failed physical cleanup is owned by the board and retried before next init.
+ * Empty refs are harmless; stale/copied refs cannot consume a new reference. */
+esp_err_t nuwax_audio_board_init(nuwax_audio_board_ref_t *ref);
+esp_err_t nuwax_audio_board_deinit(nuwax_audio_board_ref_t *ref);
+esp_err_t nuwax_audio_board_retry_teardown(void);
 
 const nuwax_audio_board_caps_t *nuwax_audio_board_get_caps(void);
 
@@ -114,6 +128,13 @@ esp_err_t nuwax_audio_board_acquire_diagnostic(void **out_rx_handle,
                                                nuwax_audio_board_lease_t *out_lease);
 esp_err_t nuwax_audio_board_release(nuwax_audio_board_lease_t *lease);
 bool nuwax_audio_board_diagnostic_lease_is_held(void);
+
+/* Music exclusively reserves both halves of the shared clock domain. Only
+ * this lease may change the rate; release restores the voice rate first. */
+esp_err_t nuwax_audio_board_acquire_music(void **out_tx_handle,
+                                         nuwax_audio_board_lease_t *out_lease);
+esp_err_t nuwax_audio_board_music_rate(const nuwax_audio_board_lease_t *lease,
+                                      uint32_t sample_rate);
 
 /* Monotonic modulo-2^32 count of RX DMA queue overflows. */
 uint32_t nuwax_audio_board_get_rx_overflow_count(void);

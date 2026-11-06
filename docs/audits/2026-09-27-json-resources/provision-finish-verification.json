@@ -1,0 +1,22 @@
+{
+  "revision": "20260923-provision-finish-v1",
+  "elfSha256": "fee56b4caffc46d9eacc0251e23a2e249a96511b43bc3b6257a4a675fcc1a8ff",
+  "binSha256": "5718f2a361242f85562db1ff13e49b8d0a66e9d8e3eee7ddbd740089e81bc61e",
+  "bytes": 3835312,
+  "transport": {
+    "revision": "20260923-provision-finish-v1",
+    "input": "C:\\esp\\v6.0\\esp-idf\\components\\protocomm\\src\\transports\\protocomm_nimble.c",
+    "input_sha256": "b63c9cd82e603b56291b7089a80df9133cbf0dceacf2348e6583dc9b5b7c6b95",
+    "output_sha256": "08b6ff577dee9a3409c60236b9b8026f6ec281b29d7ecceff58a237cc75b5b83"
+  },
+  "sourceHashes": {
+    "main/nuwax_ai_partner_main.c": "07b6c9d62a3038690202e1b1dd24600a400565bae3f5ba5f2d6b6054a6450867",
+    "main/nuwax_provision_new/nuwax_provision_main.c": "de9c1742ed92bec4a0f5e4bb12c3b5ed5c4e6780ae7552bacf26b5dedb73aeb1",
+    "main/nuwax_provision_new/nuwax_provision_policy.h": "269ce62c70fda97824a23a6dd0b2f6d4de7c593f9267faeda99bea49d737c143",
+    "main/CMakeLists.txt": "84a72b84e89c41a5a6f921925bb7ff6f0c6a33d3695fc1670993195bd8aea92b",
+    "CMakeLists.txt": "8b40bdae2f2ad6df338e115fd203c0a9d2035a557bd72b454c922bbac5b14b9c",
+    "tools/cmake/protocomm-lifecycle-fix.cmake": "9f09c32239dd578e756347105a2d95f7577a8c2aa0a9d61fbf794bbdf5f22772",
+    "tools/patch-protocomm-lifecycle.py": "02de957baa9522e4d665c1c79cfee01cd51d80a49209583255cb16d81519f3f2"
+  },
+  "hardwareValidated": false
+}

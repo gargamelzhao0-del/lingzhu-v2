@@ -21,7 +21,12 @@ typedef struct {
 
 esp_err_t nuwax_wifi_connect(void);
 esp_err_t nuwax_wifi_init(void);
+/* Boot-only, before local wake starts: normalize the saved STA policy without
+ * associating. Never alters an already connected or provisioning-owned STA. */
+esp_err_t nuwax_wifi_prepare_boot_config(void);
 esp_err_t nuwax_wifi_recover(void);
+esp_err_t nuwax_wifi_set_simulated_offline(bool enabled);
+bool nuwax_wifi_simulated_offline(void);
 esp_err_t nuwax_wifi_start_fallback_watcher(void);
 /* Publishes the runtime-provisioning intent without waiting for an in-flight
  * STA operation. New reconnect, fallback and scan work is fenced immediately;

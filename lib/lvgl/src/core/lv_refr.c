@@ -24,6 +24,14 @@
 #include "../stdlib/lv_string.h"
 #include "lv_global.h"
 
+#if defined(ESP_PLATFORM) && CONFIG_NUWAX_UI_PERF_LOG_ENABLE && LV_USE_OS == LV_OS_NONE
+#include "esp_timer.h"
+#define NUWAX_REFR_TIMING 1
+extern void nuwax_lvgl_record_refr_phase(unsigned phase, uint32_t elapsed_us);
+#else
+#define NUWAX_REFR_TIMING 0
+#endif
+
 /*********************
  *      DEFINES
  *********************/
@@ -501,6 +509,26 @@ void lv_obj_refr(lv_layer_t * layer, lv_obj_t * obj)
     const lv_opa_t opa_layered = lv_obj_get_style_opa_layered(obj, LV_PART_MAIN);
     if(opa_layered <= LV_OPA_MIN) return;
 
+    /* Ordinary objects are eventually clipped by lv_obj_redraw against these
+     * exact cached bounds. Reject invisible partial-buffer work BEFORE resolving
+     * opacity/recolor and entering the draw tree. Keep transformed/simple-layer
+     * objects on their original path, and preserve the rendered marker that
+     * lv_obj_redraw sets even for rejected bounds (widget animation semantics). */
+    const lv_layer_type_t layer_type = lv_obj_get_layer_type(obj);
+    if(layer_type == LV_LAYER_TYPE_NONE) {
+        lv_area_t bounds = obj->coords;
+        const int32_t ext = lv_obj_get_ext_draw_size(obj);
+        lv_area_increase(&bounds, ext, ext);
+        lv_area_t intersection;
+        if(!lv_area_intersect(&intersection, &layer->_clip_area, &bounds)) {
+            obj->rendered = 1;
+#if NUWAX_REFR_TIMING
+            nuwax_lvgl_record_refr_phase(3, 0);
+#endif
+            return;
+        }
+    }
+
     const lv_opa_t layer_opa_ori = layer->opa;
     const lv_color32_t layer_recolor = layer->recolor;
 
@@ -512,7 +540,6 @@ void lv_obj_refr(lv_layer_t * layer, lv_obj_t * obj)
 
     layer->recolor = lv_obj_style_apply_recolor(obj, LV_PART_MAIN, layer->recolor);
 
-    lv_layer_type_t layer_type = lv_obj_get_layer_type(obj);
     if(layer_type == LV_LAYER_TYPE_NONE) {
         lv_obj_redraw(layer, obj);
     }
@@ -1045,12 +1072,23 @@ static void refr_configured_layer(lv_layer_t * layer)
     lv_obj_t * top_act_scr = NULL;
     lv_obj_t * top_prev_scr = NULL;
 
+#if NUWAX_REFR_TIMING
+    int64_t phase_started = esp_timer_get_time();
+#endif
+    const bool scene_rendered = !disp_refr->prev_scr && disp_refr->scene_render_cb &&
+        disp_refr->scene_render_cb(disp_refr, layer);
     /*Get the most top object which is not covered by others*/
-    top_act_scr = lv_refr_get_top_obj(&layer->_clip_area, lv_display_get_screen_active(disp_refr));
+    if(!scene_rendered) top_act_scr = lv_refr_get_top_obj(&layer->_clip_area, lv_display_get_screen_active(disp_refr));
     if(disp_refr->prev_scr) {
         top_prev_scr = lv_refr_get_top_obj(&layer->_clip_area, disp_refr->prev_scr);
     }
 
+#if NUWAX_REFR_TIMING
+    nuwax_lvgl_record_refr_phase(0, scene_rendered ? 0U : (uint32_t)(esp_timer_get_time() - phase_started));
+    if(scene_rendered) nuwax_lvgl_record_refr_phase(4, 0U);
+    else phase_started = esp_timer_get_time();
+#endif
+    if(!scene_rendered) {
     /*Draw a bottom layer background if there is no top object*/
     if(top_act_scr == NULL && top_prev_scr == NULL) {
         refr_obj_and_children(layer, lv_display_get_layer_bottom(disp_refr));
@@ -1077,9 +1115,15 @@ static void refr_configured_layer(lv_layer_t * layer)
         refr_obj_and_children(layer, top_act_scr);
     }
 
+    }
     /*Also refresh top and sys layer unconditionally*/
     refr_obj_and_children(layer, lv_display_get_layer_top(disp_refr));
     refr_obj_and_children(layer, lv_display_get_layer_sys(disp_refr));
+#if NUWAX_REFR_TIMING
+    /* Inclusive: object/style traversal, synchronous task allocation/dispatch,
+     * software drawing and any preemption. Not additive with ui sw draw. */
+    nuwax_lvgl_record_refr_phase(1, (uint32_t)(esp_timer_get_time() - phase_started));
+#endif
 
     LV_PROFILER_REFR_END;
 }
@@ -1377,12 +1421,18 @@ static void draw_buf_flush(lv_display_t * disp)
 {
     /*Flush the rendered content to the display*/
     lv_layer_t * layer = disp->layer_head;
+#if NUWAX_REFR_TIMING
+    const int64_t drain_started = esp_timer_get_time();
+#endif
 
     while(layer->draw_task_head) {
         lv_draw_dispatch_wait_for_request();
         lv_draw_dispatch();
     }
 
+#if NUWAX_REFR_TIMING
+    nuwax_lvgl_record_refr_phase(2, (uint32_t)(esp_timer_get_time() - drain_started));
+#endif
     /* In double buffered mode wait until the other buffer is freed
      * and driver is ready to receive the new buffer.
      * If we need to wait here it means that the content of one buffer is being sent to display

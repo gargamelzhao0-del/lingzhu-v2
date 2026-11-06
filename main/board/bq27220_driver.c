@@ -4,6 +4,12 @@
 
 #include "board/esp_vocat_v1_0_pins.h"
 #include "board/i2c_bus_manager.h"
+#include "board/nuwax_power_ctrl.h"
+#include "sdkconfig.h"
+
+#if CONFIG_NUWAX_BATTERY_SERVICE_ENABLE && CONFIG_NUWAX_BATTERY_DESIGN_CAPACITY_MAH != 1200
+#error "This board supports only the qualified 1200mAh CEDV profile"
+#endif
 #include "driver/i2c_master.h"
 #include "esp_attr.h"
 #include "esp_log.h"
@@ -106,7 +112,6 @@ static const bq27220_profile_parameter_t s_vendor_profile[] = {
 
 typedef struct {
     i2c_master_dev_handle_t dev;
-    SemaphoreHandle_t lock;
     uint16_t design_capacity;
     uint8_t low_threshold;
     bool profile_verified;
@@ -115,7 +120,7 @@ typedef struct {
 
 static bq27220_context_t s_bq;
 /* I2C payload pointers remain valid even if a timed-out transaction finishes
- * asynchronously in the driver ISR. All accesses are serialized by s_bq.lock. */
+ * asynchronously in the driver ISR. All accesses use the same lifecycle lock. */
 static DRAM_ATTR uint8_t s_bq_tx_scratch[5];
 static DRAM_ATTR uint8_t s_bq_rx_scratch[2];
 static SemaphoreHandle_t s_init_lock;
@@ -138,13 +143,27 @@ static esp_err_t read_word(uint8_t reg, uint16_t *value)
     if (!s_bq.dev || !value) return ESP_ERR_INVALID_ARG;
     s_bq_tx_scratch[0] = reg;
     memset(s_bq_rx_scratch, 0, sizeof(s_bq_rx_scratch));
+    const int64_t started_us = esp_timer_get_time();
     esp_err_t err = nuwax_i2c_bus_transaction_begin(
         BQ27220_BUS_LOCK_TIMEOUT_MS);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "read failed stage=bus_lock reg=0x%02x elapsed_ms=%lu err=%s",
+                 reg, (unsigned long)((esp_timer_get_time() - started_us) / 1000),
+                 esp_err_to_name(err));
+        return err;
+    }
+    const int64_t transfer_started_us = esp_timer_get_time();
     err = i2c_master_transmit_receive(
         s_bq.dev, s_bq_tx_scratch, 1, s_bq_rx_scratch,
         sizeof(s_bq_rx_scratch), BQ27220_TIMEOUT_MS);
+    nuwax_i2c_bus_transfer_done(NUWAX_I2C_CLIENT_BATTERY, err);
     nuwax_i2c_bus_transaction_end();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "read failed stage=transfer reg=0x%02x lock_ms=%lu transfer_ms=%lu err=%s",
+                 reg, (unsigned long)((transfer_started_us - started_us) / 1000),
+                 (unsigned long)((esp_timer_get_time() - transfer_started_us) / 1000),
+                 esp_err_to_name(err));
+    }
     if (err == ESP_OK) {
         *value = (uint16_t)s_bq_rx_scratch[0] |
                  ((uint16_t)s_bq_rx_scratch[1] << 8);
@@ -163,6 +182,7 @@ static esp_err_t write_word(uint8_t reg, uint16_t value)
     if (err != ESP_OK) return err;
     err = i2c_master_transmit(s_bq.dev, s_bq_tx_scratch,
                               3, BQ27220_TIMEOUT_MS);
+    nuwax_i2c_bus_transfer_done(NUWAX_I2C_CLIENT_BATTERY, err);
     nuwax_i2c_bus_transaction_end();
     return err;
 }
@@ -354,6 +374,7 @@ static esp_err_t select_data_memory(uint16_t address)
     if (err != ESP_OK) return err;
     err = i2c_master_transmit(s_bq.dev, s_bq_tx_scratch, 3,
                               BQ27220_TIMEOUT_MS);
+    nuwax_i2c_bus_transfer_done(NUWAX_I2C_CLIENT_BATTERY, err);
     nuwax_i2c_bus_transaction_end();
     if (err != ESP_OK) return err;
 
@@ -365,6 +386,7 @@ static esp_err_t select_data_memory(uint16_t address)
     err = i2c_master_transmit_receive(s_bq.dev, s_bq_tx_scratch, 1,
                                       s_bq_rx_scratch, sizeof(s_bq_rx_scratch),
                                       BQ27220_TIMEOUT_MS);
+    nuwax_i2c_bus_transfer_done(NUWAX_I2C_CLIENT_BATTERY, err);
     nuwax_i2c_bus_transaction_end();
     if (err != ESP_OK) return err;
     if (s_bq_rx_scratch[0] != (uint8_t)address ||
@@ -397,6 +419,7 @@ static esp_err_t read_data_memory_value(
                                       s_bq_rx_scratch,
                                       (size_t)parameter->width,
                                       BQ27220_TIMEOUT_MS);
+    nuwax_i2c_bus_transfer_done(NUWAX_I2C_CLIENT_BATTERY, err);
     nuwax_i2c_bus_transaction_end();
     if (err == ESP_OK) {
         *value = parameter->width == BQ27220_DM_U8
@@ -405,6 +428,56 @@ static esp_err_t read_data_memory_value(
                            s_bq_rx_scratch[1];
     }
     return err;
+}
+
+/* SLUUBD4A tables 3-2 and 4-2. Called only inside an existing successful
+ * profile-read/unseal window. Select/read only: no parameter writes, reset,
+ * CFGUPDATE entry or additional unseal cycle. Diagnostic errors are optional;
+ * the caller always runs its existing normal/sealed cleanup afterwards. */
+static void log_charge_configuration(void)
+{
+    static const bq27220_profile_parameter_t parameters[] = {
+        {0x9206, 0, BQ27220_DM_U16}, /* Operation Config A */
+        {0x9208, 0, BQ27220_DM_U16}, /* Operation Config B */
+        {0x91f5, 0, BQ27220_DM_U16}, /* Charge Inhibit Temp Low, 0.1 C */
+        {0x91f7, 0, BQ27220_DM_U16}, /* Charge Inhibit Temp High, 0.1 C */
+        {0x91f9, 0, BQ27220_DM_U16}, /* Temp Hys, 0.1 C */
+        {0x91fb, 0, BQ27220_DM_U16}, /* Charging Current, mA */
+        {0x91fd, 0, BQ27220_DM_U16}, /* Charging Voltage, mV */
+        {0x9201, 0, BQ27220_DM_U16}, /* Taper Current, mA */
+    };
+    uint16_t values[sizeof(parameters) / sizeof(parameters[0])] = {0};
+    for (size_t i = 0; i < sizeof(parameters) / sizeof(parameters[0]); ++i) {
+        const esp_err_t err = read_data_memory_value(&parameters[i], &values[i]);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "charge config unavailable addr=0x%04x err=%s; diagnostic only",
+                     parameters[i].address, esp_err_to_name(err));
+            return; /* Bound optional traffic on an unhealthy bus. */
+        }
+    }
+    const uint16_t config_a = values[0];
+    /* WRTEMP is bit 8 of Config A (table 4-2); table 2-5 calls its
+     * register Config B inconsistently, so retain both raw words in logs. */
+    const char *source = (config_a & (1U << 8)) ? "host" :
+                         (config_a & (1U << 15)) ? "external" : "internal";
+    ESP_LOGI(TAG,
+             "charge config revision=charge-config-v1 op_a=0x%04x op_b=0x%04x temp_source=%s TEMPS=%d WRTEMP=%d BATG_EN=%d BATG_POL=%d PFC=%u inhibit_low_dC=%d inhibit_high_dC=%d hysteresis_dC=%d gauge_charge_current_ma=%d gauge_charge_voltage_mv=%d taper_current_ma=%d",
+             config_a, values[1], source, !!(config_a & (1U << 15)),
+             !!(config_a & (1U << 8)), !!(config_a & (1U << 12)),
+             !!(config_a & (1U << 13)), (unsigned)((config_a >> 3) & 3U),
+             (int16_t)values[2], (int16_t)values[3], (int16_t)values[4],
+             (int16_t)values[5], (int16_t)values[6], (int16_t)values[7]);
+
+    uint16_t temperature = 0, internal_temperature = 0;
+    esp_err_t err = read_word(BQ27220_REG_TEMPERATURE, &temperature);
+    if (err == ESP_OK) err = read_word(0x28, &internal_temperature);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "charge temperature source=%s temperature_dK=%u internal_dK=%u; gauge configuration is not charger hardware status",
+                 source, temperature, internal_temperature);
+    } else {
+        ESP_LOGW(TAG, "charge temperature comparison unavailable err=%s; diagnostic only",
+                 esp_err_to_name(err));
+    }
 }
 
 static esp_err_t write_data_memory_value(
@@ -431,6 +504,7 @@ static esp_err_t write_data_memory_value(
     if (err != ESP_OK) return err;
     err = i2c_master_transmit(s_bq.dev, s_bq_tx_scratch,
                               transaction_size, BQ27220_TIMEOUT_MS);
+    nuwax_i2c_bus_transfer_done(NUWAX_I2C_CLIENT_BATTERY, err);
     nuwax_i2c_bus_transaction_end();
     if (err != ESP_OK) return err;
 
@@ -446,6 +520,7 @@ static esp_err_t write_data_memory_value(
     if (err != ESP_OK) return err;
     err = i2c_master_transmit(s_bq.dev, s_bq_tx_scratch, 3,
                               BQ27220_TIMEOUT_MS);
+    nuwax_i2c_bus_transfer_done(NUWAX_I2C_CLIENT_BATTERY, err);
     nuwax_i2c_bus_transaction_end();
     if (err == ESP_OK) {
         vTaskDelay(pdMS_TO_TICKS(BQ27220_DM_COMMIT_DELAY_MS));
@@ -562,6 +637,7 @@ static esp_err_t verify_vendor_cedv_profile(bool *verified,
         ESP_LOGW(TAG, "provisioning CyberVoc V2 1200mAh CEDV profile");
         err = write_vendor_profile();
     }
+    if (err == ESP_OK && matches) log_charge_configuration();
 
     bool cleanup_safe = false;
     esp_err_t cleanup_err = restore_normal_sealed_state(&cleanup_safe);
@@ -577,6 +653,7 @@ static esp_err_t verify_vendor_cedv_profile(bool *verified,
                                  &must_reseal);
         if (err == ESP_OK) {
             err = read_vendor_profile(&matches);
+            if (err == ESP_OK && matches) log_charge_configuration();
         }
         cleanup_safe = false;
         cleanup_err = restore_normal_sealed_state(&cleanup_safe);
@@ -605,6 +682,9 @@ static int16_t temperature_c_from_raw(uint16_t raw)
 
 esp_err_t bq27220_init(const bq27220_config_t *config)
 {
+    /* Reject before any I2C operation can provision a foreign cell profile. */
+    if (config && config->design_capacity && config->design_capacity != 1200U)
+        return ESP_ERR_NOT_SUPPORTED;
     esp_err_t err = ensure_init_lock();
     if (err != ESP_OK) return err;
     xSemaphoreTake(s_init_lock, portMAX_DELAY);
@@ -613,13 +693,6 @@ esp_err_t bq27220_init(const bq27220_config_t *config)
         return ESP_OK;
     }
 
-    if (!s_bq.lock) {
-        s_bq.lock = xSemaphoreCreateMutex();
-        if (!s_bq.lock) {
-            xSemaphoreGive(s_init_lock);
-            return ESP_ERR_NO_MEM;
-        }
-    }
     const uint8_t address = config && config->i2c_address
                                 ? config->i2c_address
                                 : NUWAX_VOCAT_I2C_ADDR_BQ27220;
@@ -642,8 +715,13 @@ esp_err_t bq27220_init(const bq27220_config_t *config)
                              : 10;
     bool profile_verified = false;
     bool security_restored = false;
+    if (!nuwax_power_ctrl_acquire_shutdown_inhibit(NUWAX_POWER_INHIBIT_BATTERY_PROFILE)) {
+        err = ESP_ERR_NOT_FINISHED;
+        goto fail;
+    }
     esp_err_t profile_err = verify_vendor_cedv_profile(&profile_verified,
-                                                       &security_restored);
+                                                        &security_restored);
+    (void)nuwax_power_ctrl_release_shutdown_inhibit(NUWAX_POWER_INHIBIT_BATTERY_PROFILE);
     if (!security_restored) {
         ESP_LOGE(TAG,
                  "CEDV verification did not prove security-state restoration; refusing driver startup");
@@ -675,33 +753,49 @@ fail:
 static esp_err_t read_locked(uint8_t reg, uint16_t *value)
 {
     if (!value) return ESP_ERR_INVALID_ARG;
-    if (!s_bq.initialized || !s_bq.lock || !s_bq.dev) return ESP_ERR_INVALID_STATE;
-    xSemaphoreTake(s_bq.lock, portMAX_DELAY);
-    esp_err_t err = read_word(reg, value);
-    xSemaphoreGive(s_bq.lock);
+    if (ensure_init_lock() != ESP_OK) return ESP_ERR_NO_MEM;
+    xSemaphoreTake(s_init_lock, portMAX_DELAY);
+    esp_err_t err = s_bq.initialized && s_bq.dev
+        ? read_word(reg, value) : ESP_ERR_INVALID_STATE;
+    xSemaphoreGive(s_init_lock);
     return err;
 }
 
-esp_err_t bq27220_get_status(bq27220_battery_status_t *status)
+esp_err_t bq27220_get_status_partial(bq27220_battery_status_t *status)
 {
     if (!status) return ESP_ERR_INVALID_ARG;
-    if (!s_bq.initialized || !s_bq.lock || !s_bq.dev) return ESP_ERR_INVALID_STATE;
     memset(status, 0, sizeof(*status));
-
-    xSemaphoreTake(s_bq.lock, portMAX_DELAY);
+    if (ensure_init_lock() != ESP_OK) return ESP_ERR_NO_MEM;
+    xSemaphoreTake(s_init_lock, portMAX_DELAY);
+    if (!s_bq.initialized || !s_bq.dev) {
+        xSemaphoreGive(s_init_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     uint16_t voltage = 0, current = 0, soc = 0, remaining = 0, full = 0;
     uint16_t temperature = 0, cycles = 0, flags = 0, operation = 0, design = 0;
     esp_err_t err = read_word(BQ27220_REG_VOLTAGE, &voltage);
+    if (err == ESP_OK) err = read_word(BQ27220_REG_BATTERY_STATUS, &flags);
+    if (err == ESP_OK) err = read_word(BQ27220_REG_OPERATION_STATUS, &operation);
+    if (err == ESP_OK) {
+        status->voltage_mv = voltage;
+        status->battery_status_flags = flags;
+        status->operation_status_flags = operation;
+        status->battery_present = (flags & BQ27220_STATUS_BATTPRES) != 0;
+        status->initialization_complete = (operation & BQ27220_OPERATION_INITCOMP) != 0;
+        status->config_update_mode = (operation & BQ27220_OPERATION_CFGUPDATE) != 0;
+        status->power_sample_valid = true;
+        status->power_timestamp_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    }
     if (err == ESP_OK) err = read_word(BQ27220_REG_CURRENT, &current);
     if (err == ESP_OK) err = read_word(BQ27220_REG_STATE_OF_CHARGE, &soc);
     if (err == ESP_OK) err = read_word(BQ27220_REG_REMAINING_CAPACITY, &remaining);
     if (err == ESP_OK) err = read_word(BQ27220_REG_FULL_CHARGE_CAPACITY, &full);
     if (err == ESP_OK) err = read_word(BQ27220_REG_TEMPERATURE, &temperature);
     if (err == ESP_OK) err = read_word(BQ27220_REG_CYCLE_COUNT, &cycles);
-    if (err == ESP_OK) err = read_word(BQ27220_REG_BATTERY_STATUS, &flags);
-    if (err == ESP_OK) err = read_word(BQ27220_REG_OPERATION_STATUS, &operation);
     if (err == ESP_OK) err = read_word(BQ27220_REG_DESIGN_CAPACITY, &design);
-    xSemaphoreGive(s_bq.lock);
+    status->profile_verified = s_bq.profile_verified;
+    const uint8_t low_threshold = s_bq.low_threshold;
+    xSemaphoreGive(s_init_lock);
     if (err != ESP_OK) return err;
     if (soc > 100) {
         ESP_LOGE(TAG, "invalid raw state-of-charge value=%u", soc);
@@ -722,12 +816,14 @@ esp_err_t bq27220_get_status(bq27220_battery_status_t *status)
     status->battery_present = (flags & BQ27220_STATUS_BATTPRES) != 0;
     status->initialization_complete = (operation & BQ27220_OPERATION_INITCOMP) != 0;
     status->config_update_mode = (operation & BQ27220_OPERATION_CFGUPDATE) != 0;
-    status->profile_verified = s_bq.profile_verified;
+    status->telemetry_valid = true;
     status->is_full = (flags & BQ27220_STATUS_FC) != 0;
-    status->is_charging = !status->is_full &&
-                          (flags & (BQ27220_STATUS_DSG | BQ27220_STATUS_CHGINH)) == 0 &&
-                          status->current_ma > 20;
-    status->is_low = status->soc <= s_bq.low_threshold ||
+    /* This board uses an independent charger: CHGINH is a gauge advisory,
+     * not evidence that battery current has stopped. Preserve all raw flags
+     * for diagnostics; display actual net charging current, including SOC=100
+     * before FC. This indication must not be used as a power safety override. */
+    status->is_charging = !status->is_full && status->current_ma > 20;
+    status->is_low = status->soc <= low_threshold ||
                      (flags & (BQ27220_STATUS_TDA | BQ27220_STATUS_FD)) != 0;
     status->timestamp_ms = (uint64_t)(esp_timer_get_time() / 1000);
 
@@ -735,6 +831,32 @@ esp_err_t bq27220_get_status(bq27220_battery_status_t *status)
         ESP_LOGW(TAG, "battery status does not assert BATTPRES (flags=0x%04x)", flags);
     }
     return ESP_OK;
+}
+
+esp_err_t bq27220_get_status(bq27220_battery_status_t *status)
+{
+    return bq27220_get_status_partial(status);
+}
+
+esp_err_t bq27220_revalidate_profile(void)
+{
+    if (ensure_init_lock() != ESP_OK) return ESP_ERR_NO_MEM;
+    xSemaphoreTake(s_init_lock, portMAX_DELAY);
+    if (!s_bq.initialized || !s_bq.dev) {
+        xSemaphoreGive(s_init_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!nuwax_power_ctrl_acquire_shutdown_inhibit(NUWAX_POWER_INHIBIT_BATTERY_PROFILE)) {
+        xSemaphoreGive(s_init_lock);
+        return ESP_ERR_NOT_FINISHED;
+    }
+    bool verified = false, restored = false;
+    const esp_err_t err = verify_vendor_cedv_profile(&verified, &restored);
+    s_bq.profile_verified = err == ESP_OK && verified && restored;
+    if (!restored) s_bq.initialized = false;
+    (void)nuwax_power_ctrl_release_shutdown_inhibit(NUWAX_POWER_INHIBIT_BATTERY_PROFILE);
+    xSemaphoreGive(s_init_lock);
+    return err == ESP_OK && !restored ? ESP_ERR_INVALID_STATE : err;
 }
 
 esp_err_t bq27220_get_capacity_percent(uint8_t *percent)
@@ -777,18 +899,22 @@ bool bq27220_is_low_battery(void)
 
 bool bq27220_is_present(void)
 {
-    return s_bq.initialized;
+    if (ensure_init_lock() != ESP_OK) return false;
+    xSemaphoreTake(s_init_lock, portMAX_DELAY);
+    const bool present = s_bq.initialized;
+    xSemaphoreGive(s_init_lock);
+    return present;
 }
 
 esp_err_t bq27220_deinit(void)
 {
-    if (!s_bq.lock) return ESP_OK;
-    xSemaphoreTake(s_bq.lock, portMAX_DELAY);
+    if (ensure_init_lock() != ESP_OK) return ESP_ERR_NO_MEM;
+    xSemaphoreTake(s_init_lock, portMAX_DELAY);
     /* This is a logical deinit used by battery-service recovery. Keep the
      * device and lock alive so a timeout can never be followed by handle
      * removal/re-add while the I2C ISR may still be retiring. */
     s_bq.initialized = false;
     s_bq.profile_verified = false;
-    xSemaphoreGive(s_bq.lock);
+    xSemaphoreGive(s_init_lock);
     return ESP_OK;
 }

@@ -49,8 +49,15 @@ esp_err_t nuwax_provision_main_start(const char *reason);
  * reprovision transaction. */
 bool nuwax_provision_main_is_active(void);
 
+/* Epoch validation belongs to the cloud owner. This nonblocking notification
+ * latches a confirmed rejection; the existing guarded rollback transaction
+ * persists it before restarting. Only a committed replacement pair clears it.
+ * A transport handshake or an old Wi-Fi connection must never clear it. */
+void nuwax_provision_main_note_binding_rejected(void);
+bool nuwax_provision_main_binding_required(void);
+
 /* Requests a cooperative stop of reversible provisioning. The request is
- * accepted only while a durable previous Wi-Fi/cloud pair can be restored and
+ * accepted only while a durable, non-rejected Wi-Fi/cloud pair can be restored and
  * before commit of the replacement pair begins. The provisioning supervisor
  * performs the actual stop so BLE callbacks, Wi-Fi ownership and rollback stay
  * serialized on their existing owner task. */
@@ -61,8 +68,8 @@ bool nuwax_provision_main_request_runtime_cancel(void);
  * in-process rollback instead of rebooting the product. */
 void nuwax_provision_main_set_restart_on_unrecoverable(bool enabled);
 
-/* Keeps BLE provisioning available until new credentials commit or the saved
- * Wi-Fi is recovered. focused_wait_ms is the BLE-only period before saved
+/* Keeps BLE provisioning available until new credentials commit or a saved
+ * pair without a known binding rejection is recovered. focused_wait_ms is the BLE-only period before saved
  * Wi-Fi recovery attempts are admitted; it is not a provisioning timeout. */
 nuwax_provision_outcome_t nuwax_provision_main_run(uint32_t focused_wait_ms);
 
@@ -89,8 +96,13 @@ int64_t nuwax_provision_main_supervisor_heartbeat_us(void);
 /* Stops the service and releases the manager. */
 esp_err_t nuwax_provision_main_stop(void);
 
-/* Persists the current STA configuration and requests a reversible BLE rebind. */
+/* Persists the STA snapshot and any latched binding rejection before rebind.
+ * A rejected binding keeps BLE available and prohibits old-pair rollback. */
 esp_err_t nuwax_provision_main_reset_wifi_credentials(void);
+
+/* Abandon only an uncommitted RAM rollback snapshot before disconnecting the
+ * current network. A durable rollback record is never discarded here. */
+void nuwax_provision_main_discard_volatile_rollback(void);
 
 /* True when BLE provisioning was entered from the local rebind action. */
 bool nuwax_provision_main_is_reprovisioning(void);

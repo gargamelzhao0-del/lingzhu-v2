@@ -1,0 +1,53 @@
+{
+  "revision": "20260924-rejected-playback-v1",
+  "elfSha256": "51435de69084ba9824e2933c7c4da269e827bd10eb40eb734aedccb62a2da443",
+  "binSha256": "8302559308227b4019addc6c0cb639869fa80599c58fd0bfb39d372e7fc2bddc",
+  "bytes": 3827760,
+  "hardwareValidated": false,
+  "sourceHashes": {
+    "main/nuwax_ai_partner_main.c": "f617eb883c2105b6f28d7fcf0bf270ff8886e4cb8c48b77bf0f7d91d72ae8d1a",
+    "main/session_protocol.h": "04943f7d33db38b9f7a745c0422a53408e5edd526d7bbbe59726104dd384b3ab",
+    "main/conversation/turn_guard.c": "bf5e5a168c8fdbb2ae674bfca04eaee40f3402b4c58aebc5ff6d68a31f1dce75",
+    "main/conversation/turn_guard.h": "40693c6eef147dc025db65d79d0b1f0eca3c091944932cac346dd51a02682e4b",
+    "tools/test-rejected-playback-owner.py": "45398436b922dfe57570649c5dab0e1b31ad5183a7ecf5014fab7fe4522a1b13"
+  },
+  "images": [
+    {
+      "offset": "0x0",
+      "file": "bootloader/bootloader.bin",
+      "sha256": "8351886cbb6d70b2588d1687bdb9281fa094ba898dbf7c6d43f738b6dec03ca8"
+    },
+    {
+      "offset": "0x8000",
+      "file": "partition_table/partition-table.bin",
+      "sha256": "2d14d431e660392a4f6bd8610a97f298b6a7e5810dbdcaf5d16ab98089abb06d"
+    },
+    {
+      "offset": "0xf000",
+      "file": "ota_data_initial.bin",
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    },
+    {
+      "offset": "0x20000",
+      "file": "srmodels/srmodels.bin",
+      "sha256": "dec3196aaadcf4e6305434462f5735e1148e5ddfe1f6a0696776d666f9066d34"
+    },
+    {
+      "offset": "0x2c0000",
+      "file": "NuwaxAIPartner.bin",
+      "sha256": "8302559308227b4019addc6c0cb639869fa80599c58fd0bfb39d372e7fc2bddc"
+    },
+    {
+      "offset": "0xb00000",
+      "file": "emotion_assets/emotion-assets.bin",
+      "sha256": "c8e9258f5963f6b08089ef80af6190ba1053e3e73dfc990d529d090a6f752897"
+    }
+  ],
+  "checks": {
+    "productHost": true,
+    "conversationHost": true,
+    "formalBuild": true,
+    "hardwareValidated": false,
+    "flashVerifyOnly": true
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "revision": "20260923-shake-gap-v1",
+  "samplingRevision": "20260924-qmi-poll-v1",
+  "elfSha256": "a0383b5a5d2a31bbaae1c805be8cdaac148529ba21f3456bfca1359cbc3edb9c",
+  "binSha256": "765e73dad876df448a6b6b7f3215256a46b0ce207e4d834648a7b3df804f1021",
+  "bytes": 3828400,
+  "workerStackFrame": 256,
+  "hardwareValidated": false,
+  "sourceHashes": {
+    "main/board/shake_detector.c": "46f58e3c4b845df6f7b0771e4812d58f543024add7d96e83923c9d532f321929",
+    "main/board/qmi8658a_driver.c": "6fae8e25f4dfba66db7bff884042215a6e72fd4c0c2aca2cfb6ab3cb656aa6ca",
+    "tools/test-shake-gap.py": "799a08f97365001597376fda7f7d8e487ee65d40734249f9c3806a9bf2b9ce6a",
+    "tools/test-qmi-poll.py": "a96dd5173c7ba0efaa46b705d1de04fc137eeface8c4bbe04f501d07fca17df0"
+  }
+}

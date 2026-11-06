@@ -13,7 +13,7 @@
 static const char *TAG = "nuwax_head_touch";
 
 #ifndef CONFIG_NUWAX_HEAD_TOUCH_LONG_PRESS_MS
-#define CONFIG_NUWAX_HEAD_TOUCH_LONG_PRESS_MS 1000U
+#define CONFIG_NUWAX_HEAD_TOUCH_LONG_PRESS_MS 650U
 #endif
 
 #ifndef CONFIG_NUWAX_HEAD_TOUCH_GAP_TOLERANCE_MS
@@ -36,6 +36,7 @@ static const char *TAG = "nuwax_head_touch";
     CONFIG_NUWAX_HEAD_TOUCH_ENABLE
 static nuwax_head_touch_state_cb_t s_get_state;
 static nuwax_head_touch_allowed_cb_t s_interaction_allowed;
+static nuwax_head_touch_media_interrupt_cb_t s_interrupt_media;
 static void *s_state_user_ctx;
 static bool s_press_started_listen;
 static bool s_press_started_agent;
@@ -71,6 +72,20 @@ static void head_touch_event_callback(const nuwax_head_touch_event_t *event,
             break;
         }
         case NUWAX_HEAD_TOUCH_EVENT_LONG_PRESS: {
+            /* A qualified physical stop is valid even while a menu is open
+             * or the conversation interaction gate is cooling down. */
+            if (s_interrupt_media && s_interrupt_media(s_state_user_ctx)) {
+                nuwax_app_shell_trigger_touch_animation();
+                ESP_LOGI(TAG, "qualified head touch stopped music");
+                break;
+            }
+            /* Visual-only sleep feedback still obeys strong lifecycle owners
+             * (power transition, OTA, provisioning, recording). */
+            if (s_interaction_allowed &&
+                !s_interaction_allowed(s_state_user_ctx)) {
+                ESP_LOGI(TAG, "qualified head touch blocked by lifecycle owner");
+                break;
+            }
             if (!nuwax_shake_detector_claim_head_touch()) {
                 s_press_started_listen = false;
                 s_press_started_agent = false;
@@ -236,6 +251,7 @@ static void head_touch_event_callback(const nuwax_head_touch_event_t *event,
 
 esp_err_t nuwax_head_touch_control_init(nuwax_head_touch_state_cb_t get_state,
                                         nuwax_head_touch_allowed_cb_t interaction_allowed,
+                                        nuwax_head_touch_media_interrupt_cb_t interrupt_media,
                                         void *user_ctx)
 {
     if (!get_state) {
@@ -255,6 +271,7 @@ esp_err_t nuwax_head_touch_control_init(nuwax_head_touch_state_cb_t get_state,
 
     s_get_state = get_state;
     s_interaction_allowed = interaction_allowed;
+    s_interrupt_media = interrupt_media;
     s_state_user_ctx = user_ctx;
     s_press_started_listen = false;
     s_press_started_agent = false;
@@ -264,6 +281,7 @@ esp_err_t nuwax_head_touch_control_init(nuwax_head_touch_state_cb_t get_state,
     if (err != ESP_OK) {
         s_get_state = NULL;
         s_interaction_allowed = NULL;
+        s_interrupt_media = NULL;
         s_state_user_ctx = NULL;
         ESP_LOGE(TAG, "callback registration failed: %s",
                  esp_err_to_name(err));
@@ -275,6 +293,7 @@ esp_err_t nuwax_head_touch_control_init(nuwax_head_touch_state_cb_t get_state,
         (void)nuwax_head_touch_set_event_callback(NULL, NULL);
         s_get_state = NULL;
         s_interaction_allowed = NULL;
+        s_interrupt_media = NULL;
         s_state_user_ctx = NULL;
         ESP_LOGE(TAG, "GPIO input initialization failed: %s",
                  esp_err_to_name(err));
@@ -282,9 +301,8 @@ esp_err_t nuwax_head_touch_control_init(nuwax_head_touch_state_cb_t get_state,
     }
 
     ESP_LOGI(TAG,
-             "product control ready qualification_ms=%u gap_tolerance_ms=%u max_valid_ms=%u cooldown_ms=%u wake_action=%d interrupt_action=%d",
+              "product control ready qualification_ms=%u contact=continuous max_valid_ms=%u cooldown_ms=%u wake_action=%d interrupt_action=%d",
              (unsigned)config.long_press_ms,
-             (unsigned)config.gap_tolerance_ms,
              (unsigned)config.max_valid_duration_ms,
              (unsigned)NUWAX_HEAD_TOUCH_INTERACTION_COOLDOWN_MS,
              CONFIG_NUWAX_TOUCH_WAKE_ACTION_ENABLE ? 1 : 0,
@@ -294,10 +312,12 @@ esp_err_t nuwax_head_touch_control_init(nuwax_head_touch_state_cb_t get_state,
 #else
 esp_err_t nuwax_head_touch_control_init(nuwax_head_touch_state_cb_t get_state,
                                         nuwax_head_touch_allowed_cb_t interaction_allowed,
+                                        nuwax_head_touch_media_interrupt_cb_t interrupt_media,
                                         void *user_ctx)
 {
     (void)get_state;
     (void)interaction_allowed;
+    (void)interrupt_media;
     (void)user_ctx;
     ESP_LOGI(TAG, "product control disabled by configuration");
     return ESP_ERR_NOT_SUPPORTED;

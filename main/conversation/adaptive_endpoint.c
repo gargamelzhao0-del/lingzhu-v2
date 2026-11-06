@@ -112,7 +112,7 @@ static nuwax_adaptive_endpoint_observation_t observe_pause_decision(
     if (endpoint->resume_candidate_kind !=
         NUWAX_ADAPTIVE_ENDPOINT_RESUME_NONE) {
         observation.resume_candidate_active = true;
-        if (endpoint->pause_ms >= observation.candidate_ms) {
+        if (endpoint->pause_elapsed_ms >= observation.candidate_ms) {
             observation.decision = NUWAX_ADAPTIVE_ENDPOINT_CANDIDATE;
         }
         return observation;
@@ -122,12 +122,13 @@ static nuwax_adaptive_endpoint_observation_t observe_pause_decision(
         round_up_ms(NUWAX_ADAPTIVE_ENDPOINT_UNKNOWN_HARD_COMMIT_MS,
                     frame_ms);
     const bool mixed_noise_hard_commit =
-        endpoint->uncertain_pause_seen &&
-        endpoint->pause_ms >=
+        (endpoint->uncertain_pause_seen ||
+         endpoint->pause_elapsed_ms > endpoint->pause_ms) &&
+        endpoint->pause_elapsed_ms >=
             round_up_ms(NUWAX_ADAPTIVE_ENDPOINT_MIXED_NOISE_HARD_COMMIT_MS,
                         frame_ms);
     const bool commit = unknown_hard_commit || mixed_noise_hard_commit ||
-        (endpoint->pause_ms >= observation.commit_ms &&
+        (endpoint->pause_elapsed_ms >= observation.commit_ms &&
          endpoint->strict_silence_tail_ms >= strict_tail_ms);
     if (commit) {
         observation.decision = NUWAX_ADAPTIVE_ENDPOINT_COMMIT;
@@ -135,7 +136,7 @@ static nuwax_adaptive_endpoint_observation_t observe_pause_decision(
             endpoint->predicted_commit = true;
             observation.prediction_started = true;
         }
-    } else if (endpoint->pause_ms >= observation.candidate_ms) {
+    } else if (endpoint->pause_elapsed_ms >= observation.candidate_ms) {
         observation.decision = NUWAX_ADAPTIVE_ENDPOINT_CANDIDATE;
     }
     return observation;
@@ -160,6 +161,7 @@ bool nuwax_adaptive_endpoint_state_valid(
         return endpoint->voiced_ms == 0U &&
                endpoint->elapsed_since_first_speech_ms == 0U &&
                endpoint->utterance_span_ms == 0U && endpoint->pause_ms == 0U &&
+               endpoint->pause_elapsed_ms == 0U &&
                endpoint->strict_silence_tail_ms == 0U &&
                endpoint->pending_resumed_pause_ms == 0U &&
                endpoint->max_resumed_pause_ms == 0U &&
@@ -180,7 +182,9 @@ bool nuwax_adaptive_endpoint_state_valid(
     if (endpoint->voiced_ms > endpoint->elapsed_since_first_speech_ms ||
         endpoint->utterance_span_ms >
             endpoint->elapsed_since_first_speech_ms ||
-        endpoint->strict_silence_tail_ms > endpoint->pause_ms) {
+        endpoint->strict_silence_tail_ms > endpoint->pause_ms ||
+        endpoint->pause_ms > endpoint->pause_elapsed_ms ||
+        endpoint->pause_elapsed_ms > endpoint->elapsed_since_first_speech_ms) {
         return false;
     }
     if (endpoint->pause_active) {
@@ -188,6 +192,7 @@ bool nuwax_adaptive_endpoint_state_valid(
             return false;
         }
     } else if (endpoint->pause_ms != 0U ||
+               endpoint->pause_elapsed_ms != 0U ||
                endpoint->strict_silence_tail_ms != 0U ||
                endpoint->frozen_commit_ms != 0U ||
                endpoint->uncertain_pause_seen || endpoint->weak_pause_seen) {
@@ -261,6 +266,7 @@ static void start_pause_if_needed(nuwax_adaptive_endpoint_t *endpoint,
     if (endpoint->pause_active) return;
     endpoint->pause_active = true;
     endpoint->pause_ms = 0U;
+    endpoint->pause_elapsed_ms = 0U;
     endpoint->strict_silence_tail_ms = 0U;
     endpoint->unknown_streak_ms = 0U;
     endpoint->uncertain_pause_seen = false;
@@ -302,6 +308,11 @@ static nuwax_adaptive_endpoint_observation_t observe_resume_candidate(
     uint32_t frame_ms) {
     nuwax_adaptive_endpoint_observation_t observation = {.valid = true};
     start_pause_if_needed(endpoint, frame_ms);
+    /* Give real speech its full confirmation grace, but never lose time when
+     * a short candidate is later rejected. Effective quiet-tail and learned
+     * pause counters deliberately exclude these unconfirmed frames. */
+    endpoint->pause_elapsed_ms = saturating_add_u32(
+        endpoint->pause_elapsed_ms, frame_ms);
     const nuwax_adaptive_endpoint_resume_kind_t current_kind =
         (nuwax_adaptive_endpoint_resume_kind_t)
             endpoint->resume_candidate_kind;
@@ -350,6 +361,7 @@ static nuwax_adaptive_endpoint_observation_t observe_resume_candidate(
     clear_resume_candidate(endpoint);
     endpoint->pause_active = false;
     endpoint->pause_ms = 0U;
+    endpoint->pause_elapsed_ms = 0U;
     endpoint->strict_silence_tail_ms = 0U;
     endpoint->unknown_streak_ms = 0U;
     endpoint->frozen_commit_ms = 0U;
@@ -393,6 +405,7 @@ nuwax_adaptive_endpoint_observation_t nuwax_adaptive_endpoint_seed(
     if (trailing_stable_silence_ms > 0U) {
         endpoint->pause_active = true;
         endpoint->pause_ms = trailing_stable_silence_ms;
+        endpoint->pause_elapsed_ms = trailing_stable_silence_ms;
         endpoint->strict_silence_tail_ms = trailing_stable_silence_ms;
         endpoint->frozen_commit_ms = select_commit_ms(endpoint, frame_ms);
     }
@@ -446,10 +459,18 @@ nuwax_adaptive_endpoint_observation_t nuwax_adaptive_endpoint_observe_v3(
 
     if (endpoint->resume_candidate_kind !=
         NUWAX_ADAPTIVE_ENDPOINT_RESUME_NONE) {
+        /* A rejected candidate did not end the unknown interval. Credit its
+         * time before classifying this frame: stable noise below still resets
+         * that interval, while unknown noise keeps the 2600 ms bound real.
+         * Do not erase the effective quiet tail for an isolated spike. */
+        endpoint->unknown_streak_ms = saturating_add_u16(
+            endpoint->unknown_streak_ms, endpoint->resume_speech_streak_ms);
         clear_resume_candidate(endpoint);
     }
     start_pause_if_needed(endpoint, frame_ms);
     endpoint->pause_ms = saturating_add_u32(endpoint->pause_ms, frame_ms);
+    endpoint->pause_elapsed_ms = saturating_add_u32(
+        endpoint->pause_elapsed_ms, frame_ms);
     if (frame_class == NUWAX_ADAPTIVE_ENDPOINT_FRAME_STABLE_NOISE) {
         endpoint->strict_silence_tail_ms = saturating_add_u32(
             endpoint->strict_silence_tail_ms, frame_ms);

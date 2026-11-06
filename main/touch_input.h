@@ -13,6 +13,10 @@ typedef struct {
     uint8_t event;
     uint16_t x;
     uint16_t y;
+    /* Local producer identity/timestamp, never part of a cloud message.
+     * A new contact remains distinguishable if queued motion drops a release. */
+    uint32_t contact_id;
+    uint32_t sample_ms;
 } nuwax_touch_point_t;
 
 typedef void (*nuwax_touch_event_cb_t)(const nuwax_touch_point_t *point, void *user_ctx);

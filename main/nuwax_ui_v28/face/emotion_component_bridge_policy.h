@@ -80,6 +80,15 @@ static inline bool nuwax_emotion_component_bridge_ready_to_animate(
     return source_ready && target_ready;
 }
 
+static inline bool nuwax_emotion_component_bridge_pixel_needs_final_damage(
+    uint16_t visible, uint16_t source, uint16_t target)
+{
+    /* The panel can still contain either the transition-start frame or the
+     * latest generated pose when an asynchronous flush is pending.  Damage
+     * the union so the final handoff converges from either observable state. */
+    return visible != target || source != target;
+}
+
 static inline bool nuwax_emotion_component_asset_request_is_satisfied(
     nuwax_emotion_asset_id_t requested,
     nuwax_emotion_asset_id_t queued,
@@ -97,12 +106,27 @@ static inline bool nuwax_emotion_component_asset_request_is_satisfied(
 }
 
 static inline uint32_t nuwax_emotion_component_bridge_next_elapsed_us(
-    uint32_t elapsed_us, uint32_t duration_us, uint32_t frame_period_us)
+    uint32_t elapsed_us, uint32_t duration_us, uint32_t frame_period_us,
+    uint32_t observed_elapsed_us)
 {
     if (elapsed_us >= duration_us) return duration_us;
+    if (frame_period_us == 0U) return elapsed_us;
     const uint32_t remaining_us = duration_us - elapsed_us;
-    return elapsed_us +
+    const uint32_t scheduled_us = elapsed_us +
         (frame_period_us < remaining_us ? frame_period_us : remaining_us);
+
+    /* Preserve every pose under ordinary jitter, but follow wall time once
+     * rendering falls more than one full frame behind. Component-bridge poses
+     * are generated from immutable key frames, so catching up here cannot
+     * violate the ordered delta dependency of the asset decoder. */
+    const uint32_t observed_us = observed_elapsed_us < duration_us
+                                     ? observed_elapsed_us
+                                     : duration_us;
+    if (observed_us > scheduled_us &&
+        observed_us - scheduled_us >= frame_period_us) {
+        return observed_us;
+    }
+    return scheduled_us;
 }
 
 static inline uint16_t nuwax_emotion_component_handoff_frame(

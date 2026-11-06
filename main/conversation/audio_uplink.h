@@ -107,18 +107,30 @@ typedef enum {
 typedef enum {
     NUWAX_AUDIO_UPLINK_SENDER_IDLE = 0,
     NUWAX_AUDIO_UPLINK_SENDER_WAIT_PACKET,
+    NUWAX_AUDIO_UPLINK_SENDER_LISTEN_START,
     NUWAX_AUDIO_UPLINK_SENDER_PREPARE_PACKET,
     NUWAX_AUDIO_UPLINK_SENDER_SEND_PACKET,
     NUWAX_AUDIO_UPLINK_SENDER_AFTER_END,
     NUWAX_AUDIO_UPLINK_SENDER_EXITED,
 } nuwax_audio_uplink_sender_stage_t;
 
+typedef enum {
+    /* Existing callers commit listen/start themselves, before PCM admission. */
+    NUWAX_AUDIO_UPLINK_LISTEN_START_EXTERNAL = 0,
+    NUWAX_AUDIO_UPLINK_LISTEN_START_PENDING,
+    NUWAX_AUDIO_UPLINK_LISTEN_START_SENDING,
+    NUWAX_AUDIO_UPLINK_LISTEN_START_COMMITTED,
+    NUWAX_AUDIO_UPLINK_LISTEN_START_FAILED,
+    NUWAX_AUDIO_UPLINK_LISTEN_START_CANCELED,
+} nuwax_audio_uplink_listen_start_state_t;
+
 /* Runs on the uplink sender task only after the terminal binary packet has
  * been delivered on the bound WebSocket epoch. */
 typedef esp_err_t (*nuwax_audio_uplink_after_end_fn)(void *user_ctx,
                                                      uint32_t ws_epoch);
 
-typedef struct {
+typedef struct nuwax_audio_uplink {
+    struct nuwax_audio_uplink *cleanup_next; /* Private to detached cleanup. */
     nuwax_ws_client_t *ws;
     uint32_t ws_connection_epoch;
     QueueHandle_t free_slots;
@@ -144,6 +156,8 @@ typedef struct {
     _Atomic bool send_failed;
     _Atomic bool finish_timed_out;
     _Atomic bool end_committed;
+    _Atomic int listen_start_state;
+    int64_t listen_start_deadline_us;
     _Atomic int send_result;
     _Atomic int sender_stage;
     _Atomic uint_fast32_t sender_stage_since_ms;
@@ -174,6 +188,10 @@ typedef struct {
     uint32_t realtime_drop_log_suppressed_batches;
     uint32_t realtime_drop_log_suppressed_frames;
     uint64_t realtime_drop_log_max_queue_wait_us;
+    uint32_t send_slow_log_ms;
+    uint32_t send_slow_suppressed_batches;
+    uint32_t send_slow_max_ms;
+    uint32_t send_slow_max_depth;
     uint32_t max_ready_depth;
     uint64_t max_queue_wait_us;
     bool low_latency_enabled;
@@ -412,7 +430,11 @@ esp_err_t nuwax_audio_uplink_ensure_encoded_frame_capacity(size_t required_bytes
 
 esp_err_t nuwax_audio_uplink_start(nuwax_audio_uplink_t *ctx, nuwax_ws_client_t *ws);
 /* Heap-owned session helpers. The detached cleanup path keeps the session
- * alive until an asynchronous sender has acknowledged cancellation. */
+ * alive until an asynchronous sender has acknowledged cancellation.
+ * Pass the unique owner; do not retain aliases or call concurrently on it.
+ * destroy_owned clears *owner before publishing to the allocation-free reaper.
+ * ESP_OK means freed; ESP_ERR_NOT_FINISHED means background ownership accepted.
+ * Repeating destroy_owned on the cleared owner is a no-op. */
 nuwax_audio_uplink_t *nuwax_audio_uplink_create(void);
 esp_err_t nuwax_audio_uplink_destroy_owned(nuwax_audio_uplink_t **owner);
 esp_err_t nuwax_audio_uplink_start_if_epoch(nuwax_audio_uplink_t *ctx,
@@ -438,6 +460,15 @@ esp_err_t nuwax_audio_uplink_bind_terminal_recovery(
     const char *request_id,
     uint32_t attempt_timeout_ms);
 
+/* Admit a copied listen/start transaction on the sender, before any PCM.
+ * The capture owner must bind terminal metadata first. No network I/O or wait
+ * is performed here; the sender guarantees start -> PCM -> END ordering. */
+esp_err_t nuwax_audio_uplink_schedule_listen_start(
+    nuwax_audio_uplink_t *ctx, uint32_t timeout_ms);
+/* EXTERNAL preserves the existing caller-owned start contract. A scheduled
+ * start only returns true after its complete text frame reached transport. */
+bool nuwax_audio_uplink_listen_start_committed(const nuwax_audio_uplink_t *ctx);
+
 esp_err_t nuwax_audio_uplink_enqueue_frame(nuwax_audio_uplink_t *ctx,
                                            nuwax_opus_encoder_t *opus_encoder,
                                            const int16_t *samples,
@@ -447,6 +478,12 @@ esp_err_t nuwax_audio_uplink_enqueue_frame(nuwax_audio_uplink_t *ctx,
                                            bool final_frame);
 
 esp_err_t nuwax_audio_uplink_finish(nuwax_audio_uplink_t *ctx);
+/* A physical power action no longer needs the queued microphone payload, but
+ * the cloud listen transaction still needs an ordered END/stop.  Snapshot that
+ * terminal into the cross-loop recovery owner and stop the realtime sender
+ * without waiting for its normal 12-second drain budget. */
+esp_err_t nuwax_audio_uplink_preempt_for_local_power(
+    nuwax_audio_uplink_t *ctx);
 /* Queue the terminal END without waiting for the sender task.  The capture
  * owner can keep draining its independent RT-capture queue and poll completion
  * at subsequent frame boundaries. */
@@ -463,6 +500,8 @@ bool nuwax_audio_uplink_end_committed(const nuwax_audio_uplink_t *ctx);
  * Terminal recovery must not retransmit an END until this becomes false,
  * because the original sender may still be completing the same frame. */
 bool nuwax_audio_uplink_sender_busy(void);
+/* Advisory background window: no queued packet and no send in progress. */
+bool nuwax_audio_uplink_background_ready(void);
 /* Tear down a prepared sender before listen-start has committed. This path
  * deliberately emits neither binary audio nor a terminal marker. */
 esp_err_t nuwax_audio_uplink_discard_uncommitted(nuwax_audio_uplink_t *ctx);

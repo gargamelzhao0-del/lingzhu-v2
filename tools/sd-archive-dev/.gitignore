@@ -1,0 +1,5 @@
+build/
+*.exe
+*.out
+sd_archive_store_test
+sd_archive_store_test_asan

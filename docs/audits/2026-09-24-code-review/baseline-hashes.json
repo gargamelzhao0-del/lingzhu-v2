@@ -1,0 +1,22 @@
+[
+  {
+    "file": "main/conversation/speaker_playback.c",
+    "matches": true
+  },
+  {
+    "file": "main/conversation/speaker_playback.h",
+    "matches": true
+  },
+  {
+    "file": "main/conversation/speaker_jitter_policy.h",
+    "matches": true
+  },
+  {
+    "file": "main/nuwax_ai_partner_main.c",
+    "matches": true
+  },
+  {
+    "file": "tools/test-playback-startup.py",
+    "matches": true
+  }
+]

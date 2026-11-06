@@ -1,0 +1,91 @@
+{
+  "review_date": "2026-10-09",
+  "stage": "completed_content_review_and_first_revision",
+  "checks": [
+    {
+      "command": [
+        "gcc",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-I",
+        "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main",
+        "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\build-host-checks\\handbook-review\\wake-boundaries.c",
+        "-o",
+        "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\build-host-checks\\handbook-review\\wake-boundaries.exe"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\build-host-checks\\handbook-review\\wake-boundaries.exe"
+      ],
+      "exit_code": 0,
+      "stdout": "PASS: 8 handbook decision rows and 4 frame-evidence checks using production header\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "C:\\Espressif\\python_env\\idf6.0_py3.13_env\\Scripts\\python.exe",
+        "-X",
+        "utf8",
+        "tools/test-wake-response.py"
+      ],
+      "exit_code": 0,
+      "stdout": "Sending wake greeting id=wake_1 wake_word=word text=hellowake feedback deferred revision=wake-pcm-v3 request=wake_1 wake_to_request_ms=100 capture_started=0 trigger=first_pcmSending wake greeting id=wake_2 wake_word=word text=helloSending wake greeting id=wake_3 wake_word=word text=helloSending wake greeting id=wake_4 wake_word=word text=helloSending wake greeting id=wake_5 wake_word=word text=helloSending wake greeting id=wake_6 wake_word=word text=hellowake feedback deferred revision=wake-pcm-v3 request=wake_6 wake_to_request_ms=100 capture_started=0 trigger=first_pcmPASS: noise_and_shadow\nPASS: greeting_feedback\nPASS: wake feedback ownership/failure/epoch ordering; original audio flow; shadow-only diagnostics\nPASS: cloud_wait_wake_handoff\n",
+      "stderr": ""
+    }
+  ],
+  "limits": [
+    "Manual review covered 30 handbook chapters and selected critical source paths; not every line of every firmware/vendor file.",
+    "Hash checks detect drift and do not prove source correctness.",
+    "Host policy checks do not establish real wake accuracy, firmware stability or cloud deployment state.",
+    "The bundled catalog was regenerated in TechVault source; no APK build, device install or server publish occurred."
+  ],
+  "documentation": {
+    "passed": true,
+    "chapters": 30,
+    "source_files": 119,
+    "errors": [],
+    "warnings": [],
+    "teaching_examples": [
+      {
+        "script": "audio_budget.py",
+        "exit_code": 0
+      },
+      {
+        "script": "inspect_na_frame.py",
+        "exit_code": 0
+      },
+      {
+        "script": "owner_epoch.py",
+        "exit_code": 0
+      }
+    ]
+  },
+  "source_and_bundle_check": {
+    "baseline": "2026-10-09 / default 7.0.113 / current working tree",
+    "checkedFiles": 119,
+    "bundledSourceAssets": 115,
+    "contentVersion": "2026.10.09.1",
+    "issues": [],
+    "firmwareBuiltOrTested": false,
+    "note": "Compared current source files with reviewed manifest and bundled asset hashes; no hardware certification."
+  },
+  "config_issues": [],
+  "app_content": {
+    "content_version": "2026.10.09.1",
+    "articles": 76,
+    "attachments": 150,
+    "issues": [],
+    "import_warnings": []
+  },
+  "seed_update_regression": {
+    "command": "npx vitest run tests/seed.test.ts",
+    "exit_code": 0,
+    "passed": 11
+  }
+}

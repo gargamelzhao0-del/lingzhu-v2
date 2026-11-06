@@ -10,6 +10,16 @@ typedef enum {
     NUWAX_PROVISION_WIFI_OWNER_APP,
 } nuwax_provision_wifi_owner_t;
 
+/* A GATT read is transport progress, not an application acknowledgement.
+ * Keep a drain grace after BOTH durable commit and the first valid read. */
+static inline bool nuwax_provision_success_read_grace_elapsed(
+    int64_t committed_us, int64_t response_read_us, int64_t now_us) {
+    const int64_t since_us = response_read_us > committed_us
+                                 ? response_read_us : committed_us;
+    return committed_us > 0 && response_read_us > 0 &&
+           now_us >= since_us && now_us - since_us >= 2000000;
+}
+
 static inline bool nuwax_provision_boot_profile_required(
     bool reprovision_state_valid, bool force_reprovision,
     bool cloud_config_ready, bool verified_marker_present,

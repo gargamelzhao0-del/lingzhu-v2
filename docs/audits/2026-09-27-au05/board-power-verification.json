@@ -1,0 +1,16 @@
+{
+  "revision": "board-power-boundaries-v1",
+  "elfSha256": "a0383b5a5d2a31bbaae1c805be8cdaac148529ba21f3456bfca1359cbc3edb9c",
+  "binSha256": "765e73dad876df448a6b6b7f3215256a46b0ce207e4d834648a7b3df804f1021",
+  "requiredSymbols": [
+    "bq27220_get_status_partial",
+    "bq27220_revalidate_profile",
+    "nuwax_power_ctrl_prepare_shutdown",
+    "nuwax_power_ctrl_shutdown_preparing",
+    "nuwax_offline_audio_prepare_shutdown",
+    "nuwax_i2c_bus_get_stats"
+  ],
+  "integrationMarkersPresent": true,
+  "hardwareValidated": false,
+  "criticalVoltageAutoShutdownEnabled": false
+}

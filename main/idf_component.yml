@@ -5,3 +5,4 @@ dependencies:
   espressif/esp_audio_codec: ^1
   lvgl/lvgl: ^9.5.0
   espressif/network_provisioning: 1.2.4
+  chmorgan/esp-libhelix-mp3: ^1.0.3

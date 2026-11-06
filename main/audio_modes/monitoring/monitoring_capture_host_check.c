@@ -14,6 +14,10 @@
 #include "mic_input.h"
 #include "monitoring_mode.h"
 #include "session_protocol.h"
+#include "audio_uplink_producer_host.h"
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+#include "offline_audio_voice.h"
+#endif
 
 #define HOST_FRAME_SAMPLES \
     ((CONFIG_NUWAX_VOICE_SAMPLE_RATE * CONFIG_NUWAX_VOICE_FRAME_DURATION_MS) / 1000)
@@ -41,6 +45,7 @@ struct nuwax_host_queue {
 };
 
 static int64_t s_now_us;
+static int64_t s_mic_start_delay_us;
 static uint32_t s_random_value = 0x30405060U;
 static nuwax_monitoring_mode_t *s_mode;
 static nuwax_ws_client_t *s_ws;
@@ -87,6 +92,51 @@ static bool s_read_discontinuity_injected;
 static uint32_t s_active_ack_failures_remaining;
 static uint32_t s_active_ack_attempts;
 
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+static uint32_t s_archived_mask;
+static uint32_t s_archived_while_paused;
+#if defined(NUWAX_HOST_HEAP_CAPS_FAULT_INJECT)
+bool nuwax_host_heap_caps_fail_calloc;
+#endif
+
+esp_err_t nuwax_offline_audio_mirror_service(nuwax_offline_audio_mirror_t *m,
+    nuwax_offline_audio_mode_t mode, const char *session, uint32_t rate,
+    uint8_t channels, uint16_t duration, uint32_t now) {
+    (void)now;
+    assert(strcmp(session, s_mode->identity.session_id) == 0);
+    assert(mode == NUWAX_OFFLINE_AUDIO_MODE_MONITORING);
+    assert(rate == 16000U && channels == 1U && duration == 20U);
+    m->started = true;
+    return ESP_OK;
+}
+
+esp_err_t nuwax_offline_audio_mirror_append(nuwax_offline_audio_mirror_t *m,
+    const nuwax_offline_audio_frame_t *frame, uint32_t now) {
+    (void)now;
+    assert(m->started && frame->sample_count == HOST_FRAME_SAMPLES);
+    const uint32_t source_sequence = frame->sequence -
+        (s_mode->identity.resuming ? 2829U : 0U);
+    assert(source_sequence < 32U);
+    const uint32_t bit = 1U << source_sequence;
+    assert((s_archived_mask & bit) == 0U); /* Uplink preroll cannot duplicate SD. */
+    s_archived_mask |= bit;
+    const nuwax_monitoring_capture_phase_t phase =
+        nuwax_monitoring_mode_capture_phase(s_mode);
+    if (phase == NUWAX_MONITORING_CAPTURE_PAUSED ||
+        phase == NUWAX_MONITORING_CAPTURE_RESUME_PENDING) {
+        ++s_archived_while_paused;
+    }
+    return ESP_OK;
+}
+
+esp_err_t nuwax_offline_audio_mirror_request_close(nuwax_offline_audio_mirror_t *m,
+    bool complete, uint32_t now) {
+    (void)complete; (void)now;
+    m->started = false;
+    return ESP_OK;
+}
+#endif
+
 QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t item_size) {
     if (length == 0U || item_size == 0U) {
         return NULL;
@@ -122,6 +172,13 @@ BaseType_t xQueueOverwrite(QueueHandle_t queue, const void *item) {
     memcpy(queue->storage, item, queue->item_size);
     queue->head = 0U;
     queue->count = 1U;
+    return pdTRUE;
+}
+
+BaseType_t xQueuePeek(QueueHandle_t queue, void *item, TickType_t wait_ticks) {
+    (void)wait_ticks;
+    if (!queue || !item || queue->count == 0U) return pdFALSE;
+    memcpy(item, queue->storage + (size_t)queue->head * queue->item_size, queue->item_size);
     return pdTRUE;
 }
 
@@ -287,7 +344,7 @@ esp_err_t nuwax_session_send_listen_with_audio_session_until_if_epoch(
         strcpy(s_audio_session_ids[s_listen_start_count], audio_session_id);
         if (s_listen_start_count > 0U) {
             assert(strcmp(s_audio_session_ids[s_listen_start_count - 1U],
-                          audio_session_id) != 0);
+                          audio_session_id) == 0);
             assert(strcmp(s_resume_audio_session_id, audio_session_id) == 0);
         }
         s_listen_start_order[s_listen_start_count] = ++s_order_counter;
@@ -346,11 +403,18 @@ esp_err_t nuwax_mic_input_init_with_owner(nuwax_mic_input_t *mic,
                                           nuwax_mic_owner_t owner) {
     assert(mic != NULL);
     assert(owner == NUWAX_MIC_OWNER_MONITORING_CAPTURE);
+    assert(s_listen_start_committed_count > 0U);
     mic->initialized = true;
     mic->owner = owner;
     mic->owner_acquired = true;
     mic->rx_handle = mic;
     return ESP_OK;
+}
+
+static esp_err_t acquire_mic_for_resume(void *ctx, nuwax_mic_input_t *mic, nuwax_mic_owner_t owner) {
+    (void)ctx;
+    s_now_us += s_mic_start_delay_us;
+    return nuwax_mic_input_init_with_owner(mic, owner);
 }
 
 esp_err_t nuwax_mic_input_read_pcm16(nuwax_mic_input_t *mic,
@@ -410,6 +474,7 @@ esp_err_t nuwax_audio_uplink_start_if_epoch(nuwax_audio_uplink_t *ctx,
     assert(ctx != NULL && nuwax_ws_is_connected(ws));
     assert(nuwax_ws_connection_epoch(ws) == expected_ws_epoch);
     assert(s_uplink_start_count < HOST_MAX_STREAMS);
+    memset(ctx, 0, sizeof(*ctx));
     ctx->ws = ws;
     ctx->ws_connection_epoch = expected_ws_epoch;
     s_uplink_start_order[s_uplink_start_count] = ++s_order_counter;
@@ -486,6 +551,8 @@ esp_err_t nuwax_audio_uplink_enqueue_frame(nuwax_audio_uplink_t *ctx,
     assert(phase == NUWAX_MONITORING_CAPTURE_STREAMING ||
            phase == NUWAX_MONITORING_CAPTURE_PAUSE_PENDING);
     assert(final_frame == ((flags & NUWAX_AUDIO_FLAG_END) != 0U));
+    assert(host_production_enqueue_frame(ctx, opus_encoder, samples, sample_count,
+                                        seq, flags, final_frame) == ESP_OK);
     s_enqueued_sequences[s_enqueued_count] = seq;
     s_enqueued_flags[s_enqueued_count] = flags;
     s_enqueued_streams[s_enqueued_count] = (uint8_t)(s_uplink_start_count - 1U);
@@ -557,6 +624,10 @@ static bool sent_message_contains(const char *request_id,
 }
 
 static void reset_capture_fakes(void) {
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    s_archived_mask = 0U;
+    s_archived_while_paused = 0U;
+#endif
     s_now_us = 0;
     s_read_index = 0U;
     s_read_offset = 0U;
@@ -602,10 +673,12 @@ static void reset_capture_fakes(void) {
 }
 
 int main(void) {
+    host_check_reject_nonzero_stream_start();
     reset_capture_fakes();
     nuwax_monitoring_mode_t mode = {0};
     nuwax_ws_client_t ws = {.connected = true, .connection_epoch = 1U};
     const nuwax_monitoring_mode_callbacks_t callbacks = {
+        .acquire_mic = acquire_mic_for_resume,
         .is_playback_active = playback_active,
         .fade_and_cancel_playback = fade_playback,
     };
@@ -736,6 +809,11 @@ int main(void) {
     assert(s_listen_start_count == 1U);
     assert(s_listen_stop_count == 1U);
     assert(s_enqueued_count == 6U);
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE
+    /* The cloud rejected resume. Local speech frames must still be saved. */
+    assert(s_archived_while_paused > 0U);
+    assert((s_archived_mask & (1U << 18U)) != 0U);
+#endif
     assert((s_enqueued_flags[s_enqueued_count - 1U] &
             NUWAX_AUDIO_FLAG_END) != 0U);
     assert(nuwax_monitoring_mode_capture_phase(&resume_reject_mode) ==
@@ -823,6 +901,98 @@ int main(void) {
     assert(s_close_request_count == 0U);
     nuwax_monitoring_mode_deinit(&mic_deinit_failed_mode);
 
+#if CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE && \
+    defined(NUWAX_HOST_HEAP_CAPS_FAULT_INJECT)
+    /* Failure to reserve the optional local voice ring must not prevent the
+     * cloud monitoring stream from running, and no invalid archive writer may
+     * be called after the failed initialization. */
+    reset_capture_fakes();
+    nuwax_host_heap_caps_fail_calloc = true;
+    nuwax_monitoring_mode_t archive_alloc_failed_mode = {0};
+    nuwax_ws_client_t archive_alloc_failed_ws = {
+        .connected = true, .connection_epoch = 7U,
+    };
+    s_mode = &archive_alloc_failed_mode;
+    s_ws = &archive_alloc_failed_ws;
+    assert(nuwax_monitoring_mode_init(&archive_alloc_failed_mode,
+                                      &callbacks) == ESP_OK);
+    assert(nuwax_monitoring_mode_handle_protocol_text(
+        &archive_alloc_failed_mode,
+        &archive_alloc_failed_ws,
+        open_command,
+        (int)strlen(open_command)));
+    assert(nuwax_monitoring_mode_run(&archive_alloc_failed_mode,
+                                     &archive_alloc_failed_ws) == ESP_OK);
+    assert(s_enqueued_count > 0U);
+    assert(s_archived_mask == 0U);
+    assert(s_archived_while_paused == 0U);
+    nuwax_monitoring_mode_deinit(&archive_alloc_failed_mode);
+    nuwax_host_heap_caps_fail_calloc = false;
+#endif
+
+    reset_capture_fakes();
+    nuwax_monitoring_mode_t resumed = {0};
+    nuwax_ws_client_t resumed_ws = {.connected = true, .connection_epoch = 8U};
+    s_mode = &resumed;
+    s_ws = &resumed_ws;
+    assert(nuwax_monitoring_mode_init(&resumed, &callbacks) == ESP_OK);
+    strcpy(resumed.identity.session_id, "monitoring_original");
+    resumed.identity.resuming = true;
+    resumed.identity.next_capture_sequence = 2829U;
+    const char resume_command[] =
+        "{\"type\":\"device_command\",\"command\":\"set_audio_mode\","
+        "\"request_id\":\"capture_open\",\"mode\":\"monitoring\","
+        "\"state\":\"enabled\",\"audio_session_id\":\"cloud_new_session\"}";
+    assert(nuwax_monitoring_mode_handle_protocol_text(&resumed, &resumed_ws,
+        resume_command, (int)strlen(resume_command)));
+    assert(nuwax_monitoring_mode_run(&resumed, &resumed_ws) == ESP_OK);
+    for (size_t i = 0; i < s_listen_start_count; ++i) {
+        assert(strcmp(s_audio_session_ids[i], "monitoring_original") == 0);
+    }
+    assert(s_enqueued_count > 0U);
+    for (size_t i = 0; i < s_enqueued_count; ++i) {
+        assert(s_enqueued_sequences[i] == (i < 6U ? i : i - 6U));
+    }
+    assert(resumed.identity.session_id[0] == '\0');
+    nuwax_monitoring_mode_deinit(&resumed);
+    /* A MIC initialization returning after the command deadline must not
+     * publish ACTIVE, send PCM, or revive the request after cleanup. */
+    reset_capture_fakes();
+    s_mic_start_delay_us = 23000000LL;
+    nuwax_monitoring_mode_t late_mode = {0};
+    nuwax_ws_client_t late_ws = {.connected=true, .connection_epoch=900};
+    const nuwax_monitoring_mode_callbacks_t late_callbacks = {.acquire_mic=acquire_mic_for_resume};
+    s_mode = &late_mode; s_ws = &late_ws;
+    assert(nuwax_monitoring_mode_init(&late_mode, &late_callbacks) == ESP_OK);
+    const char late_command[] = "{\"type\":\"device_command\",\"command\":\"set_audio_mode\","
+        "\"request_id\":\"capture_open\",\"mode\":\"monitoring\",\"state\":\"enabled\"}";
+    assert(nuwax_monitoring_mode_handle_protocol_text(&late_mode, &late_ws, late_command, strlen(late_command)));
+    assert(nuwax_monitoring_mode_run(&late_mode, &late_ws) == ESP_ERR_TIMEOUT);
+    assert(s_read_index == 0 && s_active_ack_attempts == 0);
+    assert(late_mode.state == NUWAX_MONITORING_STATE_DISABLED && !late_mode.capture_running);
+    assert(late_mode.command_deadline.decided && !late_mode.command_deadline.ok);
+    assert(!late_mode.offline_resume_required && !late_mode.identity.resuming);
+    nuwax_monitoring_mode_deinit(&late_mode);
+    s_mic_start_delay_us = 0;
+    puts("PASS: late monitoring MIC readiness cancels without ACTIVE or PCM");
     puts("monitoring_capture_host_check: PASS");
     return 0;
+}
+
+/* Bounded transport fake: protocol JSON remains the same. */
+esp_err_t nuwax_ws_send_text_until_if_epoch(nuwax_ws_client_t *ws, const char *payload,
+    int64_t deadline_us, uint32_t epoch)
+{
+    if (deadline_us <= 0 || !ws || ws->connection_epoch != epoch) return ESP_ERR_INVALID_STATE;
+    #ifdef nuwax_ws_send_text
+    #undef nuwax_ws_send_text
+    #define SD_RESTORE_SEND_TEXT
+    #endif
+    extern esp_err_t nuwax_ws_send_text(nuwax_ws_client_t *, const char *);
+    esp_err_t result = nuwax_ws_send_text(ws, payload);
+    #ifdef SD_RESTORE_SEND_TEXT
+    #define nuwax_ws_send_text sd_base_send_text
+    #undef SD_RESTORE_SEND_TEXT
+    #endif
+    return result;
 }

@@ -1,0 +1,77 @@
+非零 speaker generation / START已授权但无首PCM：补充只读反证
+日期：2026-10-09
+生产源码未修改；本次为静态调用链复核，没有新增设备或主机运行结果。
+仓库：C:/Users/Administrator/Documents/work/Nuwax AI Partner/Nuwax AI Partner 7.0/NuwaxAIPartner-v2
+main/nuwax_ai_partner_main.c SHA256：0087ce87987ffcc75b0cfbf7d1e4b28767c0bb166873c06f9a0fb9597651162a
+
+结论
+START成功授权、同epoch/generation的terminal guard正常绑定且无新生命周期owner接管时，
+非零generation在尚无首PCM的情况下已有实际恢复路径。不能把这一正常terminal路径归入
+generation=0超时清理后SLEEPING早退的已确认R1。
+关键反证不是“可能收到另一个外部事件”，而是finalize自身先把逻辑状态改为LISTENING，
+再调用recover_normal_conversation_after_playback_abort。因而SLEEPING早退条件已被解除。
+
+代码链（未特别注明文件时均为main/nuwax_ai_partner_main.c，一基行号）
+1. START授权与首PCM是两个阶段：
+   :10853调用authorize_speaker_generation_for_active_turn。
+   该函数:2468先把speaker generation绑定到turn，:2477授权播放器，:2492绑定terminal guard。
+   全部成功后:10870–10875清pending并置PLAYING/pause awake；FIRST_PCM在:10911另行处理。
+   因此“非零generation但尚无首PCM”确实是可达阶段，不能把它等同于metadata-only gen=0。
+
+2. 无进度期限及取消：
+   :2492–2499给terminal guard设播放活性期限；常量:335为60000ms。
+   :11690先检查terminal ready；:11695先检查terminal deadline。
+   期限到且无physical_done时，:11701–11707进入begin_playback_terminal_local_recovery。
+   :10020标fault、:10029关闭正常下行、:10030发取消、:10043申请指定epoch/generation的本地stop。
+   此处与gen=0使用的15秒metadata-only firstPCM检查(:11740–11746)不是同一条分支。
+   播放器自身提前报告FAULT时则由:11354–11428进入同一terminal/stop恢复体系。
+
+3. 正常取消/播放停止回调：
+   :11051 PLAYBACK_DONE或:11203取消停止事件标physical_done；随后:11092/:11226尝试finalize。
+   匹配云取消ACK在:30581–30617更新terminal并尝试finalize。
+   main/conversation/playback_terminal_guard.c:287–296要求physical_done；faulted时ACK、END或
+   local_recovery_committed任一满足即可ready，不能仅因ACK就抢先收音。
+
+4. ACK缺失/拒绝不会本身永久卡住已正确绑定的terminal：
+   :11710–11735在physical_done且terminal期限届满时commit_local_recovery并finalize。
+   如果stop请求立刻确认完成，:10055–10075立即标physical_done、commit并finalize。
+   同文件的:10089–10119在本地stop申请失败后尝试reset，成功也走上述完成路径。
+
+5. 停止事件丢失/物理stop较慢：
+   :10427起watchdog检查播放器持久stats。匹配completed_stop成功时，:10460–10474补记physical_done、
+   commit local recovery并finalize；不依赖事件队列一定送达。
+   :10488–10504在stop失败或3秒watchdog到期后尝试runtime reset。
+   reset成功时:10521–10537标physical_done、commit并finalize；reset失败则:10505–10512保留重试。
+   因此真实硬件持续reset失败仍是故障恢复能力需要实测的边界，不能用静态链声称硬件必成功。
+
+6. 决定性状态转换：
+   finalize_playback_terminal_if_ready(:9842)读取faulted并在:9866清terminal。
+   :9881–9885的listening_owner_available条件为：无本地主动电源睡眠、无deferred sleep、
+   无独占音频模式且awake session active；并不要求当前状态不是SLEEPING。
+   满足时:9890–9891先发布并set_state(LISTENING)，之后:9893–9896清旧turn。
+   set_state→set_state_logical(:4055/:3667)不会禁止SLEEPING→LISTENING；speaker状态延后保护
+   只在current_state==SPEAKING时触发(:3690)，不影响本场景。
+   因此:9922的SLEEPING保护不再命中；faulted分支:9927调用recover_normal...时，:9112亦不早退。
+   :9135→return_to_listening_after_cancel(:7856)→:7872 start_prelisten_window，回到收音准备。
+   主动睡眠/其他owner优先时不走正常收音是预期所有权行为，不应为修复R1绕开它。
+
+边界与修复范围修正
+- R1确认范围维持“generation=0且没有可完成的terminal恢复owner”：本轮实测为WAIT_TEXT/WAIT_TTS。
+  metadata-only无START/gen=0的firstPCM超时可静态沿:11740→11880复核，但没有纳入已运行候选场景。
+- WG-EPOCH-RECOVERY-v1的wg_capture拒绝非零generation。因此它未覆盖、也不应自动接管上述正常
+  terminal路径。此前建议“非零gen分支另设计恢复”应收紧为“保留现有terminal收敛并增加回归”，
+  只有证实其特定失效后才新增恢复动作。不能为覆盖首PCM而简单删除generation/physical-stop门槛。
+- 不能只凭generation非零断言terminal一定存在。授权函数先bind generation，后授权播放器、arm
+  terminal；授权/绑定失败在:10853–10867清guard并调用recover。terminal不匹配时:11835–11849
+  也仅申请普通业务close。此类额外失败前提以及close健康心跳抑制，应独立故障注入验证。
+  本次没有证明其在正常metadata/START流中必触发，不扩张为新的已确认P1。
+- 本地stop/reset永久失败无法通过此次静态分析保证恢复；这属于硬件/资源恢复故障边界。
+
+应追加的定向验收
+1. START授权完成、无首PCM，停止成功，正常ACK：确认finalize先LISTENING再prelisten。
+2. 相同场景取消ACK丢失/拒绝：确认物理停止后的本地quarantine仍收敛，旧音频被隔离。
+3. 丢失stop回调但completed_stop stats存在：watchdog补偿成功，无多余重连。
+4. 本地stop超时：reset成功后恢复；reset失败时恢复owner保留且可诊断，无伪装已收音。
+5. 在上述每个阶段主动睡眠/模式接管/换epoch：旧terminal不能恢复或取消新的owner。
+
+本结论为已读当前生产代码对“非零generation必然同样卡住”的反证，不是真机性能或长稳证明。

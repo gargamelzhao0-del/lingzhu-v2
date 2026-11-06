@@ -1,4 +1,8 @@
 set(SRCS_COMMON
+    "tls_record_metrics.c"
+    "sd_socket_wait.c"
+    "sd_tcp_recovery.c"
+    "tls_archive_crypto.c"
     "app_state.c"
     "app_shell.c"
     "audio_frame.c"
@@ -17,11 +21,22 @@ set(SRCS_COMMON
     "board/led_driver.c"
     "board/led_status.c"
     "board/sd_card_driver.c"
+    "board/sd_directory_guard.c"
+    "board/sd_command_history.c"
+    "board/sd_dma_bulk.c"
+    "board/sd_integrity_io.c"
+    "board/sd_write_verify.c"
+    "board/sd_probe_trace.c"
+    "board/sd_event_profile.c"
     "board/uart_driver.c"
     "cloud_protocol_compat.c"
     "ctype_compat.c"
     "diagnostics.c"
+    "device_error_report.c"
     "display.c"
+    "display_brightness.c"
+    "boot_logo.c"
+    "assets/ling_zhu_boot_logo.c"
     "mic_input.c"
     "mcp_server.c"
     "nuwax_ai_partner_main.c"
@@ -63,6 +78,7 @@ set(SRCS_COMMON
     "conversation/preroll_window.c"
     "conversation/shell_action_dispatch.c"
     "conversation/session_dispatch.c"
+    "conversation/control_ack_tx.c"
     "conversation/sleep_transaction.c"
     "conversation/short_speech_tracker.c"
     "conversation/speech_confirmation.c"
@@ -81,15 +97,25 @@ set(SRCS_COMMON
     "speaker_output.c"
     "synthetic_audio.c"
     "time_sync.c"
+    "cloud_time.c"
     "touch_input.c"
     "wake_word_detector.c"
     "wifi_manager.c"
     "ws_transport.c"
+    "network_tx_probe.c"
+    "replay_ui_schedule.c"
     "nuwax_provision_new/nuwax_cloud_config.c"
+    "nuwax_provision_new/nuwax_pair_commit.c"
     "nuwax_provision_new/nuwax_device_uid.c"
     "nuwax_provision_new/nuwax_provision_main.c"
     "nuwax_provision_new/nuwax_provision_usb_control.c"
 )
+
+# OFFLINE_AUDIO_ROUND_20260825_BEGIN
+if(CONFIG_NUWAX_OFFLINE_AUDIO_ENABLE)
+    list(APPEND SRCS_COMMON "offline_audio_spool.c" "offline_audio_voice.c" "sd_audio_catalog.c" "sd_gateway_discovery.c" "sd_audio_integrity.c")
+endif()
+# OFFLINE_AUDIO_ROUND_20260825_END
 
 if(CONFIG_NUWAX_OTA_ENABLE)
     if(CONFIG_NUWAX_P1_HW_DIAG_MODE OR
@@ -113,14 +139,33 @@ if(CONFIG_NUWAX_OTA_ENABLE)
     )
 endif()
 
+if(CONFIG_NUWAX_MUSIC_URL_TEST_ENABLE)
+    list(APPEND SRCS_COMMON "music_url_test/music_url_test.c")
+endif()
+
+if(CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE)
+    list(APPEND SRCS_COMMON "music_playback/music_playback.c" "music_playback/music_status.c")
+endif()
+if(CONFIG_NUWAX_MUSIC_CONTROL_TEST_ENABLE)
+    list(APPEND SRCS_COMMON "music_playback/music_test_control.c")
+endif()
+
 set(SRCS_LVGL_UI
     "nuwax_lvgl_port.c"
     "nuwax_ui_v28/nuwax_app.c"
+    "nuwax_ui_v28/ota_progress.c"
+    "nuwax_ui_v28/low_battery_warning.c"
+    "nuwax_ui_v28/assets/low_battery_assets.c"
+    "nuwax_ui_v28/assets/ota_logo.c"
+    "nuwax_ui_v28/assets/ota_capsule.c"
+    "nuwax_ui_v28/assets/fonts/nuwax_font_ota.c"
     "nuwax_ui_v28/nuwax_device_state.c"
     "nuwax_ui_v28/emotion_display_policy.c"
     "nuwax_ui_v28/nuwax_state_bridge.c"
     "nuwax_ui_v28/nuwax_face.c"
     "nuwax_ui_v28/nuwax_drawer.c"
+    "nuwax_ui_v28/test/nuwax_test_panel.c"
+    "nuwax_ui_v28/test/nuwax_font_test_panel_11.c"
     "nuwax_ui_v28/nuwax_gesture.c"
     "nuwax_ui_v28/nuwax_theme.c"
     "nuwax_ui_v28/nuwax_anim.c"
@@ -133,11 +178,26 @@ set(SRCS_LVGL_UI
     "nuwax_ui_v28/assets/fonts/nuwax_font_control_center_cjk_11.c"
     "nuwax_ui_v28/assets/fonts/nuwax_font_control_center_cjk_12.c"
     "nuwax_ui_v28/assets/fonts/nuwax_font_control_center_cjk_13.c"
+    "nuwax_ui_v28/assets/fonts/nuwax_font_lingzhu.c"
     "nuwax_ui_v28/face/emotion_asset_pack.c"
     "nuwax_ui_v28/face/emotion_animation_player.c"
+    "nuwax_ui_v28/face/conversation_visual.c"
 )
 
 set(SRCS ${SRCS_COMMON} ${SRCS_LVGL_UI})
+
+set(NUWAX_PRIV_REQUIRES
+    app_update bootloader_support bt esp_http_client esp_wifi esp_event
+    esp_netif nvs_flash efuse cjson lwip esp_timer esp-tls mbedtls
+    esp_app_format esp_hw_support esp_psram esp_ringbuf spi_flash espcoredump
+    esp_driver_i2s esp_driver_gpio esp_driver_spi esp_driver_i2c
+    esp_driver_ledc esp_driver_uart esp_driver_sdmmc esp_driver_usb_serial_jtag
+    fatfs sdmmc lvgl esp-sr esp_audio_codec esp_codec_dev
+    network_provisioning protocomm)
+
+if(CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE AND CONFIG_NUWAX_MUSIC_MP3_ENABLE)
+    list(APPEND NUWAX_PRIV_REQUIRES esp-libhelix-mp3)
+endif()
 
 # These retired prototypes predate the shared audio ownership and formal
 # command-dispatch paths. Refuse accidental product linkage: they deliberately
@@ -154,11 +214,14 @@ foreach(retired_source IN LISTS NUWAX_RETIRED_PRODUCT_SOURCES)
     endif()
 endforeach()
 
-set(INCLUDE_DIRS "." "conversation" "audio_modes/meeting" "audio_modes/monitoring" "nuwax_ui_v28" "nuwax_ui_v28/face" "nuwax_ui_v28/assets" "nuwax_provision_new" "nuwax_ota_new")
+set(INCLUDE_DIRS "." "conversation" "audio_modes/meeting" "audio_modes/monitoring" "nuwax_ui_v28" "nuwax_ui_v28/face" "nuwax_ui_v28/assets" "nuwax_provision_new" "nuwax_ota_new" "music_url_test")
 
 idf_component_register(SRCS ${SRCS}
-                       PRIV_REQUIRES app_update bootloader_support bt esp_http_client esp_wifi esp_event esp_netif nvs_flash efuse cjson lwip esp_timer esp-tls mbedtls esp_app_format esp_hw_support esp_psram esp_ringbuf spi_flash esp_driver_i2s esp_driver_gpio esp_driver_spi esp_driver_i2c esp_driver_ledc esp_driver_uart esp_driver_sdmmc esp_driver_usb_serial_jtag fatfs sdmmc lvgl esp-sr esp_audio_codec esp_codec_dev network_provisioning protocomm
+                       PRIV_REQUIRES ${NUWAX_PRIV_REQUIRES}
                        INCLUDE_DIRS ${INCLUDE_DIRS})
+
+# The visual demo has been removed. Retire stale settings from preview builds.
+unset(NUWAX_OTA_PROGRESS_BOOT_PREVIEW CACHE)
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     NUWAX_OTA_FIRMWARE_RELEASE_SEQUENCE=${NUWAX_OTA_RELEASE_SEQUENCE}ULL
@@ -174,6 +237,16 @@ endif()
 
 # Force _ctype_ symbol to be included (needed by esp-sr libfst.a with GCC 15.2)
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-u _ctype_")
+target_link_libraries(${COMPONENT_LIB} INTERFACE
+    "-Wl,--wrap=network_prov_mgr_done" "-u __wrap_network_prov_mgr_done")
+target_link_libraries(${COMPONENT_LIB} INTERFACE
+    "-Wl,--wrap=sdmmc_read_sectors" "-Wl,--wrap=sdmmc_write_sectors"
+    "-u __wrap_sdmmc_read_sectors" "-u __wrap_sdmmc_write_sectors")
+target_link_libraries(${COMPONENT_LIB} INTERFACE
+    "-Wl,--wrap=psa_aead_encrypt" "-Wl,--wrap=mbedtls_net_send"
+    "-u __wrap_psa_aead_encrypt" "-u __wrap_mbedtls_net_send")
+target_link_libraries(${COMPONENT_LIB} INTERFACE
+    "-Wl,--wrap=mbedtls_psa_aead_encrypt" "-u __wrap_mbedtls_psa_aead_encrypt")
 
 # LVGL resolves custom allocator symbols from libmain.a after liblvgl.a has been
 # scanned. Force one allocator symbol so the archive member is included.

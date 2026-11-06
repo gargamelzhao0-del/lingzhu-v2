@@ -1,4 +1,5 @@
 #include "session_protocol.h"
+#include "cloud_time.h"
 #include "nuwax_provision_new/nuwax_device_uid.h"
 
 #include <ctype.h>
@@ -8,6 +9,7 @@
 #include "sdkconfig.h"
 #include "board/audio_board.h"
 #include "cJSON.h"
+#include "json_resource_budget.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -228,6 +230,21 @@ static bool request_id_char_allowed(unsigned char ch) {
            ch == ':' || ch == '-';
 }
 
+static bool music_url_is_valid(const char *url) {
+    if (!url || strncmp(url, "https://", 8U) != 0 || url[8] == '\0') {
+        return false;
+    }
+    for (const unsigned char *cursor = (const unsigned char *)url;
+         *cursor != 0U;
+         ++cursor) {
+        if (iscntrl(*cursor) || isspace(*cursor) || *cursor == '#' ||
+            *cursor == '\\') {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool json_parse_end_is_clean(const char *payload,
                                     int len,
                                     const char *parse_end) {
@@ -251,6 +268,7 @@ static bool validate_bounded_json_strings(const cJSON *root) {
         {"mode", 24U},
         {"request_id", 40U},
         {"requestId", 40U},
+        {"event_id", 48U},
         {"audio_session_id", 48U},
         {"audioSessionId", 48U},
         {"barge_event_id", 48U},
@@ -264,6 +282,8 @@ static bool validate_bounded_json_strings(const cJSON *root) {
         {"codec", 16U},
         {"playback_reason", 24U},
         {"provider", 24U},
+        {"url", NUWAX_SESSION_MUSIC_URL_MAX_LEN},
+        {"format", NUWAX_SESSION_MUSIC_FORMAT_MAX_LEN},
         {"state", 24U},
         {"emotion", 24U},
         {"assistant_emotion", 24U},
@@ -375,6 +395,7 @@ static bool validate_device_command_json(const cJSON *root) {
         "playbackId", "notify_id", "ssid", "password", "wake_word", "wakeWord",
         "state", "emotion", "assistant_emotion", "assistantEmotion",
         "title", "lines", "text", "volume_db", "volumeDb",
+        "url", "format",
         "volume_percent", "volumePercent", "persist", "volume_persist",
         "volumePersist", "wake_word_persist", "wakeWordPersist",
         "duration_ms", "durationMs", "delay_samples", "delaySamples",
@@ -502,6 +523,20 @@ static bool validate_device_command_json(const cJSON *root) {
             ESP_LOGE(TAG,
                      "set_state rejected: device lifecycle owns state=%s",
                      state->valuestring);
+            return false;
+        }
+    } else if (strcmp(command->valuestring, "play_music") == 0) {
+        const cJSON *url = cJSON_GetObjectItemCaseSensitive(root, "url");
+        const cJSON *format =
+            cJSON_GetObjectItemCaseSensitive(root, "format");
+        if (json_key_count(root, "url") != 1U ||
+            !cJSON_IsString(url) || !url->valuestring ||
+            !music_url_is_valid(url->valuestring) ||
+            json_key_count(root, "format") != 1U ||
+            !cJSON_IsString(format) || !format->valuestring ||
+            strcmp(format->valuestring, "mp3") != 0) {
+            ESP_LOGE(TAG,
+                     "play_music rejected: HTTPS url and format=mp3 are required");
             return false;
         }
     }
@@ -687,7 +722,7 @@ bool nuwax_session_validate_text_frame(const char *payload, int len) {
         return false;
     }
     const char *parse_end = NULL;
-    cJSON *root = cJSON_ParseWithLengthOpts(payload,
+    cJSON *root = nuwax_json_parse_with_length_opts(payload,
                                             (size_t)len,
                                             &parse_end,
                                             false);
@@ -725,18 +760,10 @@ bool nuwax_session_validate_text_frame(const char *payload, int len) {
 }
 
 static void log_text_preview(const char *label, const char *text) {
-    const char *value = text ? text : "";
-    size_t len = strlen(value);
-    if (len == 0) {
-        ESP_LOGI(TAG, "%s len=0 text=", label);
-        return;
-    }
-
-    char preview[97];
-    size_t preview_len = utf8_safe_prefix_len(value, sizeof(preview) - 1);
-    memcpy(preview, value, preview_len);
-    preview[preview_len] = '\0';
-    ESP_LOGI(TAG, "%s len=%u preview=%s", label, (unsigned)len, preview);
+    /* Keep event/length diagnostics without persisting a child's speech or
+     * cloud response in serial logs. The protocol payload is not changed. */
+    ESP_LOGI(TAG, "%s len=%u content=redacted", label,
+             (unsigned)(text ? strlen(text) : 0U));
 }
 
 static esp_err_t send_json_object(nuwax_ws_client_t *ws, cJSON *root) {
@@ -797,24 +824,21 @@ static esp_err_t send_sensitive_json_object(nuwax_ws_client_t *ws, cJSON *root) 
     const size_t length = strlen(json);
     esp_err_t err = nuwax_ws_send_text(ws, json);
     secure_zero_memory(json, length);
-    free(json);
+    cJSON_free(json);
     return err;
 }
 
 esp_err_t nuwax_session_send_hello(nuwax_ws_client_t *ws,
-                                   const char *device_secret) {
+                                   const char *device_secret, bool has_sd_card) {
     if (!ws || !device_secret || !device_secret[0]) {
         return ESP_ERR_INVALID_ARG;
     }
+    esp_err_t err = ESP_ERR_NO_MEM;
     cJSON *root = cJSON_CreateObject();
     cJSON *features = cJSON_CreateObject();
     cJSON *audio = cJSON_CreateObject();
-    if (!root || !features || !audio) {
-        cJSON_Delete(root);
-        cJSON_Delete(features);
-        cJSON_Delete(audio);
-        return ESP_ERR_NO_MEM;
-    }
+    cJSON *firmware = NULL;
+    if (!root || !features || !audio) goto done;
 
     const nuwax_audio_board_caps_t *caps = nuwax_audio_board_get_caps();
     const bool software_ref_enabled =
@@ -834,47 +858,53 @@ esp_err_t nuwax_session_send_hello(nuwax_ws_client_t *ws,
     const nuwax_afe_input_format_t runtime_afe_input_format =
         runtime_ref_available ? caps->input_format : NUWAX_AFE_INPUT_MM;
 
-    cJSON_AddStringToObject(root, "type", "hello");
-    cJSON_AddNumberToObject(root, "version", 1);
-    cJSON_AddStringToObject(root, "device_id", nuwax_device_uid_string()[0]
+    if (!cJSON_AddStringToObject(root, "type", "hello")) goto done;
+    if (!cJSON_AddNumberToObject(root, "version", 1)) goto done;
+    if (!cJSON_AddStringToObject(root, "device_id", nuwax_device_uid_string()[0]
                                                      ? nuwax_device_uid_string()
-                                                     : CONFIG_NUWAX_DEVICE_ID);
-    cJSON_AddStringToObject(root, "device_secret", device_secret);
-    cJSON_AddStringToObject(root, "transport", "websocket");
-    cJSON_AddBoolToObject(features, "audio_upload", true);
+                                                     : CONFIG_NUWAX_DEVICE_ID)) goto done;
+    if (!cJSON_AddStringToObject(root, "device_secret", device_secret)) goto done;
+    if (!cJSON_AddStringToObject(root, "transport", "websocket")) goto done;
+    if (!cJSON_AddBoolToObject(root, "has_sd_card", has_sd_card)) goto done;
+    if (!cJSON_AddBoolToObject(features, "audio_upload", true)) goto done;
     /* Device-side meeting mode is negotiated independently from normal
      * conversation capture.  This advertises capability only; it does not
      * mean that a meeting session is currently active. */
-    cJSON_AddBoolToObject(features, "meeting_mode_v1", true);
-    cJSON_AddBoolToObject(features, "monitoring_mode_v1", true);
-    cJSON_AddBoolToObject(features, "monitoring_pause_resume_v1", true);
-    cJSON_AddBoolToObject(features, "remote_ble_reprovision", true);
-    cJSON_AddBoolToObject(features, "volume_changed_v1", true);
+    if (!cJSON_AddBoolToObject(features, "meeting_mode_v1", true)) goto done;
+    if (!cJSON_AddBoolToObject(features, "monitoring_mode_v1", true)) goto done;
+    if (!cJSON_AddBoolToObject(features, "monitoring_pause_resume_v1", true)) goto done;
+    if (!cJSON_AddBoolToObject(features, "remote_ble_reprovision", true)) goto done;
+    if (!cJSON_AddBoolToObject(features, "volume_changed_v1", true)) goto done;
 #if CONFIG_NUWAX_WAKE_WORD_ENABLE && CONFIG_NUWAX_WAKE_WORD_BACKEND_MULTINET
-    cJSON_AddBoolToObject(features, "remote_wake_word_config", true);
+    if (!cJSON_AddBoolToObject(features, "remote_wake_word_config", true)) goto done;
 #else
-    cJSON_AddBoolToObject(features, "remote_wake_word_config", false);
+    if (!cJSON_AddBoolToObject(features, "remote_wake_word_config", false)) goto done;
 #endif
 #if CONFIG_NUWAX_OTA_ENABLE
-    cJSON_AddBoolToObject(features, "ota_v1", true);
+    if (!cJSON_AddBoolToObject(features, "ota_v1", true)) goto done;
 #endif
 #if CONFIG_NUWAX_SPEAKER_ENABLE
-    cJSON_AddBoolToObject(features, "audio_playback", true);
-    cJSON_AddBoolToObject(features, "notify_playback_v1", true);
+    if (!cJSON_AddBoolToObject(features, "audio_playback", true)) goto done;
+    if (!cJSON_AddBoolToObject(features, "notify_playback_v1", true)) goto done;
 #else
-    cJSON_AddBoolToObject(features, "audio_playback", false);
-    cJSON_AddBoolToObject(features, "notify_playback_v1", false);
+    if (!cJSON_AddBoolToObject(features, "audio_playback", false)) goto done;
+    if (!cJSON_AddBoolToObject(features, "notify_playback_v1", false)) goto done;
 #endif
-    cJSON_AddBoolToObject(features, "mcp", true);
-    cJSON_AddItemToObject(root, "features", features);
+#if defined(CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE) && \
+    CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE && \
+    defined(CONFIG_NUWAX_MUSIC_MP3_ENABLE) && \
+    CONFIG_NUWAX_MUSIC_MP3_ENABLE
+    if (!cJSON_AddBoolToObject(features, "music_playback_mp3", true)) goto done;
+#else
+    if (!cJSON_AddBoolToObject(features, "music_playback_mp3", false)) goto done;
+#endif
+    if (!cJSON_AddBoolToObject(features, "mcp", true)) goto done;
+    if (!cJSON_AddItemToObject(root, "features", features)) goto done;
+    features = NULL; /* Ownership transferred to root. */
 
 #if CONFIG_NUWAX_OTA_ENABLE
-    cJSON *firmware = cJSON_CreateObject();
-    if (!firmware) {
-        cJSON_Delete(root);
-        cJSON_Delete(audio);
-        return ESP_ERR_NO_MEM;
-    }
+    firmware = cJSON_CreateObject();
+    if (!firmware) goto done;
     const esp_app_desc_t *app = esp_app_get_description();
     const esp_partition_t *running = esp_ota_get_running_partition();
     bool pending_verify = false;
@@ -883,76 +913,82 @@ esp_err_t nuwax_session_send_hello(nuwax_ws_client_t *ws,
     (void)nuwax_ota_main_get_release_sequence(&release_sequence);
     nuwax_ota_running_identity_t running_identity = {0};
     const esp_err_t identity_err =
-        nuwax_ota_main_get_running_identity(&running_identity);
+        nuwax_ota_main_peek_running_identity(&running_identity);
     if (identity_err == ESP_OK) {
         pending_verify = running_identity.pending_verify;
         release_sequence = running_identity.release_sequence;
     }
-    cJSON_AddStringToObject(firmware, "project_name",
-                            app ? app->project_name : "NuwaxAIPartner");
-    cJSON_AddStringToObject(firmware, "version", app ? app->version : "unknown");
-    cJSON_AddNumberToObject(firmware, "release_sequence", (double)release_sequence);
-    cJSON_AddStringToObject(firmware, "target_board", NUWAX_OTA_TARGET_BOARD);
-    cJSON_AddStringToObject(firmware, "target_chip", NUWAX_OTA_TARGET_CHIP);
-    cJSON_AddNumberToObject(firmware, "partition_schema", NUWAX_OTA_PARTITION_SCHEMA);
-    cJSON_AddStringToObject(firmware, "build_flavor", NUWAX_OTA_BUILD_FLAVOR);
-    cJSON_AddStringToObject(firmware, "running_partition",
-                            running ? running->label : "unknown");
-    cJSON_AddStringToObject(firmware, "ota_state",
-                            pending_verify ? "pending_verify" : "valid");
+    if (!cJSON_AddStringToObject(firmware, "project_name",
+                            app ? app->project_name : "NuwaxAIPartner")) goto done;
+    if (!cJSON_AddStringToObject(firmware, "version", app ? app->version : "unknown")) goto done;
+    if (!cJSON_AddNumberToObject(firmware, "release_sequence", (double)release_sequence)) goto done;
+    if (!cJSON_AddStringToObject(firmware, "target_board", NUWAX_OTA_TARGET_BOARD)) goto done;
+    if (!cJSON_AddStringToObject(firmware, "target_chip", NUWAX_OTA_TARGET_CHIP)) goto done;
+    if (!cJSON_AddNumberToObject(firmware, "partition_schema", NUWAX_OTA_PARTITION_SCHEMA)) goto done;
+    if (!cJSON_AddStringToObject(firmware, "build_flavor", NUWAX_OTA_BUILD_FLAVOR)) goto done;
+    if (!cJSON_AddStringToObject(firmware, "running_partition",
+                            running ? running->label : "unknown")) goto done;
+    if (!cJSON_AddStringToObject(firmware, "ota_state",
+                            pending_verify ? "pending_verify" : "valid")) goto done;
     if (identity_err == ESP_OK) {
-        cJSON_AddStringToObject(firmware, "image_sha256",
-                                running_identity.image_sha256);
+        if (!cJSON_AddStringToObject(firmware, "image_sha256",
+                                running_identity.image_sha256)) goto done;
     }
-    cJSON_AddItemToObject(root, "firmware", firmware);
+    if (!cJSON_AddItemToObject(root, "firmware", firmware)) goto done;
+    firmware = NULL; /* Ownership transferred to root. */
 #endif
 
 #if CONFIG_NUWAX_VOICE_UPLINK_CODEC_OPUS
-    cJSON_AddStringToObject(audio, "input_format", "opus");
-    cJSON_AddStringToObject(audio, "codec", "opus");
-    cJSON_AddBoolToObject(audio, "opus", true);
+    if (!cJSON_AddStringToObject(audio, "input_format", "opus")) goto done;
+    if (!cJSON_AddStringToObject(audio, "codec", "opus")) goto done;
+    if (!cJSON_AddBoolToObject(audio, "opus", true)) goto done;
 #else
-    cJSON_AddStringToObject(audio, "input_format", "pcm16");
-    cJSON_AddStringToObject(audio, "codec", "pcm16");
-    cJSON_AddBoolToObject(audio, "opus", false);
+    if (!cJSON_AddStringToObject(audio, "input_format", "pcm16")) goto done;
+    if (!cJSON_AddStringToObject(audio, "codec", "pcm16")) goto done;
+    if (!cJSON_AddBoolToObject(audio, "opus", false)) goto done;
 #endif
-    cJSON_AddStringToObject(audio, "output_format", "pcm16");
-    cJSON_AddNumberToObject(audio, "sample_rate", CONFIG_NUWAX_VOICE_SAMPLE_RATE);
-    cJSON_AddNumberToObject(audio, "output_sample_rate", CONFIG_NUWAX_VOICE_OUTPUT_SAMPLE_RATE);
-    cJSON_AddNumberToObject(audio, "channels", CONFIG_NUWAX_VOICE_CHANNELS);
+    if (!cJSON_AddStringToObject(audio, "output_format", "pcm16")) goto done;
+    if (!cJSON_AddNumberToObject(audio, "sample_rate", CONFIG_NUWAX_VOICE_SAMPLE_RATE)) goto done;
+    if (!cJSON_AddNumberToObject(audio, "output_sample_rate", CONFIG_NUWAX_VOICE_OUTPUT_SAMPLE_RATE)) goto done;
+    if (!cJSON_AddNumberToObject(audio, "channels", CONFIG_NUWAX_VOICE_CHANNELS)) goto done;
     /* Cloud media is mono even though the ES7210 hardware capture uses four
      * TDM slots. read_pcm16() selects the primary slot before framing. */
-    cJSON_AddNumberToObject(audio, "mic_channels", CONFIG_NUWAX_VOICE_CHANNELS);
-    cJSON_AddNumberToObject(audio, "frame_duration_ms", CONFIG_NUWAX_VOICE_FRAME_DURATION_MS);
+    if (!cJSON_AddNumberToObject(audio, "mic_channels", CONFIG_NUWAX_VOICE_CHANNELS)) goto done;
+    if (!cJSON_AddNumberToObject(audio, "frame_duration_ms", CONFIG_NUWAX_VOICE_FRAME_DURATION_MS)) goto done;
 #if CONFIG_NUWAX_SPEAKER_ENABLE
-    cJSON_AddBoolToObject(audio, "speaker", true);
+    if (!cJSON_AddBoolToObject(audio, "speaker", true)) goto done;
 #else
-    cJSON_AddBoolToObject(audio, "speaker", false);
+    if (!cJSON_AddBoolToObject(audio, "speaker", false)) goto done;
 #endif
-    cJSON_AddBoolToObject(audio, "wake_word", CONFIG_NUWAX_WAKE_WORD_ENABLE ? true : false);
-    cJSON_AddBoolToObject(audio, "vad", CONFIG_NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE ? true : false);
-    cJSON_AddBoolToObject(audio, "full_duplex", caps->full_duplex);
-    cJSON_AddBoolToObject(audio, "shared_i2s", caps->shared_i2s);
-    cJSON_AddStringToObject(audio, "hardware_profile", caps->hardware_profile ? caps->hardware_profile : "legacy");
+    if (!cJSON_AddBoolToObject(audio, "wake_word", CONFIG_NUWAX_WAKE_WORD_ENABLE ? true : false)) goto done;
+    if (!cJSON_AddBoolToObject(audio, "vad", CONFIG_NUWAX_VOICE_LOCAL_VAD_ENDPOINT_ENABLE ? true : false)) goto done;
+    if (!cJSON_AddBoolToObject(audio, "full_duplex", caps->full_duplex)) goto done;
+    if (!cJSON_AddBoolToObject(audio, "shared_i2s", caps->shared_i2s)) goto done;
+    if (!cJSON_AddStringToObject(audio, "hardware_profile", caps->hardware_profile ? caps->hardware_profile : "legacy")) goto done;
 
     /* A routed MIC3 is not advertised as usable until its runtime test passes. */
-    cJSON_AddBoolToObject(audio, "aec", live_aec_enabled);
-    cJSON_AddStringToObject(audio,
+    if (!cJSON_AddBoolToObject(audio, "aec", live_aec_enabled)) goto done;
+    if (!cJSON_AddStringToObject(audio,
                            "aec_reference",
-                           aec_reference_kind_str(hardware_ref_enabled, software_ref_enabled));
-    cJSON_AddBoolToObject(audio, "has_ref", runtime_ref_available);
-    cJSON_AddBoolToObject(audio, "software_ref", software_ref_enabled);
-    cJSON_AddBoolToObject(audio, "hardware_ref_candidate", hardware_ref_candidate);
-    cJSON_AddStringToObject(audio, "hardware_ref_health",
-                           hardware_ref_health_str(hardware_ref_health));
-    cJSON_AddBoolToObject(audio, "hardware_ref", hardware_ref_enabled);
-    cJSON_AddNumberToObject(audio, "ref_slot", hardware_ref_enabled ? caps->ref_slot : -1);
-    cJSON_AddStringToObject(audio, "afe_input_format",
-                           afe_input_format_str(runtime_afe_input_format));
+                           aec_reference_kind_str(hardware_ref_enabled, software_ref_enabled))) goto done;
+    if (!cJSON_AddBoolToObject(audio, "has_ref", runtime_ref_available)) goto done;
+    if (!cJSON_AddBoolToObject(audio, "software_ref", software_ref_enabled)) goto done;
+    if (!cJSON_AddBoolToObject(audio, "hardware_ref_candidate", hardware_ref_candidate)) goto done;
+    if (!cJSON_AddStringToObject(audio, "hardware_ref_health",
+                           hardware_ref_health_str(hardware_ref_health))) goto done;
+    if (!cJSON_AddBoolToObject(audio, "hardware_ref", hardware_ref_enabled)) goto done;
+    if (!cJSON_AddNumberToObject(audio, "ref_slot", hardware_ref_enabled ? caps->ref_slot : -1)) goto done;
+    if (!cJSON_AddStringToObject(audio, "afe_input_format",
+                           afe_input_format_str(runtime_afe_input_format))) goto done;
 
-    cJSON_AddItemToObject(root, "audio_params", audio);
+    if (!cJSON_AddItemToObject(root, "audio_params", audio)) goto done;
+    audio = NULL; /* Ownership transferred to root. */
 
-    esp_err_t err = send_sensitive_json_object(ws, root);
+    err = send_sensitive_json_object(ws, root);
+done:
+    cJSON_Delete(features);
+    cJSON_Delete(audio);
+    cJSON_Delete(firmware);
     cJSON *secret_item = cJSON_GetObjectItemCaseSensitive(root, "device_secret");
     if (cJSON_IsString(secret_item) && secret_item->valuestring) {
         secure_zero_memory(secret_item->valuestring,
@@ -991,18 +1027,13 @@ esp_err_t nuwax_session_send_ping_until_if_epoch(nuwax_ws_client_t *ws,
     if (!ws || deadline_us <= 0 || expected_epoch == 0U) {
         return ESP_ERR_INVALID_ARG;
     }
-    cJSON *root = cJSON_CreateObject();
-    if (!root) {
-        return ESP_ERR_NO_MEM;
-    }
-    cJSON_AddStringToObject(root, "type", "ping");
-    cJSON_AddNumberToObject(root, "now_ms", (double)now_ms);
-    esp_err_t err = send_json_object_until_if_epoch(ws,
-                                                    root,
-                                                    deadline_us,
-                                                    expected_epoch);
-    cJSON_Delete(root);
-    return err;
+    /* Same JSON fields and integer value; avoid heap/JSON work inside the
+     * short admission deadline. Maximum signed 64-bit time fits this buffer. */
+    char json[64];
+    const int length = snprintf(json, sizeof(json),
+        "{\"type\":\"ping\",\"now_ms\":%lld}", (long long)now_ms);
+    if (length < 0 || (size_t)length >= sizeof(json)) return ESP_ERR_INVALID_SIZE;
+    return nuwax_ws_send_keepalive_until_if_epoch(ws, json, deadline_us, expected_epoch);
 }
 
 esp_err_t nuwax_session_send_listen(nuwax_ws_client_t *ws, const char *state, const char *mode) {
@@ -1598,6 +1629,39 @@ esp_err_t nuwax_session_send_command_ack_until_if_epoch(
     return err;
 }
 
+esp_err_t nuwax_session_send_music_playback_status_until_if_epoch(
+    nuwax_ws_client_t *ws,
+    const char *request_id,
+    const char *state,
+    const char *reason,
+    int64_t deadline_us,
+    uint32_t expected_epoch) {
+    if (!ws || !request_id || request_id[0] == '\0' || !state ||
+        state[0] == '\0' || deadline_us <= 0 || expected_epoch == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (strcmp(state, "playing") != 0 &&
+        strcmp(state, "completed") != 0 &&
+        strcmp(state, "failed") != 0 &&
+        strcmp(state, "cancelled") != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddStringToObject(root, "type", "music_playback_status");
+    cJSON_AddStringToObject(root, "request_id", request_id);
+    cJSON_AddStringToObject(root, "state", state);
+    if (reason && reason[0] != '\0') {
+        cJSON_AddStringToObject(root, "reason", reason);
+    }
+    const esp_err_t err = send_json_object_until_if_epoch(
+        ws, root, deadline_us, expected_epoch);
+    cJSON_Delete(root);
+    return err;
+}
+
 esp_err_t nuwax_session_send_notify_playback_ack_until_if_epoch(
     nuwax_ws_client_t *ws,
     const char *ack_type,
@@ -1666,7 +1730,7 @@ void nuwax_session_handle_text(const char *payload, int len, nuwax_session_comma
     }
     ESP_LOGD(TAG, "RX text frame len=%d", len);
 
-    cJSON *root = cJSON_ParseWithLength(payload, len);
+    cJSON *root = nuwax_json_parse_with_length(payload, len);
     if (!root) {
         ESP_LOGW(TAG, "Received non-JSON text frame len=%d", len);
         return;
@@ -1706,6 +1770,9 @@ void nuwax_session_handle_text(const char *payload, int len, nuwax_session_comma
 
     if (out_command && cJSON_IsString(type) && strcmp(type->valuestring, "pong") == 0) {
         out_command->has_pong = true;
+        const cJSON *server = cJSON_GetObjectItemCaseSensitive(root, "server_ms");
+        if (cJSON_IsNumber(server))
+            (void)nuwax_cloud_time_number(server->valuedouble, &out_command->pong_server_ms);
     }
 
     if (out_command &&
@@ -1740,6 +1807,8 @@ void nuwax_session_handle_text(const char *payload, int len, nuwax_session_comma
         cJSON *title = cJSON_GetObjectItem(root, "title");
         cJSON *lines = cJSON_GetObjectItem(root, "lines");
         cJSON *text = cJSON_GetObjectItem(root, "text");
+        cJSON *url = cJSON_GetObjectItem(root, "url");
+        cJSON *format = cJSON_GetObjectItem(root, "format");
         cJSON *volume_db = cJSON_GetObjectItem(root, "volume_db");
         if (!volume_db) {
             volume_db = cJSON_GetObjectItem(root, "volumeDb");
@@ -1803,6 +1872,12 @@ void nuwax_session_handle_text(const char *payload, int len, nuwax_session_comma
         utf8_copy_trunc(out_command->playback_id,
                         sizeof(out_command->playback_id),
                         cJSON_IsString(playback_id) ? playback_id->valuestring : "");
+        utf8_copy_trunc(out_command->url,
+                        sizeof(out_command->url),
+                        cJSON_IsString(url) ? url->valuestring : "");
+        utf8_copy_trunc(out_command->format,
+                        sizeof(out_command->format),
+                        cJSON_IsString(format) ? format->valuestring : "");
         utf8_copy_trunc(out_command->barge_event_id,
                         sizeof(out_command->barge_event_id),
                         cJSON_IsString(barge_event_id) ? barge_event_id->valuestring : "");

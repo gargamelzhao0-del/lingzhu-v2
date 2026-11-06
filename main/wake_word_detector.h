@@ -76,6 +76,8 @@ typedef void (*nuwax_wake_word_callback_t)(
 
 esp_err_t nuwax_wake_word_detector_init(nuwax_wake_word_callback_t callback, void *user_ctx);
 esp_err_t nuwax_wake_word_detector_start(void);
+/* NOT_FINISHED means a Flash guard or worker teardown temporarily owns the
+ * detector. Retry later; do not rebuild the model for this result. */
 esp_err_t nuwax_wake_word_detector_start_with_context(
     const nuwax_wake_arm_context_t *context);
 /* Non-blocking. The worker releases the microphone before publishing exit. */
@@ -85,12 +87,30 @@ void nuwax_wake_word_detector_stop(void);
 /* Bounded variant for resource-owner transitions. A timeout means another
  * microphone owner must not start on the current runtime. */
 esp_err_t nuwax_wake_word_detector_stop_with_timeout(uint32_t timeout_ms);
+/* Serialize a bounded Flash/NVS transaction with the detector. The guard
+ * prevents the supervisor from re-arming the worker while the Flash cache is
+ * unavailable. Call end_flash_operation() from the same task on every
+ * successful begin that acquired the guard; a pre-initialization no-op begin
+ * does not own a guard. */
+esp_err_t nuwax_wake_word_detector_begin_flash_operation(uint32_t timeout_ms);
+void nuwax_wake_word_detector_end_flash_operation(void);
+/* Planned Flash pause; the supervisor must not classify it as a failure. */
+bool nuwax_wake_word_detector_flash_paused(void);
 /* False means the owner has deleted the task and its static storage is reusable. */
 bool nuwax_wake_word_detector_is_running(void);
 /* True only after the worker has acquired the shared microphone and is ready
  * to consume PCM.  A created FreeRTOS task is not sufficient because the
  * conversation capture path owns the same I2S resource. */
 bool nuwax_wake_word_detector_is_ready(void);
+/* Returns the monotonic timestamp of the most recently completed PCM frame.
+ * A zero value means the worker has not produced its first complete frame in
+ * the current arm. */
+uint32_t nuwax_wake_word_detector_last_feed_ms(void);
+/* Lock-free queued PCM age estimate, published by the capture owner. Zero
+ * when stopped; replay uses it without borrowing a task/context pointer. */
+uint32_t nuwax_wake_word_capture_backlog_ms(void);
+/* Wait hint only; callers must recheck backlog, cancellation and epoch. */
+void nuwax_wake_word_wait_capture_headroom(uint32_t timeout_ms);
 void nuwax_wake_word_detector_deinit(void);
 /* Update the MultiNet command safely. persist=true stores the command in NVS
  * and makes it the command used after reboot. The old command is restored if

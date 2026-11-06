@@ -1,0 +1,11 @@
+# Append after sdkconfig.sd-replay-test.defaults in an isolated build/profile.
+# UART supports task stacks in PSRAM. Reserve an internal dump stack: the
+# 1536-byte ISR stack / faulting PSRAM stack must not also host SHA256 dumping.
+CONFIG_ESP_COREDUMP_ENABLE_TO_UART=y
+# CONFIG_ESP_COREDUMP_LOGS is not set
+CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=8
+CONFIG_ESP_COREDUMP_STACK_SIZE=2048
+# SDK minimum with coredump enabled, on each of the two cores.
+CONFIG_FREERTOS_ISR_STACKSIZE=2096
+# CONFIG_ESP_COREDUMP_CAPTURE_DRAM is not set
+CONFIG_NUWAX_WAKE_WORD_HEAP_CHECKS=y

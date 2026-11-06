@@ -53,6 +53,12 @@ bool nuwax_emotion_display_policy_apply_cloud_leased(
     bool finite_lease,
     uint32_t now_ms,
     uint32_t *out_generation);
+bool nuwax_emotion_display_policy_refresh_matching_lease(
+    nuwax_emotion_display_policy_t *policy,
+    nuwax_emotion_t emotion,
+    uint32_t duration_ms,
+    uint32_t now_ms,
+    uint32_t *out_generation);
 bool nuwax_emotion_display_policy_start_waiting_question(
     nuwax_emotion_display_policy_t *policy);
 bool nuwax_emotion_display_policy_clear_waiting_question(

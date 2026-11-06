@@ -1,0 +1,66 @@
+2026-10-09 音频与交互上架审查（当前源码，非实机测试）
+
+结论：此子范围 NO-GO。首要阻断是 P1 问候超时后丢失正常语音恢复路径。
+只新增本目录审计工件，未修改生产代码。根目录执行：
+python tmp/product-launch-review-20261009/audio-ux/reproduce.py
+
+P1：唤醒问候超时后不再收音，也不自动重启唤醒检测。
+触发：设备处于 SLEEPING，唤醒词被接受，问候 text_request 发送成功；
+WebSocket/传输心跳保持正常，但业务问候响应丢失（或返回 tts_pending 后没有TTS）。
+代码链：main/nuwax_ai_partner_main.c:19134 建立 active/paused awake session；
+19138 停止唤醒检测，19141注释/18956确认首PCM之前保持原逻辑状态。
+18933设置15秒 WAIT_TEXT；30150收到文本且待TTS时改为30秒 WAIT_TTS。
+11880清除turn guard后，11882调用recover_normal_conversation_after_playback_abort；
+9112看到SLEEPING直接返回，没有开始prelisten、没有清除awake session。
+11894仅更新dialog；4665包装函数与main/app_shell.c:1601的实现均不改变逻辑state。
+9539的paused恢复分支仅在IDLE启动收音；5494–5497因为awake.active拒绝重启唤醒检测。
+main/conversation/awake_session_state.c:91的过期判断要求waiting，paused不会自然到期。
+main/nuwax_ai_partner_main.c:12409–12431业务响应超时只告警，正常传输心跳不会强制重连。
+结果：设备仍能处理其他外部事件，但正常说话/再叫唤醒词不能解除这个组合状态。
+不能称为“永久变砖”；摇晃交互、模式/网络变化、远程操作或重启可能解除。
+
+独立复现：wake_timeout_recovery.c由当前实际超时、恢复、idle监督、wake监督五个函数抽取；
+链接实际awake_session_state.c、turn_guard.c、playback_terminal_guard.c；模拟硬件/传输无输出。
+15秒 WAIT_TEXT 与30秒 WAIT_TTS两条用例，模拟100分钟idle后均无收音、无wake重启、无主动关连接。
+对照用例：相同超时从IDLE起始会正确进入LISTENING并启动收音。
+“100分钟”是推进单调时钟的主机状态测试，不是ESP32硬件长稳或实机等待。
+收音/扬声器硬件被stub；无输出场景下真实request_fade_cancel在speaker_playback.c:3370–3375
+无pending直接返回，不存在后来PLAYBACK_DONE把状态救回的必要前提。
+
+P2：问候播放期间屏幕长按不能执行已启用的取消。
+main/Kconfig.projbuild:2143–2150声明screen/head touch中止active turn（thinking/speaking）。
+main/nuwax_ai_partner_main.c:10950–10953问候FIRST_PCM把逻辑状态设为LISTENING。
+main/app_shell.c:1656–1671只在THINKING/SPEAKING返回CANCEL；LISTENING且touch-wake关闭返回NONE。
+main/app_shell.c:1693–1697是真实触摸入口；conversation/touch_gesture.c:557–570在180ms触摸后调用。
+抽取原app_shell_hold_action函数的GCC测试证明SPEAKING返回CANCEL而LISTENING返回NONE。
+保留问候focused表情及播完再收音的产品要求；问题是取消路由依赖表情/逻辑状态，没有按真实播放owner判断。
+
+已实现的功能与边界：
+- 本地自定义唤醒、唤醒问候、播放后连续收音、本地VAD终点、60秒无人发言休眠。
+- 普通屏幕长按取消、头摸/摇晃云端互动；头摸与摇晃有仲裁、共享门禁、冷却和旧owner隔离。
+- 播放/连接/音频owner采用epoch与generation隔离，多个超时和本地恢复路径可见。
+- 首PCM前/后、物理播放完成、旧回包和表情owner有显式分离；不能只因普通host tests通过断言时序实机可靠。
+- 正式生成的sdkconfig.h：BARGE_IN、WAKE_WORD_INTERRUPT、LIVE_AEC关闭；TOUCH_INTERRUPT开启，TOUCH_WAKE关闭。
+  因而当前交付是半双工；不把未承诺的全双工能力当作独立阻断。
+
+实机证据缺口（不是已证实缺陷）：
+release-7.0.113/release-manifest.json和wake-evidence-verification.json均hardwareValidated=false。
+score阈值0.10、chatterShadowOnly=true；未看到该发布包绑定的误唤醒率、远场/轻声成功率、
+唤醒到首PCM/可收音分布、触摸/摇晃误触发率、多轮及跨模式音频压力设备验收证据。
+不能从模型阈值或synthetic host政策测试推导真实声学表现合格。
+
+建议验收：
+1. 注入问候成功发送后业务无回复、text但无TTS、metadata但无PCM、首PCM后断流、END丢失，
+   保持WebSocket心跳正常。每种都在其既定deadline后进入一个明确可交互状态，
+   重新收音或恢复唤醒；不得遗留active/paused awake + SLEEPING + 无MIC/无wake。
+2. 问候、普通回答、通知播放各阶段屏幕长按均可按产品定义取消；先处理物理stop再恢复收音，
+   迟到PCM/END不污染下一回合；focused表情选择不得改变取消动作。
+3. 在最终7.0.113修复版真实PCB/麦克风/扬声器/屏幕、正式云端配置下，
+   覆盖安静/多人讨论/电视、轻声/正常声、近/远距离以及音量档位，给出唤醒率/误触发/时延门槛与数据。
+4. 真实设备至少24小时交互压力，含1000轮唤醒-收音-播放-取消、头摸/摇晃、开关菜单、
+   模式切换和网络恢复；无重启、无音频owner卡住、无须用户重启才能重新交互的事件。
+
+关联性：当前main源码SHA256=0087ce87987ffcc75b0cfbf7d1e4b28767c0bb166873c06f9a0fb9597651162a，
+与7.0.113 wake-evidence-verification.json一致。
+当前OTA SHA256=69233b6aad50e7688525b1b43b6b3ee2cd10715eb7e206f88759e70ccf88ecae，与manifest一致。
+source-evidence.json保存实际源文件和函数片段hash、生成配置hash、正式开关。

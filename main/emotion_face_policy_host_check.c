@@ -3,6 +3,16 @@
 
 #include "nuwax_ui_v28/nuwax_face.h"
 #include "nuwax_ui_v28/face/emotion_animation_player.h"
+#include "nuwax_ui_v28/face/conversation_visual.h"
+
+/* Rendering is exercised by the native LVGL fixture, not these policy stubs. */
+esp_err_t nuwax_conversation_visual_create(lv_obj_t *p) { (void)p; return ESP_OK; }
+void nuwax_conversation_visual_delete(void) {}
+void nuwax_conversation_visual_request(nuwax_conversation_visual_t mode) { (void)mode; }
+void nuwax_conversation_visual_tick(void) {}
+void nuwax_conversation_visual_freeze(bool frozen) { (void)frozen; }
+const uint16_t *nuwax_conversation_visual_frozen_rgb565(const uint16_t *p,size_t s) { (void)p; (void)s; return NULL; }
+bool nuwax_conversation_visual_draw_frozen(void *l,const uint16_t *p,size_t s) { (void)l; (void)p; (void)s; return false; }
 
 static esp_err_t s_player_init_result = ESP_OK;
 static esp_err_t s_player_set_result = ESP_OK;
@@ -11,6 +21,7 @@ static esp_err_t s_player_deinit_result = ESP_OK;
 static esp_err_t s_player_reap_result = ESP_OK;
 static nuwax_emotion_asset_id_t s_asset;
 static unsigned s_touch_count;
+static unsigned s_player_immediate_count;
 static unsigned s_player_deinit_count;
 static unsigned s_player_tick_count;
 static unsigned s_player_reap_count;
@@ -39,11 +50,18 @@ static void expect_true(const char *name, bool value)
 
 esp_err_t nuwax_emotion_animation_player_init(lv_obj_t *parent)
 {
+    return nuwax_emotion_animation_player_init_with_initial_asset(
+        parent, NUWAX_EMOTION_ASSET_HAPPY);
+}
+
+esp_err_t nuwax_emotion_animation_player_init_with_initial_asset(
+    lv_obj_t *parent, nuwax_emotion_asset_id_t initial_asset)
+{
     if (!parent) {
         return ESP_ERR_INVALID_ARG;
     }
     if (s_player_init_result == ESP_OK) {
-        s_asset = NUWAX_EMOTION_ASSET_HAPPY;
+        s_asset = initial_asset;
     }
     return s_player_init_result;
 }
@@ -68,6 +86,22 @@ esp_err_t nuwax_emotion_animation_player_set_asset(
     }
     return s_player_set_result;
 }
+
+esp_err_t nuwax_emotion_animation_player_set_asset_immediate(
+    nuwax_emotion_asset_id_t asset_id)
+{
+    s_player_immediate_count++;
+    if (s_player_set_result == ESP_OK) {
+        s_asset = asset_id;
+    }
+    return s_player_set_result;
+}
+
+esp_err_t nuwax_emotion_animation_player_recover(void)
+{
+    return s_player_set_result;
+}
+void nuwax_emotion_animation_player_service_decode(void) {}
 
 esp_err_t nuwax_emotion_animation_player_trigger_touch(void)
 {
@@ -129,14 +163,53 @@ int main(void)
 
     nuwax_device_state_t state = {
         .emotion = NUWAX_EMOTION_HAPPY,
-        .wifi = NUWAX_WIFI_CONNECTED,
-        .cloud = NUWAX_CLOUD_CONNECTED,
-        .dialog = NUWAX_DIALOG_READY,
+        .wifi = NUWAX_WIFI_CONNECTING,
+        .cloud = NUWAX_CLOUD_DISCONNECTED,
+        .dialog = NUWAX_DIALOG_RECOGNIZING,
         .meeting = NUWAX_MEETING_UI_DISABLED,
         .monitoring = NUWAX_MONITORING_UI_DISABLED,
     };
     nuwax_face_update(&state);
+    expect_asset("boot connectivity commits without transition",
+                 NUWAX_EMOTION_ASSET_DISCONNECTED);
+    expect_true("boot connectivity uses direct asset handoff",
+                s_player_immediate_count == 1U);
+
+    state.wifi = NUWAX_WIFI_CONNECTED;
+    state.cloud = NUWAX_CLOUD_CONNECTED;
+    state.dialog = NUWAX_DIALOG_READY;
+    nuwax_face_update(&state);
     expect_asset("ready happy", NUWAX_EMOTION_ASSET_HAPPY);
+
+    /* Actual mode exit releases the face even while file upload continues in
+     * the background. Pending capture/seal retains the mode until DISABLED. */
+    for (unsigned monitoring = 0; monitoring < 2; ++monitoring) {
+        nuwax_device_state_t exit_state = state;
+        const nuwax_emotion_asset_id_t mode_asset = monitoring
+            ? NUWAX_EMOTION_ASSET_MONITORING : NUWAX_EMOTION_ASSET_MEETING;
+        if (monitoring) exit_state.monitoring = NUWAX_MONITORING_UI_ACTIVE;
+        else exit_state.meeting = NUWAX_MEETING_UI_ACTIVE;
+        nuwax_face_update(&exit_state);
+        expect_asset("recording owns mode face", mode_asset);
+        if (monitoring) exit_state.monitoring = NUWAX_MONITORING_UI_STOPPING;
+        else exit_state.meeting = NUWAX_MEETING_UI_STOPPING;
+        nuwax_face_update(&exit_state);
+        expect_asset("stopping retains mode face", mode_asset);
+        exit_state.monitoring = NUWAX_MONITORING_UI_DISABLED;
+        exit_state.meeting = NUWAX_MEETING_UI_DISABLED;
+        exit_state.dialog = NUWAX_DIALOG_SLEEP;
+        exit_state.app_low_power = true;
+        nuwax_face_update(&exit_state);
+        expect_asset("mode exit restores wake-ready sleeping face", NUWAX_EMOTION_ASSET_SLEEPING);
+        exit_state.app_low_power = false;
+        exit_state.dialog = NUWAX_DIALOG_LISTENING;
+        nuwax_face_update(&exit_state);
+        expect_asset("conversation after mode exit can listen", NUWAX_EMOTION_ASSET_LISTENING);
+        exit_state.dialog = NUWAX_DIALOG_SPEAKING;
+        nuwax_face_update(&exit_state);
+        expect_asset("conversation after mode exit can speak", NUWAX_EMOTION_ASSET_HAPPY);
+    }
+    nuwax_face_update(&state);
 
     state.provisioning_active = true;
     state.monitoring = NUWAX_MONITORING_UI_ACTIVE;
@@ -158,6 +231,44 @@ int main(void)
     state.app_low_power = true;
     nuwax_face_update(&state);
     expect_asset("sleep default", NUWAX_EMOTION_ASSET_SLEEPING);
+
+    state.wifi = NUWAX_WIFI_DISCONNECTED;
+    nuwax_face_update(&state);
+    expect_asset("hotspot loss overrides preserved sleep", NUWAX_EMOTION_ASSET_DISCONNECTED);
+    state.wifi = NUWAX_WIFI_CONNECTING;
+    nuwax_face_update(&state);
+    expect_asset("recovery keeps disconnected visual", NUWAX_EMOTION_ASSET_DISCONNECTED);
+    state.meeting = NUWAX_MEETING_UI_ACTIVE;
+    nuwax_face_update(&state);
+    expect_asset("offline meeting keeps mode", NUWAX_EMOTION_ASSET_MEETING);
+    state.meeting = NUWAX_MEETING_UI_DISABLED;
+    state.monitoring = NUWAX_MONITORING_UI_ACTIVE;
+    nuwax_face_update(&state);
+    expect_asset("offline monitoring keeps mode", NUWAX_EMOTION_ASSET_MONITORING);
+    state.monitoring = NUWAX_MONITORING_UI_DISABLED;
+    state.provisioning_starting = true;
+    nuwax_face_update(&state);
+    expect_asset("reprovision preparation has visual feedback", NUWAX_EMOTION_ASSET_PROVISIONING);
+    state.provisioning_starting = false;
+    state.wifi = NUWAX_WIFI_CONNECTED;
+    state.cloud = NUWAX_CLOUD_AUTHFAIL;
+    nuwax_face_update(&state);
+    expect_asset("invalid credentials override sleep", NUWAX_EMOTION_ASSET_DISCONNECTED);
+    state.cloud = NUWAX_CLOUD_CONNECTED;
+    nuwax_face_update(&state);
+    expect_asset("reconnection restores preserved sleep", NUWAX_EMOTION_ASSET_SLEEPING);
+    expect_true("network display does not change sleep lifecycle", state.app_low_power && state.dialog == NUWAX_DIALOG_SLEEP);
+
+    state.touch_emotion_active = true;
+    state.emotion = NUWAX_EMOTION_TOUCH;
+    state.touch_sequence++;
+    nuwax_face_update(&state);
+    expect_asset("qualified touch is visible in sleep", NUWAX_EMOTION_ASSET_TOUCH);
+    expect_true("sleep touch does not wake conversation",
+                state.app_low_power && state.dialog == NUWAX_DIALOG_SLEEP);
+    state.touch_emotion_active = false;
+    nuwax_face_update(&state);
+    expect_asset("sleep touch expiry restores sleeping", NUWAX_EMOTION_ASSET_SLEEPING);
 
     state.semantic_emotion_active = true;
     state.emotion = NUWAX_EMOTION_ANGRY;
@@ -369,11 +480,9 @@ int main(void)
     expect_true("animated backend restarts for decode test",
                 nuwax_face_create(&parent) == ESP_OK);
     nuwax_face_tick();
-    expect_true("decode failure cleans animated backend",
-                s_player_deinit_count == 2U);
-    expect_true("decode failure enters non-animated failsafe",
-                !nuwax_face_next_expression());
-    expect_true("decode-failure failsafe deinitializes",
+    expect_true("decode failure keeps animated backend recoverable",
+                s_player_deinit_count == 1U && nuwax_face_next_expression());
+    expect_true("decode-failure recovery remains active",
                 nuwax_face_deinit() == ESP_OK);
 
     s_player_init_result = ESP_FAIL;
@@ -408,6 +517,28 @@ int main(void)
     expect_true("animated backend can restart after delayed cleanup",
                 nuwax_face_create(&parent) == ESP_OK);
     expect_true("post-cleanup animated backend deinitializes",
+                nuwax_face_deinit() == ESP_OK);
+
+    expect_true("provisioning boot face starts from the real asset",
+                nuwax_face_create_with_initial_asset(
+                    &parent, NUWAX_EMOTION_ASSET_PROVISIONING) == ESP_OK);
+    expect_asset("provisioning boot initial asset",
+                 NUWAX_EMOTION_ASSET_PROVISIONING);
+    state = (nuwax_device_state_t){
+        .wifi = NUWAX_WIFI_CONNECTING,
+        .cloud = NUWAX_CLOUD_DISCONNECTED,
+        .dialog = NUWAX_DIALOG_RECOGNIZING,
+        .meeting = NUWAX_MEETING_UI_DISABLED,
+        .monitoring = NUWAX_MONITORING_UI_DISABLED,
+    };
+    nuwax_face_update(&state);
+    expect_asset("provisioning boot visual masks connectivity transition",
+                 NUWAX_EMOTION_ASSET_PROVISIONING);
+    nuwax_face_clear_provisioning_boot_visual();
+    nuwax_face_update(&state);
+    expect_asset("provisioning boot visual clears to connectivity state",
+                 NUWAX_EMOTION_ASSET_DISCONNECTED);
+    expect_true("provisioning boot face deinitializes",
                 nuwax_face_deinit() == ESP_OK);
 
     printf("emotion face policy host check: %s (%d failures)\n",

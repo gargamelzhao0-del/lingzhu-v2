@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "audio_frame.h"
+#include "device_error_report.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -21,8 +22,11 @@
 #include "speaker_jitter_policy.h"
 #include "speaker_output.h"
 #include "speaker_stream_policy.h"
+#include "wake_word_detector.h"
+#include "volume_save_pending.h"
 
 static const char *TAG = "NuwaxPartner6";
+static nuwax_volume_save_pending_t s_volume_save;
 
 #ifndef CONFIG_NUWAX_SPEAKER_DEFAULT_VOLUME_PERCENT
 #define CONFIG_NUWAX_SPEAKER_DEFAULT_VOLUME_PERCENT 80
@@ -43,7 +47,7 @@ static const char *TAG = "NuwaxPartner6";
 #define NUWAX_SPEAKER_BACKPRESSURE_POLL_MS \
     ((uint32_t)CONFIG_NUWAX_SPEAKER_BACKPRESSURE_POLL_MS)
 #define NUWAX_SPEAKER_BACKPRESSURE_LOG_MS 1000U
-#define NUWAX_SPEAKER_RX_ADMISSION_BUDGET_MS 20U
+#define NUWAX_SPEAKER_RX_ADMISSION_BUDGET_MS 40U
 #ifndef CONFIG_NUWAX_SPEAKER_START_GATE_TIMEOUT_MS
 #define CONFIG_NUWAX_SPEAKER_START_GATE_TIMEOUT_MS 2000U
 #endif
@@ -52,8 +56,8 @@ static const char *TAG = "NuwaxPartner6";
 #define NUWAX_SPEAKER_JITTER_STARTUP_MIN_MS 480U
 #define NUWAX_SPEAKER_JITTER_STARTUP_BASE_MS 800U
 #define NUWAX_SPEAKER_JITTER_STARTUP_MAX_MS 1600U
-#define NUWAX_SPEAKER_JITTER_RESUME_MIN_MS 800U
-#define NUWAX_SPEAKER_JITTER_RESUME_MAX_MS 1200U
+#define NUWAX_SPEAKER_JITTER_RESUME_MIN_MS 640U
+#define NUWAX_SPEAKER_JITTER_RESUME_MAX_MS 960U
 #define NUWAX_SPEAKER_JITTER_RESUME_GAP_CUSHION_MS 240U
 #define NUWAX_SPEAKER_JITTER_LEARNING_IDLE_RESET_MS 120000U
 /* The shared TX DMA ring carries about 90 ms. Let it bridge short scheduler
@@ -68,18 +72,33 @@ static const char *TAG = "NuwaxPartner6";
 #ifndef CONFIG_NUWAX_SPEAKER_STREAM_STALL_TIMEOUT_MS
 #define CONFIG_NUWAX_SPEAKER_STREAM_STALL_TIMEOUT_MS 60000U
 #endif
+#ifndef CONFIG_NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS
+#define CONFIG_NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS 15000U
+#endif
 #define NUWAX_SPEAKER_STREAM_STALL_WARN_MS \
     ((uint32_t)CONFIG_NUWAX_SPEAKER_STREAM_STALL_WARN_MS)
 #define NUWAX_SPEAKER_STREAM_STALL_TIMEOUT_MS \
     ((uint32_t)CONFIG_NUWAX_SPEAKER_STREAM_STALL_TIMEOUT_MS)
+#define NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS \
+    ((uint32_t)CONFIG_NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS)
+#define NUWAX_SPEAKER_REBUFFER_STALL_WARN_MS 5000U
 _Static_assert(NUWAX_SPEAKER_STREAM_STALL_WARN_MS <
                    NUWAX_SPEAKER_STREAM_STALL_TIMEOUT_MS,
                "speaker stall warning must precede hard timeout");
+_Static_assert(NUWAX_SPEAKER_REBUFFER_STALL_WARN_MS <
+                   NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS,
+               "speaker rebuffer warning must precede hard timeout");
 #define NUWAX_SPEAKER_BACKPRESSURE_TIMEOUT_MS \
     NUWAX_SPEAKER_RX_ADMISSION_BUDGET_MS
+#if NUWAX_SPEAKER_URL_STREAM_ENABLED
+#define NUWAX_SPEAKER_URL_TEST_CONNECTION_EPOCH UINT32_MAX
+#define NUWAX_SPEAKER_URL_TEST_MAX_BACKPRESSURE_MS 2000U
+#endif
 
-_Static_assert(NUWAX_SPEAKER_BACKPRESSURE_TIMEOUT_MS <= 40U,
+_Static_assert(NUWAX_SPEAKER_BACKPRESSURE_TIMEOUT_MS <= 80U,
                "speaker admission must not stall WebSocket RX");
+_Static_assert(NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS >= 2000U,
+               "speaker rebuffer timeout must allow transient cloud jitter");
 #define NUWAX_SPEAKER_PROGRESS_CALLBACK_INTERVAL_MS 500U
 #define NUWAX_SPEAKER_INGRESS_CALLBACK_INTERVAL_MS 250U
 #define NUWAX_SPEAKER_TASK_STACK_WARN_BYTES 2048U
@@ -260,6 +279,32 @@ static speaker_ctx_t s_speaker_ctx = {
 };
 static speaker_playback_packet_t *s_speaker_task_packet;
 static speaker_playback_packet_t *s_speaker_task_rebuffer_ref;
+/* A preview is published without waiting for the speaker/I2S owner. Keep its
+ * order even after PCM has consumed it: a delayed local commit must not undo
+ * a newer gesture, and an old gesture must not undo a newer cloud command. */
+static portMUX_TYPE s_volume_order_mux = portMUX_INITIALIZER_UNLOCKED;
+static struct {
+    uint32_t sequence;
+    uint32_t committed_sequence;
+    uint32_t confirmed_sequence;
+    uint32_t preview_sequence;
+    uint8_t confirmed_volume;
+    uint8_t pending_volume;
+    bool preview_active;
+    bool pending;
+} s_volume_order = {
+    .confirmed_volume = CONFIG_NUWAX_SPEAKER_DEFAULT_VOLUME_PERCENT,
+};
+
+static bool volume_sequence_after(uint32_t value, uint32_t previous) {
+    return value != 0U && (previous == 0U || (int32_t)(value - previous) > 0);
+}
+
+/* Caller owns s_volume_order_mux; zero is reserved for legacy callers. */
+static uint32_t volume_next_sequence_locked(void) {
+    if (++s_volume_order.sequence == 0U) ++s_volume_order.sequence;
+    return s_volume_order.sequence;
+}
 
 static void speaker_release_task_buffers(void) {
     if (s_speaker_task_packet) {
@@ -284,6 +329,15 @@ static uint32_t monotonic_ms(void) {
 
 static bool elapsed_ms(uint32_t now_ms, uint32_t deadline_ms) {
     return (int32_t)(now_ms - deadline_ms) >= 0;
+}
+
+static bool speaker_source_is_url_test(uint32_t connection_epoch) {
+#if NUWAX_SPEAKER_URL_STREAM_ENABLED
+    return connection_epoch == NUWAX_SPEAKER_URL_TEST_CONNECTION_EPOCH;
+#else
+    (void)connection_epoch;
+    return false;
+#endif
 }
 
 static void speaker_lock(void) {
@@ -585,7 +639,7 @@ static const char *speaker_stream_result_name(
 
 static bool speaker_should_publish_speaking_locked(uint32_t connection_epoch,
                                                    uint32_t generation) {
-    if (generation == 0U ||
+    if (speaker_source_is_url_test(connection_epoch) || generation == 0U ||
         !speaker_generation_source_matches_locked(connection_epoch,
                                                   generation) ||
         !nuwax_speaker_generation_is_current(
@@ -648,7 +702,8 @@ static void speaker_clear_stop_failure_locked(uint32_t connection_epoch,
 static void speaker_notify_playback_fault(uint32_t connection_epoch,
                                           uint32_t generation,
                                           esp_err_t result) {
-    if (generation == 0U || result == ESP_OK ||
+    if (speaker_source_is_url_test(connection_epoch) ||
+        generation == 0U || result == ESP_OK ||
         !s_speaker_ctx.callbacks.on_playback_fault) {
         return;
     }
@@ -657,53 +712,68 @@ static void speaker_notify_playback_fault(uint32_t connection_epoch,
                                               result);
 }
 
+typedef struct {
+    bool notify;
+    uint32_t expected_sequence;
+    uint32_t received_frames;
+    uint64_t received_bytes;
+} speaker_fault_notice_t;
+
+/* Claim under the same mutex as readiness/ingress. Publish only after unlock:
+ * callbacks must never run while the speaker state is locked. */
+static speaker_fault_notice_t speaker_claim_protocol_fault_locked(
+    uint32_t connection_epoch, uint32_t generation, bool stream_stall) {
+    speaker_fault_notice_t notice = {0};
+    if (speaker_generation_source_matches_locked(connection_epoch, generation) &&
+        s_speaker_ctx.stream.active &&
+        s_speaker_ctx.stream.generation == generation) {
+        s_speaker_ctx.stream_protocol_faulted = true;
+        s_speaker_ctx.protocol_fault_pending_generation = generation;
+        s_speaker_ctx.protocol_fault_pending_connection_epoch = connection_epoch;
+        notice.expected_sequence = s_speaker_ctx.stream.next_sequence;
+        notice.received_frames = s_speaker_ctx.stream.pcm_frames;
+        notice.received_bytes = s_speaker_ctx.stream.pcm_bytes;
+        if (s_speaker_ctx.protocol_fault_notified_generation != generation ||
+            s_speaker_ctx.protocol_fault_notified_connection_epoch != connection_epoch) {
+            s_speaker_ctx.protocol_fault_notified_generation = generation;
+            s_speaker_ctx.protocol_fault_notified_connection_epoch = connection_epoch;
+            s_speaker_ctx.stream_protocol_faults++;
+            if (stream_stall) {
+                s_speaker_ctx.stream_stall_faults++;
+            }
+            notice.notify = true;
+        }
+    }
+    return notice;
+}
+
+static void speaker_publish_protocol_fault(uint32_t connection_epoch,
+                                           uint32_t generation,
+                                           esp_err_t result,
+                                           const char *reason,
+                                           speaker_fault_notice_t notice) {
+    if (!notice.notify) {
+        return;
+    }
+    ESP_LOGE(TAG,
+             "speaker downlink stream fault generation=%lu result=%s reason=%s expected_seq=%lu received_frames=%lu received_bytes=%llu",
+             (unsigned long)generation, esp_err_to_name(result),
+             reason ? reason : "-", (unsigned long)notice.expected_sequence,
+             (unsigned long)notice.received_frames,
+             (unsigned long long)notice.received_bytes);
+    speaker_notify_playback_fault(connection_epoch, generation, result);
+}
+
 static void speaker_schedule_protocol_fault(uint32_t connection_epoch,
                                             uint32_t generation,
                                             esp_err_t result,
                                             const char *reason,
                                             bool stream_stall) {
-    bool notify = false;
-    uint32_t expected_sequence = 0U;
-    uint32_t received_frames = 0U;
-    uint64_t received_bytes = 0U;
     speaker_lock();
-    if (speaker_generation_source_matches_locked(connection_epoch,
-                                                 generation) &&
-        s_speaker_ctx.stream.active &&
-        s_speaker_ctx.stream.generation == generation) {
-        s_speaker_ctx.stream_protocol_faulted = true;
-        s_speaker_ctx.protocol_fault_pending_generation = generation;
-        s_speaker_ctx.protocol_fault_pending_connection_epoch =
-            connection_epoch;
-        expected_sequence = s_speaker_ctx.stream.next_sequence;
-        received_frames = s_speaker_ctx.stream.pcm_frames;
-        received_bytes = s_speaker_ctx.stream.pcm_bytes;
-        if (s_speaker_ctx.protocol_fault_notified_generation != generation ||
-            s_speaker_ctx.protocol_fault_notified_connection_epoch !=
-                connection_epoch) {
-            s_speaker_ctx.protocol_fault_notified_generation = generation;
-            s_speaker_ctx.protocol_fault_notified_connection_epoch =
-                connection_epoch;
-            s_speaker_ctx.stream_protocol_faults++;
-            if (stream_stall) {
-                s_speaker_ctx.stream_stall_faults++;
-            }
-            notify = true;
-        }
-    }
+    const speaker_fault_notice_t notice = speaker_claim_protocol_fault_locked(
+        connection_epoch, generation, stream_stall);
     speaker_unlock();
-    if (!notify) {
-        return;
-    }
-    ESP_LOGE(TAG,
-             "speaker downlink stream fault generation=%lu result=%s reason=%s expected_seq=%lu received_frames=%lu received_bytes=%llu",
-             (unsigned long)generation,
-             esp_err_to_name(result),
-             reason ? reason : "-",
-             (unsigned long)expected_sequence,
-             (unsigned long)received_frames,
-             (unsigned long long)received_bytes);
-    speaker_notify_playback_fault(connection_epoch, generation, result);
+    speaker_publish_protocol_fault(connection_epoch, generation, result, reason, notice);
 }
 
 static bool speaker_process_pending_protocol_fault(void) {
@@ -760,6 +830,21 @@ static speaker_generation_ref_t speaker_stalled_generation(uint32_t now_ms) {
 static void speaker_notify_cancel_recovery_once(uint32_t connection_epoch,
                                                 uint32_t generation,
                                                 const char *reason) {
+    /* A runtime reset deliberately clears the submitted connection epoch
+     * before the physical speaker task has necessarily emitted its final
+     * cancel edge.  Such an edge has no cloud owner left to notify: enqueueing
+     * it with epoch=0 only creates an invariant warning and it can never be
+     * consumed by the epoch-filtered conversation owner. */
+    if (connection_epoch == 0U) {
+        ESP_LOGD(TAG,
+                 "speaker cancel recovery dropped without cloud binding generation=%lu reason=%s",
+                 (unsigned long)generation,
+                 reason ? reason : "-");
+        return;
+    }
+    if (speaker_source_is_url_test(connection_epoch)) {
+        return;
+    }
     bool notify = false;
     speaker_lock();
     if (generation != 0U &&
@@ -912,6 +997,7 @@ static bool speaker_output_absent_locked(void) {
            !s_speaker_ctx.output.lock &&
            !s_speaker_ctx.output.stereo_buffer &&
            s_speaker_ctx.output.stereo_capacity == 0U &&
+           s_speaker_ctx.output.board_ref.token == 0U &&
            !s_speaker_ctx.output.vocat_shared_tx;
 }
 
@@ -919,6 +1005,9 @@ static bool speaker_output_ready_locked(void) {
     return s_speaker_ctx.output.initialized &&
            s_speaker_ctx.output.tx_handle &&
            s_speaker_ctx.output.lock &&
+           (!s_speaker_ctx.output.vocat_shared_tx ||
+            (s_speaker_ctx.output.board_ref.token != 0U &&
+             s_speaker_ctx.output.board_lease.token != 0U)) &&
            (!s_speaker_ctx.output.software_ref_required ||
             s_speaker_ctx.output.software_ref_ready);
 }
@@ -1086,21 +1175,100 @@ static uint8_t load_speaker_volume_percent(void) {
     return volume;
 }
 
-static void save_speaker_volume_percent(uint8_t volume_percent) {
-    nvs_handle_t handle = 0;
-    esp_err_t err = nvs_open(NUWAX_SETTINGS_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "speaker volume NVS open failed: %s", esp_err_to_name(err));
-        return;
+static bool save_speaker_volume_percent(uint8_t volume_percent) {
+    /* Serialize comparison with writes without holding the speaker state
+     * mutex while stopping the wake worker. Concurrent persistence remains
+     * best-effort, as with a busy Flash guard; runtime volume is already set. */
+    /* Use the native 32-bit atomic path, shared with existing workers. */
+    static atomic_uint saving = ATOMIC_VAR_INIT(0U);
+    static bool uncertain = false;
+    if (atomic_exchange_explicit(&saving, 1U, memory_order_acquire)) {
+        ESP_LOGW(TAG, "speaker volume persistence deferred: save in progress");
+        return false;
     }
-    err = nvs_set_u8(handle, NUWAX_SETTINGS_NVS_KEY_VOLUME, volume_percent);
-    if (err == ESP_OK) {
-        err = nvs_commit(handle);
+    esp_err_t err = ESP_OK;
+    nvs_handle_t read_handle = 0;
+    if (!uncertain && nvs_open(NUWAX_SETTINGS_NVS_NAMESPACE, NVS_READONLY, &read_handle) == ESP_OK) {
+        uint8_t stored = 0;
+        const esp_err_t read_err = nvs_get_u8(read_handle, NUWAX_SETTINGS_NVS_KEY_VOLUME, &stored);
+        nvs_close(read_handle);
+        if (read_err == ESP_OK && stored == volume_percent) {
+            /* Compare the persisted value, not runtime volume: an earlier
+             * non-persistent cloud update must not suppress a needed save. */
+            ESP_LOGD(TAG, "speaker volume persistence unchanged=%u", (unsigned)volume_percent);
+            goto done;
+        }
     }
-    nvs_close(handle);
+    for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+        const esp_err_t guard_err =
+            nuwax_wake_word_detector_begin_flash_operation(500U);
+        if (guard_err != ESP_OK) {
+            /* Runtime volume is already applied by the caller. Losing only
+             * the persistence write is preferable to pausing an active audio
+             * path; a later user change can retry it. */
+            ESP_LOGW(TAG,
+                     "speaker volume persistence deferred while wake detector is active: %s",
+                     esp_err_to_name(guard_err));
+            err = guard_err;
+            goto done;
+        }
+
+        nvs_handle_t handle = 0;
+        err = nvs_open(NUWAX_SETTINGS_NVS_NAMESPACE, NVS_READWRITE, &handle);
+        if (err == ESP_OK) {
+            /* A failed commit must be retried even if a subsequent read sees
+             * the staged value in NVS. Only successful commit clears this. */
+            uncertain = true;
+            err = nvs_set_u8(handle, NUWAX_SETTINGS_NVS_KEY_VOLUME,
+                             volume_percent);
+            if (err == ESP_OK) {
+                err = nvs_commit(handle);
+                if (err == ESP_OK) uncertain = false;
+            }
+            nvs_close(handle);
+        }
+        nuwax_wake_word_detector_end_flash_operation();
+        if (err != ESP_ERR_NVS_NOT_ENOUGH_SPACE || attempt != 0U) {
+            break;
+        }
+
+        /* Diagnostics are deliberately best-effort. Release only their
+         * replaceable snapshot, then retry the user setting once so a full
+         * shared NVS page cannot make a volume change appear successful while
+         * silently losing it across reboot. */
+        const esp_err_t release_err =
+            nuwax_device_error_report_release_persisted_storage();
+        if (release_err != ESP_OK) {
+            ESP_LOGW(TAG,
+                     "speaker volume NVS recovery could not release diagnostic snapshot: %s",
+                     esp_err_to_name(release_err));
+            break;
+        }
+    }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "speaker volume NVS save failed: %s", esp_err_to_name(err));
     }
+done:
+    atomic_store_explicit(&saving, 0U, memory_order_release);
+    return err == ESP_OK;
+}
+
+bool nuwax_speaker_playback_service_volume_persistence(bool force) {
+    const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
+    speaker_lock();
+    const bool due = nuwax_volume_save_due(&s_volume_save, now_ms, force);
+    const nuwax_volume_save_pending_t request = s_volume_save;
+    speaker_unlock();
+    if (!due) return !request.pending;
+    const bool saved = save_speaker_volume_percent(request.value);
+    speaker_lock();
+    nuwax_volume_save_complete(&s_volume_save, request.revision, saved,
+                               (uint64_t)esp_timer_get_time() / 1000U);
+    const bool complete = !s_volume_save.pending;
+    speaker_unlock();
+    ESP_LOGI(TAG, "speaker volume deferred save value=%u revision=%lu ok=%d pending=%d",
+             request.value, (unsigned long)request.revision, saved, !complete);
+    return complete;
 }
 
 static bool speaker_get_drop_state(uint32_t now_ms) {
@@ -1131,6 +1299,28 @@ static uint32_t speaker_submit_start_generation(uint32_t sequence,
     if ((flags & NUWAX_AUDIO_FLAG_START) == 0) {
         return 0;
     }
+
+#if NUWAX_SPEAKER_URL_STREAM_ENABLED
+    /* A formal cloud stream owns product behavior. If the isolated URL test
+     * happens to be playing, stop it before attempting START admission. */
+    if (!speaker_source_is_url_test(connection_epoch)) {
+        uint32_t local_generation = 0U;
+        speaker_lock();
+        if (s_speaker_ctx.active_owner ==
+                NUWAX_SPEAKER_PLAYBACK_OWNER_URL_TEST &&
+            s_speaker_ctx.submitted_connection_epoch ==
+                NUWAX_SPEAKER_URL_TEST_CONNECTION_EPOCH) {
+            local_generation = s_speaker_ctx.submitted_generation;
+        }
+        speaker_unlock();
+        if (local_generation != 0U) {
+            (void)speaker_cancel_now_if_current_epoch(
+                NUWAX_SPEAKER_URL_TEST_CONNECTION_EPOCH,
+                local_generation,
+                "formal_playback_preempts_url_test");
+        }
+    }
+#endif
 
     bool cleared = false;
     char stale_turn_id[sizeof(s_speaker_ctx.stale_turn_id)] = {0};
@@ -1328,7 +1518,9 @@ static bool speaker_note_cancelled_frame(uint32_t connection_epoch,
                  playback_id[0] ? playback_id : "-",
                  (unsigned long)dropped,
                  (unsigned long)stale_total);
-        if (generation != 0U && s_speaker_ctx.callbacks.on_stream_end) {
+        if (generation != 0U &&
+            !speaker_source_is_url_test(connection_epoch) &&
+            s_speaker_ctx.callbacks.on_stream_end) {
             s_speaker_ctx.callbacks.on_stream_end(connection_epoch, generation);
         }
     }
@@ -1399,10 +1591,26 @@ static bool speaker_apply_fade_cancel(speaker_playback_packet_t *packet,
     return cancel_after_packet;
 }
 
+static void speaker_consume_volume_preview_locked(void) {
+    taskENTER_CRITICAL(&s_volume_order_mux);
+    const bool pending = s_volume_order.pending;
+    const uint8_t next = s_volume_order.pending_volume;
+    s_volume_order.pending = false;
+    taskEXIT_CRITICAL(&s_volume_order_mux);
+    if (!pending) return;
+    if (s_speaker_ctx.volume_percent != next || s_speaker_ctx.probe_duck_active) {
+        (void)speaker_clear_probe_duck_locked(false);
+        s_speaker_ctx.volume_generation = speaker_next_generation(s_speaker_ctx.volume_generation);
+        s_speaker_ctx.volume_percent = next;
+        s_speaker_ctx.output_volume_sync_pending = true;
+    }
+}
+
 static esp_err_t ensure_speaker_output_ready(void) {
     bool initialized_now = false;
     uint8_t logical_volume = 0U;
     speaker_lock();
+    speaker_consume_volume_preview_locked();
     esp_err_t err = ESP_OK;
     if (!speaker_output_ready_locked()) {
         err = nuwax_speaker_output_init(&s_speaker_ctx.output);
@@ -1596,7 +1804,9 @@ static void speaker_finish_playback_if_current(uint32_t connection_epoch,
                  (unsigned)sequence,
                  (unsigned long)post_end_frames_dropped);
     }
-    if (generation_current && s_speaker_ctx.callbacks.on_stream_end) {
+    if (generation_current &&
+        !speaker_source_is_url_test(connection_epoch) &&
+        s_speaker_ctx.callbacks.on_stream_end) {
         s_speaker_ctx.callbacks.on_stream_end(connection_epoch, generation);
     }
 
@@ -1756,19 +1966,22 @@ static void speaker_finish_playback_if_current(uint32_t connection_epoch,
                  esp_err_to_name(stop_err));
         return;
     }
-    if (s_speaker_ctx.callbacks.on_playback_done) {
+    if (!speaker_source_is_url_test(connection_epoch) &&
+        s_speaker_ctx.callbacks.on_playback_done) {
         s_speaker_ctx.callbacks.on_playback_done(connection_epoch,
                                                  generation,
                                                  played,
                                                  failures);
     }
     bool scheduled = false;
-    if (s_speaker_ctx.callbacks.schedule_auto_followup_after_playback) {
+    if (!speaker_source_is_url_test(connection_epoch) &&
+        s_speaker_ctx.callbacks.schedule_auto_followup_after_playback) {
         scheduled = s_speaker_ctx.callbacks.schedule_auto_followup_after_playback(
             connection_epoch,
             generation);
     }
-    if (!scheduled && s_speaker_ctx.callbacks.set_state) {
+    if (!speaker_source_is_url_test(connection_epoch) && !scheduled &&
+        s_speaker_ctx.callbacks.set_state) {
         s_speaker_ctx.callbacks.set_state(connection_epoch,
                                           generation,
                                           NUWAX_APP_STATE_IDLE);
@@ -1810,10 +2023,17 @@ static esp_err_t speaker_enqueue_packet(uint32_t generation,
     }
 
     const uint32_t wait_started_ms = monotonic_ms();
-    const uint32_t bounded_admission_timeout_ms =
-        admission_timeout_ms < NUWAX_SPEAKER_BACKPRESSURE_TIMEOUT_MS
-            ? admission_timeout_ms
+#if NUWAX_SPEAKER_URL_STREAM_ENABLED
+    const uint32_t timeout_cap_ms =
+        speaker_source_is_url_test(connection_epoch)
+            ? NUWAX_SPEAKER_URL_TEST_MAX_BACKPRESSURE_MS
             : NUWAX_SPEAKER_BACKPRESSURE_TIMEOUT_MS;
+#else
+    const uint32_t timeout_cap_ms = NUWAX_SPEAKER_BACKPRESSURE_TIMEOUT_MS;
+#endif
+    const uint32_t bounded_admission_timeout_ms =
+        admission_timeout_ms < timeout_cap_ms ? admission_timeout_ms
+                                              : timeout_cap_ms;
     const uint32_t wait_deadline_ms =
         wait_started_ms + bounded_admission_timeout_ms;
     uint32_t last_wait_log_ms = 0U;
@@ -1888,7 +2108,8 @@ static esp_err_t speaker_enqueue_packet(uint32_t generation,
                                 }
                             }
                             s_speaker_ctx.ingress_last_pcm_rx_ms = ingress_now_ms;
-                            if (s_speaker_ctx.callbacks.on_ingress_progress &&
+                            if (!speaker_source_is_url_test(connection_epoch) &&
+                                s_speaker_ctx.callbacks.on_ingress_progress &&
                                 (s_speaker_ctx.ingress_progress_callback_ms ==
                                      0U ||
                                  elapsed_ms(
@@ -1964,7 +2185,8 @@ static esp_err_t speaker_enqueue_packet(uint32_t generation,
             if (playback_task) {
                 xTaskNotifyGive(playback_task);
             }
-            if (publish_ingress_progress &&
+            if (!speaker_source_is_url_test(connection_epoch) &&
+                publish_ingress_progress &&
                 s_speaker_ctx.callbacks.on_ingress_progress) {
                 s_speaker_ctx.callbacks.on_ingress_progress(connection_epoch,
                                                              generation);
@@ -2027,8 +2249,18 @@ esp_err_t nuwax_speaker_playback_init(const nuwax_speaker_playback_callbacks_t *
         memset(&s_speaker_ctx.callbacks, 0, sizeof(s_speaker_ctx.callbacks));
     }
     s_speaker_ctx.volume_percent = load_speaker_volume_percent();
+    taskENTER_CRITICAL(&s_volume_order_mux);
+    memset(&s_volume_order, 0, sizeof(s_volume_order));
+    s_volume_order.confirmed_volume = s_speaker_ctx.volume_percent;
+    taskEXIT_CRITICAL(&s_volume_order_mux);
     s_speaker_ctx.volume_generation = 1U;
     s_speaker_ctx.output_volume_sync_pending = true;
+    ESP_LOGI(TAG, "playback startup guard revision=20260923-startup-v1 buffer_timeout_ms=%u",
+             (unsigned)NUWAX_SPEAKER_JITTER_STARTUP_TIMEOUT_MS);
+    ESP_LOGI(TAG, "runtime hardening revision=20260924-runtime-v1 json_depth=%u notification_startup_timeout_ms=%u",
+             (unsigned)CONFIG_CJSON_NESTING_LIMIT,
+             (unsigned)NUWAX_SPEAKER_NOTIFICATION_STARTUP_TIMEOUT_MS);
+    ESP_LOGI(TAG, "jitter stability revision=20260924-jitter-stability-v1 short_rebuffer_breaks_streak=1");
     s_speaker_ctx.keep_initialized = true;
     s_speaker_ctx.jitter_startup_target_ms =
         NUWAX_SPEAKER_JITTER_STARTUP_BASE_MS;
@@ -3326,7 +3558,8 @@ void nuwax_speaker_playback_prepare_for_tts(const char *reason) {
         }
     }
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "speaker preinit ready reason=%s muted=1", reason ? reason : "-");
+        ESP_LOGI(TAG, "speaker preinit ready reason=%s muted=1 quieting=pa_off_dma_silence",
+                 reason ? reason : "-");
     } else {
         ESP_LOGW(TAG,
                  "speaker preinit mute failed reason=%s err=%s",
@@ -3613,10 +3846,11 @@ void nuwax_speaker_playback_note_playback_begin(const char *turn_id,
     }
 }
 
-bool nuwax_speaker_playback_abort_metadata_only_session(
+static bool speaker_abort_metadata_only_session(
     const char *turn_id,
     const char *playback_id,
-    const char *reason) {
+    const char *reason,
+    uint32_t timeout_ms) {
     const char *turn = turn_id ? turn_id : "";
     const char *playback = playback_id ? playback_id : "";
     bool cleared = false;
@@ -3635,11 +3869,26 @@ bool nuwax_speaker_playback_abort_metadata_only_session(
         !s_speaker_ctx.playback_active &&
         !s_speaker_ctx.start_gate_pending &&
         !s_speaker_ctx.start_gate_authorized &&
+        !s_speaker_ctx.stream.active &&
+        !s_speaker_ctx.stop_fault_active &&
+        !s_speaker_ctx.fade_cancel_active &&
+        !s_speaker_ctx.runtime_reset_in_progress &&
+        s_speaker_ctx.io_claim_generation == 0U &&
+        s_speaker_ctx.maintenance_claim_generation == 0U &&
         s_speaker_ctx.completion_claim_generation == 0U &&
         s_speaker_ctx.cancel_pending_generation == 0U &&
         s_speaker_ctx.output_stop_owner_generation == 0U &&
         speaker_packet_ring_count() == 0U;
-    if (ids_match && metadata_only) {
+    const bool expired = timeout_ms == 0U ||
+        (s_speaker_ctx.playback_begin_rx_us > 0 &&
+         esp_timer_get_time() - s_speaker_ctx.playback_begin_rx_us >=
+             (int64_t)timeout_ms * 1000LL);
+    if (ids_match && metadata_only && expired) {
+        if (timeout_ms != 0U) {
+            /* Fence in-flight RX before retiring metadata. The main owner will
+             * also close its admission and retire the turn in the same pass. */
+            s_speaker_ctx.downlink_admission_allowed = false;
+        }
         playback_begin_rx_us = s_speaker_ctx.playback_begin_rx_us;
         stale_generation = s_speaker_ctx.submitted_generation;
         s_speaker_ctx.playback_session_active = false;
@@ -3674,6 +3923,17 @@ bool nuwax_speaker_playback_abort_metadata_only_session(
                  reason ? reason : "-");
     }
     return cleared;
+}
+
+bool nuwax_speaker_playback_abort_metadata_only_session(
+    const char *turn_id, const char *playback_id, const char *reason) {
+    return speaker_abort_metadata_only_session(turn_id, playback_id, reason, 0U);
+}
+
+bool nuwax_speaker_playback_expire_metadata_only_session(
+    const char *turn_id, const char *playback_id, uint32_t timeout_ms) {
+    return timeout_ms != 0U && speaker_abort_metadata_only_session(
+        turn_id, playback_id, "first_pcm_timeout", timeout_ms);
 }
 
 void nuwax_speaker_playback_note_playback_end(const char *turn_id,
@@ -4163,17 +4423,67 @@ esp_err_t nuwax_speaker_playback_deinit_output(void) {
     return ESP_OK;
 }
 
-void nuwax_speaker_playback_apply_volume_percent(int volume_percent, bool persist) {
+void nuwax_speaker_playback_note_volume_commit_queued(int volume_percent,
+                                                     uint32_t preview_sequence) {
+    const uint8_t next = clamp_speaker_volume_percent(volume_percent);
+    taskENTER_CRITICAL(&s_volume_order_mux);
+    /* The owner may have applied this queue item already, or a newer cloud
+     * command may have superseded it. Neither may be undone by registration. */
+    if (volume_sequence_after(preview_sequence, s_volume_order.confirmed_sequence) &&
+        volume_sequence_after(preview_sequence, s_volume_order.committed_sequence)) {
+        s_volume_order.confirmed_sequence = preview_sequence;
+        s_volume_order.confirmed_volume = next;
+        /* Another contact can cancel after the queue accepts this release
+         * and before registration runs. Update that rollback target without
+         * overwriting a newer drag that is still active. */
+        if (!s_volume_order.preview_active) {
+            s_volume_order.pending_volume = next;
+            s_volume_order.pending = true;
+        }
+    }
+    taskEXIT_CRITICAL(&s_volume_order_mux);
+}
+
+bool nuwax_speaker_playback_apply_volume_commit_percent(int volume_percent,
+                                                       bool persist,
+                                                       uint32_t preview_sequence) {
     uint8_t next = clamp_speaker_volume_percent(volume_percent);
     esp_err_t volume_err = ESP_OK;
     speaker_lock();
-    (void)speaker_clear_probe_duck_locked(false);
-    if (s_speaker_ctx.volume_percent != next) {
-        s_speaker_ctx.volume_generation =
-            speaker_next_generation(s_speaker_ctx.volume_generation);
+    taskENTER_CRITICAL(&s_volume_order_mux);
+    /* Remote/legacy commands linearize here, after acquiring the owner lock.
+     * Local releases carry the sequence of their final touch preview. */
+    const uint32_t commit_sequence = preview_sequence != 0U
+        ? preview_sequence : volume_next_sequence_locked();
+    if (!volume_sequence_after(commit_sequence, s_volume_order.committed_sequence) ||
+        volume_sequence_after(s_volume_order.confirmed_sequence, commit_sequence)) {
+        taskEXIT_CRITICAL(&s_volume_order_mux);
+        speaker_unlock();
+        return false;
     }
-    s_speaker_ctx.volume_percent = next;
-    volume_err = speaker_sync_output_volume_locked();
+    s_volume_order.committed_sequence = commit_sequence;
+    s_volume_order.confirmed_sequence = commit_sequence;
+    s_volume_order.confirmed_volume = next;
+    const bool preserve_newer_preview = s_volume_order.preview_active &&
+        volume_sequence_after(s_volume_order.preview_sequence, commit_sequence);
+    if (!preserve_newer_preview) {
+        s_volume_order.preview_active = false;
+        s_volume_order.pending = false;
+    }
+    taskEXIT_CRITICAL(&s_volume_order_mux);
+    if (!preserve_newer_preview) {
+        (void)speaker_clear_probe_duck_locked(false);
+        if (s_speaker_ctx.volume_percent != next) {
+            s_speaker_ctx.volume_generation =
+                speaker_next_generation(s_speaker_ctx.volume_generation);
+        }
+        s_speaker_ctx.volume_percent = next;
+        volume_err = speaker_sync_output_volume_locked();
+    }
+    if (persist) {
+        nuwax_volume_save_request(&s_volume_save, next,
+                                   (uint64_t)esp_timer_get_time() / 1000U);
+    }
     speaker_unlock();
     if (volume_err != ESP_OK) {
         ESP_LOGW(TAG,
@@ -4184,41 +4494,87 @@ void nuwax_speaker_playback_apply_volume_percent(int volume_percent, bool persis
     if (s_speaker_ctx.callbacks.on_volume_changed) {
         s_speaker_ctx.callbacks.on_volume_changed(next);
     }
-    if (persist) {
-        save_speaker_volume_percent(next);
+    ESP_LOGI(TAG, "speaker volume committed=%u%% persist=%d sequence=%lu preview_retained=%d",
+             (unsigned)next, persist ? 1 : 0, (unsigned long)commit_sequence,
+             preserve_newer_preview ? 1 : 0);
+    return true;
+}
+
+void nuwax_speaker_playback_apply_volume_percent(int volume_percent, bool persist) {
+    (void)nuwax_speaker_playback_apply_volume_commit_percent(volume_percent, persist, 0U);
+}
+
+static void speaker_try_consume_volume_preview(void) {
+    if (s_speaker_ctx.mutex &&
+        xSemaphoreTake(s_speaker_ctx.mutex, 0) != pdTRUE) {
+        return;
     }
-    ESP_LOGI(TAG, "speaker volume set to %u%% persist=%d", (unsigned)next, persist ? 1 : 0);
+    speaker_consume_volume_preview_locked();
+    speaker_unlock();
+}
+
+uint32_t nuwax_speaker_playback_preview_volume_percent_ordered(int volume_percent) {
+    const uint8_t next = clamp_speaker_volume_percent(volume_percent);
+    taskENTER_CRITICAL(&s_volume_order_mux);
+    const uint32_t sequence = volume_next_sequence_locked();
+    s_volume_order.preview_sequence = sequence;
+    s_volume_order.preview_active = true;
+    s_volume_order.pending_volume = next;
+    s_volume_order.pending = true;
+    taskEXIT_CRITICAL(&s_volume_order_mux);
+    return sequence;
 }
 
 void nuwax_speaker_playback_preview_volume_percent(int volume_percent) {
-    uint8_t next = clamp_speaker_volume_percent(volume_percent);
-    esp_err_t volume_err = ESP_OK;
-    speaker_lock();
-    (void)speaker_clear_probe_duck_locked(false);
-    if (s_speaker_ctx.volume_percent != next) {
-        s_speaker_ctx.volume_generation =
-            speaker_next_generation(s_speaker_ctx.volume_generation);
-        s_speaker_ctx.volume_percent = next;
+    (void)nuwax_speaker_playback_preview_volume_percent_ordered(volume_percent);
+    speaker_try_consume_volume_preview();
+}
+
+void nuwax_speaker_playback_cancel_volume_preview(uint32_t preview_sequence) {
+    taskENTER_CRITICAL(&s_volume_order_mux);
+    if (preview_sequence == 0U || !s_volume_order.preview_active ||
+        s_volume_order.preview_sequence != preview_sequence ||
+        volume_sequence_after(s_volume_order.committed_sequence, preview_sequence)) {
+        taskEXIT_CRITICAL(&s_volume_order_mux);
+        return;
     }
-    volume_err = speaker_sync_output_volume_locked();
-    speaker_unlock();
-    if (volume_err != ESP_OK) {
-        ESP_LOGW(TAG,
-                 "speaker preview volume hardware update deferred target=%u err=%s",
-                 (unsigned)next,
-                 esp_err_to_name(volume_err));
-    }
+    /* Earlier local commits admitted to the business queue must still be
+     * allowed to persist when processed. Cancellation retires the preview,
+     * not the commit sequence. */
+    s_volume_order.preview_active = false;
+    s_volume_order.pending_volume = s_volume_order.confirmed_volume;
+    s_volume_order.pending = true;
+    taskEXIT_CRITICAL(&s_volume_order_mux);
+}
+
+uint8_t nuwax_speaker_playback_get_confirmed_volume_percent(uint32_t *sequence) {
+    taskENTER_CRITICAL(&s_volume_order_mux);
+    const uint8_t volume = s_volume_order.confirmed_volume;
+    if (sequence) *sequence = s_volume_order.confirmed_sequence;
+    taskEXIT_CRITICAL(&s_volume_order_mux);
+    return volume;
 }
 
 void nuwax_speaker_playback_apply_current_volume(void) {
-    nuwax_speaker_playback_apply_volume_percent(
-        nuwax_speaker_playback_get_volume_percent(),
-        false);
+    /* Reconnect synchronizes output without converting a live gesture into a
+     * newer authoritative commit that would invalidate its queued release. */
+    speaker_lock();
+    speaker_consume_volume_preview_locked();
+    const esp_err_t err = speaker_sync_output_volume_locked();
+    const uint8_t volume = nuwax_speaker_playback_get_confirmed_volume_percent(NULL);
+    speaker_unlock();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "speaker volume resync deferred err=%s", esp_err_to_name(err));
+    }
+    if (s_speaker_ctx.callbacks.on_volume_changed) {
+        s_speaker_ctx.callbacks.on_volume_changed(volume);
+    }
 }
 
 uint8_t nuwax_speaker_playback_get_volume_percent(void) {
     uint8_t volume = 0U;
     speaker_lock();
+    speaker_consume_volume_preview_locked();
     volume = s_speaker_ctx.volume_percent;
     speaker_unlock();
     return volume;
@@ -4397,6 +4753,161 @@ esp_err_t nuwax_speaker_playback_handle_audio_frame_admitted_with_timeout(
                                   admission_timeout_ms);
 }
 
+#if NUWAX_SPEAKER_URL_STREAM_ENABLED
+esp_err_t nuwax_speaker_playback_url_test_begin(
+    uint32_t total_bytes,
+    bool end,
+    const int16_t *samples,
+    size_t sample_count,
+    uint32_t *generation_out) {
+    if (!generation_out || !samples || sample_count == 0U ||
+        sample_count > CONFIG_NUWAX_VOICE_MAX_SAMPLES_PER_FRAME ||
+        (total_bytes & 1U) != 0U ||
+        (total_bytes != 0U &&
+         sample_count * sizeof(int16_t) > total_bytes)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *generation_out = 0U;
+
+    const esp_err_t enqueue_err =
+        nuwax_speaker_playback_handle_audio_frame_admitted_with_timeout(
+            NUWAX_SPEAKER_URL_TEST_CONNECTION_EPOCH,
+            0U,
+            0U,
+            NUWAX_AUDIO_FLAG_START |
+                (end ? NUWAX_AUDIO_FLAG_END : 0U),
+            CONFIG_NUWAX_VOICE_OUTPUT_SAMPLE_RATE,
+            1U,
+            samples,
+            sample_count,
+            NUWAX_SPEAKER_URL_TEST_MAX_BACKPRESSURE_MS);
+    if (enqueue_err != ESP_OK) {
+        return enqueue_err;
+    }
+
+    uint32_t generation = 0U;
+    bool authorized = false;
+    speaker_lock();
+    generation = s_speaker_ctx.submitted_generation;
+    const bool current =
+        speaker_start_gate_matches_locked(
+            NUWAX_SPEAKER_URL_TEST_CONNECTION_EPOCH, generation) &&
+        s_speaker_ctx.stream.active &&
+        s_speaker_ctx.stream.generation == generation &&
+        !s_speaker_ctx.drop_until_end &&
+        !s_speaker_ctx.stream_protocol_faulted;
+    if (current && s_speaker_ctx.start_gate_pending) {
+        s_speaker_ctx.active_owner =
+            NUWAX_SPEAKER_PLAYBACK_OWNER_URL_TEST;
+        s_speaker_ctx.active_turn_id[0] = '\0';
+        s_speaker_ctx.active_notify_id[0] = '\0';
+        strlcpy(s_speaker_ctx.active_playback_id,
+                "url_test",
+                sizeof(s_speaker_ctx.active_playback_id));
+        s_speaker_ctx.playback_session_active = true;
+        s_speaker_ctx.metadata_expected_frames = 0U;
+        s_speaker_ctx.metadata_expected_bytes = total_bytes;
+        s_speaker_ctx.playback_begin_rx_us = esp_timer_get_time();
+        authorized = nuwax_speaker_stream_bind_expected(
+            &s_speaker_ctx.stream,
+            generation,
+            0U,
+            total_bytes);
+        if (authorized) {
+            s_speaker_ctx.start_gate_pending = false;
+            s_speaker_ctx.start_gate_authorized = true;
+            s_speaker_ctx.start_gate_deadline_ms = 0U;
+            s_speaker_ctx.start_gate_authorized_us = esp_timer_get_time();
+        }
+    }
+    speaker_unlock();
+
+    if (!authorized) {
+        (void)speaker_cancel_now_if_current_epoch(
+            NUWAX_SPEAKER_URL_TEST_CONNECTION_EPOCH,
+            generation,
+            "url_test_authorization_failed");
+        return ESP_ERR_INVALID_STATE;
+    }
+    *generation_out = generation;
+    ESP_LOGI(TAG,
+             "speaker URL test started generation=%lu total_bytes=%lu",
+             (unsigned long)generation,
+             (unsigned long)total_bytes);
+    return ESP_OK;
+}
+
+esp_err_t nuwax_speaker_playback_url_test_write(
+    uint32_t generation,
+    uint32_t sequence,
+    bool end,
+    const int16_t *samples,
+    size_t sample_count,
+    uint32_t timeout_ms) {
+    const bool end_marker = end && sample_count == 0U;
+    if (generation == 0U || sequence == 0U ||
+        sample_count > CONFIG_NUWAX_VOICE_MAX_SAMPLES_PER_FRAME ||
+        ((!samples || sample_count == 0U) && !end_marker)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    bool owned = false;
+    speaker_lock();
+    owned = s_speaker_ctx.active_owner ==
+                NUWAX_SPEAKER_PLAYBACK_OWNER_URL_TEST &&
+            speaker_generation_source_matches_locked(
+                NUWAX_SPEAKER_URL_TEST_CONNECTION_EPOCH, generation) &&
+            s_speaker_ctx.stream.active &&
+            s_speaker_ctx.stream.generation == generation &&
+            !s_speaker_ctx.drop_until_end;
+    speaker_unlock();
+    if (!owned) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return speaker_enqueue_packet(
+        generation,
+        NUWAX_SPEAKER_URL_TEST_CONNECTION_EPOCH,
+        0U,
+        sequence,
+        end ? NUWAX_AUDIO_FLAG_END : 0U,
+        CONFIG_NUWAX_VOICE_OUTPUT_SAMPLE_RATE,
+        1U,
+        samples,
+        sample_count,
+        0,
+        timeout_ms);
+}
+
+bool nuwax_speaker_playback_url_test_stop(uint32_t generation,
+                                          const char *reason) {
+    if (generation == 0U) {
+        return false;
+    }
+    return speaker_cancel_now_if_current_epoch(
+        NUWAX_SPEAKER_URL_TEST_CONNECTION_EPOCH,
+        generation,
+        reason ? reason : "url_test_stop");
+}
+
+bool nuwax_speaker_playback_url_test_active(uint32_t generation) {
+    bool active = false;
+    speaker_lock();
+    active = s_speaker_ctx.active_owner ==
+                 NUWAX_SPEAKER_PLAYBACK_OWNER_URL_TEST &&
+             s_speaker_ctx.submitted_connection_epoch ==
+                 NUWAX_SPEAKER_URL_TEST_CONNECTION_EPOCH &&
+             (generation == 0U ||
+              s_speaker_ctx.submitted_generation == generation) &&
+             (s_speaker_ctx.playback_session_active ||
+              s_speaker_ctx.start_gate_pending ||
+              s_speaker_ctx.start_gate_authorized ||
+              s_speaker_ctx.playback_active);
+    speaker_unlock();
+    return active;
+}
+#endif
+
 static bool speaker_wait_for_start_authorization(
     const speaker_playback_packet_t *packet) {
     if (!packet || packet->generation == 0U) {
@@ -4455,7 +4966,9 @@ static bool speaker_wait_for_start_authorization(
             return true;
         }
         if (!generation_current || timed_out) {
-            if (timed_out && s_speaker_ctx.callbacks.on_start_gate_timeout) {
+            if (timed_out &&
+                !speaker_source_is_url_test(packet->connection_epoch) &&
+                s_speaker_ctx.callbacks.on_start_gate_timeout) {
                 s_speaker_ctx.callbacks.on_start_gate_timeout(
                     packet->connection_epoch,
                     packet->generation);
@@ -4486,18 +4999,25 @@ static bool speaker_wait_for_jitter_watermark(
     uint32_t last_ingress_progress_ms = wait_started_ms;
     uint32_t last_ingress_frames = 0U;
     bool recoverable_stall_warned = false;
+    bool rebuffer_stall_warned = false;
     while (true) {
         const uint32_t now_ms = monotonic_ms();
         bool generation_current = false;
         bool end_accepted = false;
+        bool rebuffering = false;
         bool ready = false;
         uint32_t queued_records = 0U;
         uint32_t queued_samples = 0U;
         uint32_t ingress_frames = 0U;
         uint32_t expected_sequence = 0U;
+        bool forced_resume = false;
+        bool startup_expired = false;
+        bool notification_startup_expired = false;
+        speaker_fault_notice_t startup_fault = {0};
         uint32_t startup_target_ms =
             NUWAX_SPEAKER_JITTER_STARTUP_BASE_MS;
         uint32_t resume_target_ms = NUWAX_SPEAKER_JITTER_RESUME_MIN_MS;
+        const uint32_t waited_from_entry_ms = now_ms - wait_started_ms;
         speaker_lock();
         generation_current =
             speaker_generation_source_matches_locked(packet->connection_epoch,
@@ -4513,6 +5033,7 @@ static bool speaker_wait_for_jitter_watermark(
               s_speaker_ctx.playback_generation == packet->generation));
         end_accepted = generation_current &&
                        s_speaker_ctx.stream.end_accepted;
+        rebuffering = generation_current && s_speaker_ctx.jitter_rebuffering;
         ingress_frames = s_speaker_ctx.stream.pcm_frames;
         expected_sequence = s_speaker_ctx.stream.next_sequence;
         startup_target_ms = s_speaker_ctx.jitter_startup_target_ms;
@@ -4528,9 +5049,23 @@ static bool speaker_wait_for_jitter_watermark(
                                          packet->sample_rate,
                                          startup_target_ms,
                                          resume_target_ms);
+        forced_resume = generation_current &&
+                        nuwax_speaker_jitter_force_resume(
+                            playback_started,
+                            rebuffering,
+                            waited_from_entry_ms,
+                            queued_records,
+                            queued_samples,
+                            NUWAX_SPEAKER_JITTER_FORCE_RESUME_WAIT_MS);
+        if (forced_resume) {
+            /* Keep generation/order validation intact, but let the consumer
+             * resume with the available PCM. Waiting indefinitely for a full
+             * watermark would fill the ingress ring and block WebSocket RX. */
+            ready = true;
+        }
         if (ready && playback_started &&
             s_speaker_ctx.jitter_rebuffering) {
-            const uint32_t waited_ms =
+            const uint32_t rebuffer_waited_ms =
                 now_ms - s_speaker_ctx.jitter_rebuffer_started_ms;
             const bool midstream =
                 nuwax_speaker_jitter_rebuffer_is_midstream(
@@ -4545,15 +5080,16 @@ static bool speaker_wait_for_jitter_watermark(
                         NUWAX_SPEAKER_JITTER_RESUME_MAX_MS,
                         s_speaker_ctx.ingress_max_gap_ms,
                         NUWAX_SPEAKER_JITTER_RESUME_GAP_CUSHION_MS);
-                s_speaker_ctx.jitter_rebuffer_wait_ms += waited_ms;
-                if (waited_ms >
+                s_speaker_ctx.jitter_rebuffer_wait_ms += rebuffer_waited_ms;
+                if (rebuffer_waited_ms >
                     s_speaker_ctx.jitter_rebuffer_max_wait_ms) {
-                    s_speaker_ctx.jitter_rebuffer_max_wait_ms = waited_ms;
+                    s_speaker_ctx.jitter_rebuffer_max_wait_ms =
+                        rebuffer_waited_ms;
                 }
                 s_speaker_ctx.jitter_resume_fade_pending = true;
             } else {
                 s_speaker_ctx.jitter_tail_wait_events++;
-                s_speaker_ctx.jitter_tail_wait_ms += waited_ms;
+                s_speaker_ctx.jitter_tail_wait_ms += rebuffer_waited_ms;
             }
             s_speaker_ctx.jitter_rebuffering = false;
             s_speaker_ctx.jitter_rebuffer_started_ms = 0U;
@@ -4563,7 +5099,38 @@ static bool speaker_wait_for_jitter_watermark(
         if (ready && !playback_started) {
             s_speaker_ctx.startup_watermark_ready_us = esp_timer_get_time();
         }
+        /* An absolute startup budget cannot be renewed by sparse PCM. Ready
+         * (including a short response with END) wins at the boundary. Bind and
+         * fault under this lock so concurrent END/PCM cannot slip between the
+         * readiness decision and cancellation. Physical stop uses the existing
+         * generation/epoch-bound terminal path on the next worker pass. */
+        const int64_t first_pcm_us = s_speaker_ctx.first_pcm_rx_us;
+        const uint32_t startup_age_ms = first_pcm_us > 0
+            ? (uint32_t)((esp_timer_get_time() - first_pcm_us) / 1000LL)
+            : waited_from_entry_ms;
+        startup_expired = generation_current &&
+            s_speaker_ctx.active_owner == NUWAX_SPEAKER_PLAYBACK_OWNER_CONVERSATION &&
+            nuwax_speaker_jitter_startup_expired(playback_started, ready,
+                                                startup_age_ms);
+        notification_startup_expired = generation_current &&
+            s_speaker_ctx.active_owner == NUWAX_SPEAKER_PLAYBACK_OWNER_NOTIFICATION &&
+            nuwax_speaker_notification_startup_expired(playback_started, ready,
+                                                      startup_age_ms);
+        startup_expired = startup_expired || notification_startup_expired;
+        if (startup_expired) {
+            startup_fault = speaker_claim_protocol_fault_locked(
+                packet->connection_epoch, packet->generation, true);
+        }
         speaker_unlock();
+        if (startup_expired) {
+            speaker_publish_protocol_fault(packet->connection_epoch,
+                                           packet->generation, ESP_ERR_TIMEOUT,
+                                           notification_startup_expired
+                                               ? "notification_startup_buffer_timeout"
+                                               : "startup_buffer_timeout",
+                                           startup_fault);
+            return false;
+        }
 
         if (ingress_frames != last_ingress_frames) {
             last_ingress_frames = ingress_frames;
@@ -4574,12 +5141,11 @@ static bool speaker_wait_for_jitter_watermark(
             return false;
         }
         if (ready) {
-            const uint32_t waited_ms = now_ms - wait_started_ms;
             if (waited_ms_out) {
-                *waited_ms_out = waited_ms;
+                *waited_ms_out = waited_from_entry_ms;
             }
             ESP_LOGI(TAG,
-                     "speaker jitter watermark ready generation=%lu phase=%s queued_records=%lu queued_samples=%lu queued_ms=%lu target_ms=%u end_accepted=%d waited_ms=%lu",
+                     "speaker jitter watermark ready generation=%lu phase=%s queued_records=%lu queued_samples=%lu queued_ms=%lu target_ms=%u end_accepted=%d forced_resume=%d waited_ms=%lu",
                      (unsigned long)packet->generation,
                      playback_started ? "resume" : "startup",
                      (unsigned long)queued_records,
@@ -4590,7 +5156,8 @@ static bool speaker_wait_for_jitter_watermark(
                                     ? resume_target_ms
                                     : startup_target_ms),
                      end_accepted ? 1 : 0,
-                     (unsigned long)waited_ms);
+                     forced_resume ? 1 : 0,
+                     (unsigned long)waited_from_entry_ms);
             return true;
         }
         if (speaker_process_pending_protocol_fault()) {
@@ -4610,6 +5177,32 @@ static bool speaker_wait_for_jitter_watermark(
             return false;
         }
         const uint32_t stalled_ms = now_ms - last_ingress_progress_ms;
+        if (playback_started && rebuffering && !end_accepted &&
+            stalled_ms >= NUWAX_SPEAKER_REBUFFER_STALL_WARN_MS &&
+            !rebuffer_stall_warned) {
+            rebuffer_stall_warned = true;
+            recoverable_stall_warned = true;
+            ESP_LOGW(TAG,
+                     "speaker jitter rebuffer still waiting for cloud PCM generation=%lu stalled_ms=%lu hard_timeout_ms=%u expected_seq=%lu",
+                     (unsigned long)packet->generation,
+                     (unsigned long)stalled_ms,
+                     (unsigned)NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS,
+                     (unsigned long)expected_sequence);
+        }
+        if (playback_started && rebuffering && !end_accepted &&
+            stalled_ms >= NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS) {
+            ESP_LOGE(TAG,
+                     "speaker jitter rebuffer timed out generation=%lu stalled_ms=%lu timeout_ms=%u; aborting generation while retaining WebSocket",
+                     (unsigned long)packet->generation,
+                     (unsigned long)stalled_ms,
+                     (unsigned)NUWAX_SPEAKER_REBUFFER_STALL_TIMEOUT_MS);
+            speaker_schedule_protocol_fault(packet->connection_epoch,
+                                            packet->generation,
+                                            ESP_ERR_TIMEOUT,
+                                            "jitter_rebuffer_timeout",
+                                            true);
+            return false;
+        }
         const nuwax_speaker_stall_action_t stall_action =
             nuwax_speaker_stall_action(
                 stalled_ms,
@@ -4807,7 +5400,9 @@ void nuwax_speaker_playback_task(void *arg) {
         }
 
         if ((packet.flags & NUWAX_AUDIO_FLAG_START) != 0) {
-            if (s_speaker_ctx.callbacks.on_start_pending) {
+            const bool url_test =
+                speaker_source_is_url_test(packet.connection_epoch);
+            if (!url_test && s_speaker_ctx.callbacks.on_start_pending) {
                 s_speaker_ctx.callbacks.on_start_pending(
                     packet.connection_epoch,
                     packet.generation);
@@ -4956,7 +5551,8 @@ void nuwax_speaker_playback_task(void *arg) {
                 packet.generation);
         if (io_claimed) {
             if ((packet.flags & NUWAX_AUDIO_FLAG_START) != 0) {
-                if (s_speaker_ctx.callbacks.on_tts_start) {
+                if (!speaker_source_is_url_test(packet.connection_epoch) &&
+                    s_speaker_ctx.callbacks.on_tts_start) {
                     s_speaker_ctx.callbacks.on_tts_start(
                         packet.connection_epoch,
                         packet.generation);
@@ -4980,7 +5576,8 @@ void nuwax_speaker_playback_task(void *arg) {
         } else {
             err = ESP_ERR_INVALID_STATE;
         }
-        if (io_claimed && err == ESP_OK && !fade_active &&
+        if (!speaker_source_is_url_test(packet.connection_epoch) &&
+            io_claimed && err == ESP_OK && !fade_active &&
             (packet.flags & NUWAX_AUDIO_FLAG_START) != 0U &&
             s_speaker_ctx.callbacks.on_first_pcm_written) {
             s_speaker_ctx.callbacks.on_first_pcm_written(
@@ -5094,7 +5691,8 @@ void nuwax_speaker_playback_task(void *arg) {
             progress_ms = monotonic_ms();
             s_speaker_ctx.playback_last_progress_ms = progress_ms;
             played_bytes = s_speaker_ctx.played_bytes;
-            if (s_speaker_ctx.callbacks.on_playback_progress &&
+            if (!speaker_source_is_url_test(packet.connection_epoch) &&
+                s_speaker_ctx.callbacks.on_playback_progress &&
                 (s_speaker_ctx.progress_callback_ms == 0U ||
                  elapsed_ms(progress_ms,
                             s_speaker_ctx.progress_callback_ms +
@@ -5231,6 +5829,52 @@ esp_err_t nuwax_speaker_playback_handle_audio_frame_admitted_with_timeout(
                                                      samples,
                                                      sample_count);
 }
+
+#if CONFIG_NUWAX_MUSIC_URL_TEST_ENABLE
+esp_err_t nuwax_speaker_playback_url_test_begin(
+    uint32_t total_bytes,
+    bool end,
+    const int16_t *samples,
+    size_t sample_count,
+    uint32_t *generation_out) {
+    (void)total_bytes;
+    (void)end;
+    (void)samples;
+    (void)sample_count;
+    if (generation_out) {
+        *generation_out = 0U;
+    }
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t nuwax_speaker_playback_url_test_write(
+    uint32_t generation,
+    uint32_t sequence,
+    bool end,
+    const int16_t *samples,
+    size_t sample_count,
+    uint32_t timeout_ms) {
+    (void)generation;
+    (void)sequence;
+    (void)end;
+    (void)samples;
+    (void)sample_count;
+    (void)timeout_ms;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+bool nuwax_speaker_playback_url_test_stop(uint32_t generation,
+                                          const char *reason) {
+    (void)generation;
+    (void)reason;
+    return false;
+}
+
+bool nuwax_speaker_playback_url_test_active(uint32_t generation) {
+    (void)generation;
+    return false;
+}
+#endif
 
 void nuwax_speaker_playback_task(void *arg) {
     (void)arg;
@@ -5384,6 +6028,14 @@ bool nuwax_speaker_playback_abort_metadata_only_session(
     return false;
 }
 
+bool nuwax_speaker_playback_expire_metadata_only_session(
+    const char *turn_id, const char *playback_id, uint32_t timeout_ms) {
+    (void)turn_id;
+    (void)playback_id;
+    (void)timeout_ms;
+    return false;
+}
+
 void nuwax_speaker_playback_note_playback_end(const char *turn_id,
                                               const char *playback_id,
                                               const char *reason) {
@@ -5397,6 +6049,30 @@ void nuwax_speaker_playback_apply_volume_percent(int volume_percent, bool persis
     (void)persist;
 }
 
+bool nuwax_speaker_playback_apply_volume_commit_percent(int volume_percent,
+                                                       bool persist,
+                                                       uint32_t preview_sequence) {
+    (void)volume_percent;
+    (void)persist;
+    (void)preview_sequence;
+    return false;
+}
+
+void nuwax_speaker_playback_note_volume_commit_queued(int volume_percent,
+                                                     uint32_t preview_sequence) {
+    (void)volume_percent;
+    (void)preview_sequence;
+}
+
+uint32_t nuwax_speaker_playback_preview_volume_percent_ordered(int volume_percent) {
+    (void)volume_percent;
+    return 0U;
+}
+
+void nuwax_speaker_playback_cancel_volume_preview(uint32_t preview_sequence) {
+    (void)preview_sequence;
+}
+
 void nuwax_speaker_playback_preview_volume_percent(int volume_percent) {
     (void)volume_percent;
 }
@@ -5406,6 +6082,11 @@ void nuwax_speaker_playback_apply_current_volume(void) {
 
 uint8_t nuwax_speaker_playback_get_volume_percent(void) {
     return 0;
+}
+
+uint8_t nuwax_speaker_playback_get_confirmed_volume_percent(uint32_t *sequence) {
+    if (sequence) *sequence = 0U;
+    return 0U;
 }
 
 esp_err_t nuwax_speaker_playback_handle_audio_frame(uint32_t sequence,

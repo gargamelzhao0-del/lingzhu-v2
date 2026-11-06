@@ -20,13 +20,17 @@ typedef enum {
 typedef struct {
     /* valid means a fresh, bounded measurement is available from an initialized
      * gauge with a battery present. Only soc_trusted means the percentage came
-     * from an authenticated cell profile; otherwise it is UI-only best effort. */
+     * from an authenticated cell profile. OTA admission may use valid telemetry
+     * without profile authentication, with a separate hard-voltage guard. */
     bool valid;
     bool sample_available;
     bool stale;
     bool battery_present;
     bool gauge_ready;
     bool soc_trusted;
+    bool power_valid;
+    bool power_stale;
+    uint64_t power_timestamp_ms;
     bool charging;
     bool full;
     bool low;
@@ -58,7 +62,8 @@ typedef void (*nuwax_battery_service_listener_t)(
 
 typedef struct {
     /* Zero selects the defaults. Non-zero sampling intervals must stay in the
-     * product range of 5-10 seconds. */
+     * product range of 5-10 seconds. Valid SOC <=2% temporarily samples every
+     * 500 ms to detect a charger during the low-battery shutdown reminder. */
     uint32_t sample_interval_ms;
     uint32_t error_backoff_initial_ms;
     uint32_t error_backoff_max_ms;

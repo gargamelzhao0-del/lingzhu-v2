@@ -1,11 +1,36 @@
 menu "Nuwax early power hold"
 
+    config BOOTLOADER_NUWAX_DISPLAY_BACKLIGHT_OFF
+        bool "Force LCD backlight off before bootloader initialization"
+        default y
+        help
+            Drives the LCD backlight control low before the second-stage
+            bootloader initializes the panel. This prevents the panel's
+            reset colour from being visible during power-on or reboot.
+
+    config BOOTLOADER_NUWAX_DISPLAY_BACKLIGHT_GPIO
+        int "LCD backlight GPIO"
+        default 3
+        range 0 48
+        depends on BOOTLOADER_NUWAX_DISPLAY_BACKLIGHT_OFF
+        help
+            GPIO connected to the LCD backlight enable. Keep this aligned
+            with CONFIG_NUWAX_DISPLAY_PIN_BL in the application.
+
+    config BOOTLOADER_NUWAX_DISPLAY_BACKLIGHT_ACTIVE_LOW
+        bool "LCD backlight enable is active-low"
+        default n
+        depends on BOOTLOADER_NUWAX_DISPLAY_BACKLIGHT_OFF
+        help
+            Select this only when the board enables the LCD backlight with a
+            low level. The Miaopan 2.0 board uses active-high GPIO3.
+
     config BOOTLOADER_NUWAX_EARLY_POWER_HOLD
         bool "Assert the Miaopan PG2 latch before bootloader initialization"
         default y
         help
             Drives the configured GPIO high at the first second-stage
-            bootloader hook so a normal SW3 click can be released before the
+            bootloader hook so a normal SW3 tap can be released before the
             application reaches app_main.
 
     config BOOTLOADER_NUWAX_POWER_HOLD_GPIO

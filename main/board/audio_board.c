@@ -22,9 +22,13 @@ static int s_init_refcount;
 static bool s_teardown_pending;
 static uint32_t s_generation;
 static uint32_t s_next_token;
+#define AUDIO_BOARD_REF_CAPACITY 8U
+static nuwax_audio_board_ref_t s_refs[AUDIO_BOARD_REF_CAPACITY];
+static uint32_t s_next_ref_token;
 static nuwax_audio_board_lease_t s_rx_lease;
 static nuwax_audio_board_lease_t s_tx_lease;
 static TaskHandle_t s_diagnostic_owner;
+static bool s_music_rate_dirty;
 static portMUX_TYPE s_ref_health_lock = portMUX_INITIALIZER_UNLOCKED;
 static nuwax_hardware_ref_health_t s_ref_health = NUWAX_HARDWARE_REF_HEALTH_UNTESTED;
 
@@ -121,43 +125,71 @@ nuwax_hardware_ref_health_t nuwax_audio_board_get_hardware_ref_health(void)
 static void clear_teardown_state_locked(void)
 {
     s_init_refcount = 0;
+    memset(s_refs, 0, sizeof(s_refs));
     s_teardown_pending = false;
     memset(&s_rx_lease, 0, sizeof(s_rx_lease));
     memset(&s_tx_lease, 0, sizeof(s_tx_lease));
     s_diagnostic_owner = NULL;
 }
 
-esp_err_t nuwax_audio_board_init(void)
+static esp_err_t retry_teardown_locked(void)
+{
+    if (!s_teardown_pending) {
+        return ESP_OK;
+    }
+    if (s_init_refcount != 0 || s_rx_lease.token || s_tx_lease.token) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = ESP_OK;
+#if CONFIG_NUWAX_BOARD_ESP_VOCAT_V1_0
+    err = nuwax_vocat_audio_board_deinit();
+#endif
+    if (err == ESP_OK) {
+        clear_teardown_state_locked();
+        ESP_LOGW(TAG, "audio board pending teardown recovered");
+    }
+    return err;
+}
+
+esp_err_t nuwax_audio_board_retry_teardown(void)
 {
     SemaphoreHandle_t lock = NULL;
     ESP_RETURN_ON_ERROR(ensure_lock(&lock), TAG, "lock alloc failed");
     xSemaphoreTake(lock, portMAX_DELAY);
-    esp_err_t err = ESP_OK;
-    if (s_teardown_pending) {
-        if (s_init_refcount != 1 || s_rx_lease.token != 0 ||
-            s_tx_lease.token != 0) {
-            ESP_LOGE(TAG,
-                     "audio board teardown retry state invalid refcount=%d rx_token=%lu tx_token=%lu",
-                     s_init_refcount,
-                     (unsigned long)s_rx_lease.token,
-                     (unsigned long)s_tx_lease.token);
-            err = ESP_ERR_INVALID_STATE;
-        } else {
-            ESP_LOGW(TAG,
-                     "audio board init retrying pending teardown before reinitialization");
-#if CONFIG_NUWAX_BOARD_ESP_VOCAT_V1_0
-            err = nuwax_vocat_audio_board_deinit();
-#endif
-            if (err == ESP_OK) {
-                clear_teardown_state_locked();
-                ESP_LOGW(TAG, "audio board pending teardown recovered");
-            } else {
-                ESP_LOGE(TAG,
-                         "audio board pending teardown retry failed: %s",
-                         esp_err_to_name(err));
-            }
+    const esp_err_t err = retry_teardown_locked();
+    xSemaphoreGive(lock);
+    return err;
+}
+
+static uint32_t next_ref_token_locked(void)
+{
+    for (;;) {
+        if (++s_next_ref_token == 0) ++s_next_ref_token;
+        bool used = false;
+        for (unsigned i = 0; i < AUDIO_BOARD_REF_CAPACITY; ++i) {
+            if (s_refs[i].token == s_next_ref_token) used = true;
         }
+        if (!used) return s_next_ref_token;
     }
+}
+
+esp_err_t nuwax_audio_board_init(nuwax_audio_board_ref_t *ref)
+{
+    if (!ref) return ESP_ERR_INVALID_ARG;
+    SemaphoreHandle_t lock = NULL;
+    ESP_RETURN_ON_ERROR(ensure_lock(&lock), TAG, "lock alloc failed");
+    xSemaphoreTake(lock, portMAX_DELAY);
+    if (ref->token != 0) {
+        xSemaphoreGive(lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    unsigned slot = 0;
+    while (slot < AUDIO_BOARD_REF_CAPACITY && s_refs[slot].token) slot++;
+    if (slot == AUDIO_BOARD_REF_CAPACITY) {
+        xSemaphoreGive(lock);
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = retry_teardown_locked();
     if (err == ESP_OK && s_init_refcount == 0) {
 #if CONFIG_NUWAX_BOARD_ESP_VOCAT_V1_0
         err = nuwax_vocat_audio_board_init();
@@ -167,6 +199,7 @@ esp_err_t nuwax_audio_board_init(void)
             if (s_generation == 0) {
                 s_generation = 1;
             }
+            ESP_LOGI(TAG, "audio board ownership revision=20260922-audio-owner-v1");
 #if CONFIG_NUWAX_BOARD_ESP_VOCAT_V1_0 && \
     !CONFIG_NUWAX_VOCAT_MIC3_REFERENCE_PRODUCTION_PROVEN
             nuwax_audio_board_set_hardware_ref_health(
@@ -180,18 +213,40 @@ esp_err_t nuwax_audio_board_init(void)
         }
     }
     if (err == ESP_OK) {
+        *ref = (nuwax_audio_board_ref_t){s_generation, next_ref_token_locked()};
+        s_refs[slot] = *ref;
         s_init_refcount++;
+        ESP_LOGD(TAG, "audio board ref acquired generation=%lu token=%lu count=%d",
+                 (unsigned long)ref->generation, (unsigned long)ref->token,
+                 s_init_refcount);
     }
     xSemaphoreGive(lock);
     return err;
 }
 
-esp_err_t nuwax_audio_board_deinit(void)
+esp_err_t nuwax_audio_board_deinit(nuwax_audio_board_ref_t *ref)
 {
+    if (!ref) return ESP_ERR_INVALID_ARG;
     SemaphoreHandle_t lock = NULL;
     ESP_RETURN_ON_ERROR(ensure_lock(&lock), TAG, "lock alloc failed");
     xSemaphoreTake(lock, portMAX_DELAY);
     esp_err_t err = ESP_OK;
+    if (ref->token == 0) {
+        xSemaphoreGive(lock);
+        return ESP_OK;
+    }
+    unsigned slot = 0;
+    while (slot < AUDIO_BOARD_REF_CAPACITY &&
+           (s_refs[slot].token != ref->token ||
+            s_refs[slot].generation != ref->generation)) slot++;
+    if (slot == AUDIO_BOARD_REF_CAPACITY || ref->generation != s_generation ||
+        s_init_refcount <= 0) {
+        ESP_LOGE(TAG, "stale audio board ref rejected generation=%lu token=%lu current=%lu",
+                 (unsigned long)ref->generation, (unsigned long)ref->token,
+                 (unsigned long)s_generation);
+        xSemaphoreGive(lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     if (s_init_refcount > 0) {
         if (s_init_refcount == 1 &&
             (s_rx_lease.token != 0 || s_tx_lease.token != 0)) {
@@ -200,20 +255,25 @@ esp_err_t nuwax_audio_board_deinit(void)
                      (unsigned long)s_rx_lease.token,
                      (unsigned long)s_tx_lease.token);
             err = ESP_ERR_INVALID_STATE;
-        } else if (s_init_refcount > 1) {
-            s_init_refcount--;
         } else {
+            /* Logical ownership is consumed before physical teardown. Only
+             * this module owns pending hardware cleanup, never an old client. */
+            memset(&s_refs[slot], 0, sizeof(s_refs[slot]));
+            memset(ref, 0, sizeof(*ref));
+            s_init_refcount--;
+            if (s_init_refcount == 0) {
 #if CONFIG_NUWAX_BOARD_ESP_VOCAT_V1_0
-            err = nuwax_vocat_audio_board_deinit();
+                err = nuwax_vocat_audio_board_deinit();
 #endif
-            if (err == ESP_OK) {
-                clear_teardown_state_locked();
-                ESP_LOGI(TAG, "audio board down");
-            } else {
-                s_teardown_pending = true;
-                ESP_LOGE(TAG,
-                         "audio board teardown pending retry; ownership retained: %s",
-                         esp_err_to_name(err));
+                if (err == ESP_OK) {
+                    clear_teardown_state_locked();
+                    ESP_LOGI(TAG, "audio board down");
+                } else {
+                    s_teardown_pending = true;
+                    ESP_LOGE(TAG,
+                             "audio board teardown pending retry; board owns cleanup: %s",
+                             esp_err_to_name(err));
+                }
             }
         }
     }
@@ -246,6 +306,10 @@ static esp_err_t acquire_impl(uint8_t channels,
                               bool log_expected_rejection)
 {
     ESP_RETURN_ON_FALSE(out_lease, ESP_ERR_INVALID_ARG, TAG, "lease output is NULL");
+    /* Lease outputs are zero-initialized by contract. Reject reuse before
+     * touching either the token or the caller's live handle outputs. */
+    ESP_RETURN_ON_FALSE(out_lease->token == 0U, ESP_ERR_INVALID_STATE,
+                        TAG, "lease output still owns a channel");
     memset(out_lease, 0, sizeof(*out_lease));
     if (out_rx_handle) {
         *out_rx_handle = NULL;
@@ -353,6 +417,40 @@ esp_err_t nuwax_audio_board_acquire_diagnostic(void **out_rx_handle,
                         true);
 }
 
+esp_err_t nuwax_audio_board_acquire_music(void **out_tx_handle,
+                                         nuwax_audio_board_lease_t *out_lease)
+{
+    void *rx = NULL;
+    return acquire_impl(NUWAX_AUDIO_BOARD_LEASE_RX | NUWAX_AUDIO_BOARD_LEASE_TX |
+                            NUWAX_AUDIO_BOARD_LEASE_MUSIC,
+                        &rx, out_tx_handle, out_lease, false);
+}
+
+esp_err_t nuwax_audio_board_music_rate(const nuwax_audio_board_lease_t *lease,
+                                      uint32_t sample_rate)
+{
+#if CONFIG_NUWAX_BOARD_ESP_VOCAT_V1_0
+    SemaphoreHandle_t lock = NULL;
+    ESP_RETURN_ON_ERROR(ensure_lock(&lock), TAG, "music rate lock");
+    xSemaphoreTake(lock, portMAX_DELAY);
+    esp_err_t err = ESP_ERR_INVALID_STATE;
+    if (lease && (lease->channels & NUWAX_AUDIO_BOARD_LEASE_MUSIC) &&
+        lease_matches(&s_rx_lease, lease) && lease_matches(&s_tx_lease, lease)) {
+        /* Retain the lease after a partial failure until voice restoration
+         * succeeds. No microphone may acquire a mismatched clock domain. */
+        s_music_rate_dirty = true;
+        err = nuwax_vocat_audio_board_set_music_rate(sample_rate);
+        if (err == ESP_OK && sample_rate == VOCAT_AUDIO_SAMPLE_RATE_HZ)
+            s_music_rate_dirty = false;
+    }
+    xSemaphoreGive(lock);
+    return err;
+#else
+    (void)lease; (void)sample_rate;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
 esp_err_t nuwax_audio_board_release(nuwax_audio_board_lease_t *lease)
 {
     ESP_RETURN_ON_FALSE(lease && lease->token != 0,
@@ -365,18 +463,22 @@ esp_err_t nuwax_audio_board_release(nuwax_audio_board_lease_t *lease)
     esp_err_t err = ESP_OK;
     const uint8_t known_channels = NUWAX_AUDIO_BOARD_LEASE_RX |
                                    NUWAX_AUDIO_BOARD_LEASE_TX |
-                                   NUWAX_AUDIO_BOARD_LEASE_DIAGNOSTIC;
+                                   NUWAX_AUDIO_BOARD_LEASE_DIAGNOSTIC |
+                                   NUWAX_AUDIO_BOARD_LEASE_MUSIC;
     const bool has_rx = (lease->channels & NUWAX_AUDIO_BOARD_LEASE_RX) != 0;
     const bool has_tx = (lease->channels & NUWAX_AUDIO_BOARD_LEASE_TX) != 0;
     const bool has_diagnostic =
         (lease->channels & NUWAX_AUDIO_BOARD_LEASE_DIAGNOSTIC) != 0;
+    const bool has_music = (lease->channels & NUWAX_AUDIO_BOARD_LEASE_MUSIC) != 0;
     const bool shape_valid =
         (lease->channels & (uint8_t)~known_channels) == 0 &&
                              (has_rx || has_tx) &&
-                             (!has_diagnostic || (has_rx && has_tx));
+                             (!(has_diagnostic || has_music) || (has_rx && has_tx)) &&
+                             !(has_diagnostic && has_music);
     const bool rx_match = !has_rx || lease_matches(&s_rx_lease, lease);
     const bool tx_match = !has_tx || lease_matches(&s_tx_lease, lease);
-    if (!shape_valid || !rx_match || !tx_match) {
+    if (!shape_valid || !rx_match || !tx_match ||
+        ((lease->channels & NUWAX_AUDIO_BOARD_LEASE_MUSIC) && s_music_rate_dirty)) {
         ESP_LOGE(TAG,
                  "stale or malformed audio lease release rejected generation=%lu token=%lu channels=0x%02x current_generation=%lu rx_token=%lu rx_channels=0x%02x tx_token=%lu tx_channels=0x%02x",
                  (unsigned long)lease->generation,
@@ -454,7 +556,8 @@ esp_err_t nuwax_audio_board_lifecycle_selftest(int cycles)
     }
     const bool shared = s_caps.shared_i2s;
     for (int i = 0; i < cycles; i++) {
-        esp_err_t err = nuwax_audio_board_init();
+        nuwax_audio_board_ref_t ref = {0};
+        esp_err_t err = nuwax_audio_board_init(&ref);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "selftest cycle %d: init failed %s", i, esp_err_to_name(err));
             return err;
@@ -477,7 +580,7 @@ esp_err_t nuwax_audio_board_lifecycle_selftest(int cycles)
                 if (tx_err == ESP_OK) {
                     (void)nuwax_audio_board_release(&tx_lease);
                 }
-                (void)nuwax_audio_board_deinit();
+                (void)nuwax_audio_board_deinit(&ref);
                 return ESP_FAIL;
             }
             /* double-acquire must be rejected, not hand out the channel twice */
@@ -491,7 +594,7 @@ esp_err_t nuwax_audio_board_lifecycle_selftest(int cycles)
                 ESP_LOGE(TAG, "selftest cycle %d: double-acquire RX not rejected", i);
                 (void)nuwax_audio_board_release(&dup_lease);
                 (void)nuwax_audio_board_release(&tx_lease);
-                (void)nuwax_audio_board_deinit();
+                (void)nuwax_audio_board_deinit(&ref);
                 return ESP_FAIL;
             }
             (void)nuwax_audio_board_release(&rx_lease);
@@ -499,11 +602,12 @@ esp_err_t nuwax_audio_board_lifecycle_selftest(int cycles)
         } else if (rx_err != ESP_ERR_NOT_SUPPORTED || tx_err != ESP_ERR_NOT_SUPPORTED) {
             ESP_LOGE(TAG, "selftest cycle %d: legacy acquire should be NOT_SUPPORTED rx=%s tx=%s",
                      i, esp_err_to_name(rx_err), esp_err_to_name(tx_err));
-            nuwax_audio_board_deinit();
+            nuwax_audio_board_deinit(&ref);
             return ESP_FAIL;
         }
 
-        nuwax_audio_board_deinit();
+        err = nuwax_audio_board_deinit(&ref);
+        if (err != ESP_OK) return err;
     }
 
     SemaphoreHandle_t lock = NULL;

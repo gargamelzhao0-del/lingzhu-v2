@@ -8,6 +8,8 @@
 #include "monitoring_protocol.h"
 
 static char s_last_text[512];
+int64_t esp_timer_get_time(void) { return 1000000; }
+uint32_t nuwax_ws_connection_epoch(const nuwax_ws_client_t *ws) { return ws ? ws->connection_epoch : 0; }
 static esp_err_t s_send_result = ESP_OK;
 
 esp_err_t nuwax_ws_send_text(nuwax_ws_client_t *ws, const char *payload) {
@@ -237,6 +239,37 @@ int main(void) {
                &ws, "bad request", true, "monitoring_stream_1",
                "no_speech", 120000U) == ESP_ERR_INVALID_ARG);
 
+    const char *sync_ack = "{\"type\":\"audio_mode_request_ack\",\"mode\":\"monitoring\","
+        "\"request_id\":\"sync_1\",\"state\":\"enabled\",\"ok\":true,\"audio_session_id\":\"scene_1\"}";
+    assert(nuwax_monitoring_protocol_parse(sync_ack, (int)strlen(sync_ack), &event));
+    assert(event.type == NUWAX_MONITORING_PROTOCOL_EVENT_REQUEST_ACK && event.ok && event.enabled);
+    assert(strcmp(event.audio_session_id, "scene_1") == 0);
+    assert_rejected("{\"type\":\"audio_mode_request_ack\",\"mode\":\"meeting\","
+        "\"request_id\":\"sync_1\",\"state\":\"enabled\",\"ok\":true}");
+    assert_rejected("{\"type\":\"audio_mode_request_ack\",\"mode\":\"monitoring\","
+        "\"request_id\":\"sync_1\",\"state\":\"enabled\",\"ok\":\"true\"}");
+    assert_rejected("{\"type\":\"audio_mode_request_ack\",\"mode\":\"monitoring\","
+        "\"request_id\":\"sync_1\",\"state\":\"enabled\",\"ok\":true,\"ok\":false}");
+    assert_rejected("{\"type\":\"device_command\",\"command\":\"set_audio_mode\",\"mode\":\"monitoring\","
+        "\"request_id\":\"stop_1\",\"state\":\"disabled\",\"audio_session_id\":3}");
     puts("monitoring_protocol_host_check: PASS");
     return 0;
+}
+
+/* Bounded transport fake: protocol JSON remains the same. */
+esp_err_t nuwax_ws_send_text_until_if_epoch(nuwax_ws_client_t *ws, const char *payload,
+    int64_t deadline_us, uint32_t epoch)
+{
+    if (deadline_us <= 0 || !ws || ws->connection_epoch != epoch) return ESP_ERR_INVALID_STATE;
+    #ifdef nuwax_ws_send_text
+    #undef nuwax_ws_send_text
+    #define SD_RESTORE_SEND_TEXT
+    #endif
+    extern esp_err_t nuwax_ws_send_text(nuwax_ws_client_t *, const char *);
+    esp_err_t result = nuwax_ws_send_text(ws, payload);
+    #ifdef SD_RESTORE_SEND_TEXT
+    #define nuwax_ws_send_text sd_base_send_text
+    #undef SD_RESTORE_SEND_TEXT
+    #endif
+    return result;
 }

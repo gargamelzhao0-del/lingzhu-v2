@@ -9,6 +9,12 @@
 #include "lv_draw_sw_private.h"
 #include "../lv_draw_private.h"
 #if LV_USE_DRAW_SW
+/* Project probe: single-owner builds only. No logging or allocation in draw. */
+#if defined(ESP_PLATFORM) && CONFIG_NUWAX_UI_PERF_LOG_ENABLE && LV_USE_OS == LV_OS_NONE
+#include "esp_timer.h"
+extern void nuwax_lvgl_record_sw_draw(unsigned type, uint32_t elapsed_us);
+#define NUWAX_SW_DRAW_TIMING 1
+#endif
 
 #include "../../core/lv_refr.h"
 #include "../../display/lv_display_private.h"
@@ -384,6 +390,9 @@ static void render_thread_cb(void * ptr)
 static void execute_drawing(lv_draw_task_t * t)
 {
     LV_PROFILER_DRAW_BEGIN;
+#if NUWAX_SW_DRAW_TIMING
+    const int64_t nuwax_draw_started = esp_timer_get_time();
+#endif
     /*Render the draw task*/
     switch(t->type) {
         case LV_DRAW_TASK_TYPE_FILL:
@@ -432,6 +441,9 @@ static void execute_drawing(lv_draw_task_t * t)
     }
 
 
+#if NUWAX_SW_DRAW_TIMING
+    nuwax_lvgl_record_sw_draw((unsigned)t->type, (uint32_t)(esp_timer_get_time() - nuwax_draw_started));
+#endif
     LV_PROFILER_DRAW_END;
 }
 

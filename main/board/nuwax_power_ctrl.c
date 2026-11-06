@@ -31,20 +31,49 @@ static const char *TAG = "nuwax_power";
 /* ESP32-S3 ROM declares RTC STORE0 reserved; IDF 6.0 has no production use. */
 #define NUWAX_POWER_OFF_MARKER             0x4E57584Fu /* 'NWXO' */
 
+#ifndef CONFIG_NUWAX_POWER_KEY_LONG_PRESS_MS
+#define CONFIG_NUWAX_POWER_KEY_LONG_PRESS_MS 3000
+#endif
+
 /* RTC-retained boot diagnostics survive reset and USB-backed deep sleep, but
  * reset after a real battery power-off. */
 static RTC_NOINIT_ATTR uint32_t s_boot_count;
 static RTC_NOINIT_ATTR uint32_t s_boot_magic;
 
 #define NUWAX_SHUTDOWN_GATE_CLAIMED (UINT32_C(1) << 31)
+#define NUWAX_SHUTDOWN_GATE_PREPARING (UINT32_C(1) << 30)
 #define NUWAX_SHUTDOWN_INHIBIT_OWNER_MASK                                  \
     ((uint32_t)NUWAX_POWER_INHIBIT_OTA_BOOT |                              \
      (uint32_t)NUWAX_POWER_INHIBIT_OTA_UPDATE |                            \
-     (uint32_t)NUWAX_POWER_INHIBIT_REPROVISION)
+     (uint32_t)NUWAX_POWER_INHIBIT_REPROVISION |                          \
+     (uint32_t)NUWAX_POWER_INHIBIT_BATTERY_PROFILE)
 
 /* The owner bits and the terminal shutdown claim share one atomic word so an
  * owner cannot appear after SW3 has already committed the power transition. */
 static atomic_uint_fast32_t s_shutdown_gate = ATOMIC_VAR_INIT(0U);
+
+bool nuwax_power_ctrl_prepare_shutdown(void)
+{
+    uint_fast32_t expected = 0U;
+    return atomic_compare_exchange_strong_explicit(
+               &s_shutdown_gate, &expected, NUWAX_SHUTDOWN_GATE_PREPARING,
+               memory_order_acq_rel, memory_order_acquire) ||
+           expected == NUWAX_SHUTDOWN_GATE_PREPARING;
+}
+
+bool nuwax_power_ctrl_shutdown_preparing(void)
+{
+    return (atomic_load_explicit(&s_shutdown_gate, memory_order_acquire) &
+            (NUWAX_SHUTDOWN_GATE_PREPARING | NUWAX_SHUTDOWN_GATE_CLAIMED)) != 0U;
+}
+
+void nuwax_power_ctrl_abort_shutdown(void)
+{
+    uint_fast32_t expected = NUWAX_SHUTDOWN_GATE_PREPARING;
+    (void)atomic_compare_exchange_strong_explicit(
+        &s_shutdown_gate, &expected, 0U, memory_order_acq_rel,
+        memory_order_acquire);
+}
 
 #if CONFIG_NUWAX_POWER_KEY_ENABLE
 static TaskHandle_t s_power_key_task_handle;
@@ -54,6 +83,9 @@ static StackType_t
                            sizeof(StackType_t)];
 static bool s_shutdown_started;
 static bool s_recovery_boot_press_forces_shutdown;
+static _Atomic(nuwax_power_key_event_cb_t) s_key_event_callback =
+    ATOMIC_VAR_INIT(NULL);
+static _Atomic(void *) s_key_event_context = ATOMIC_VAR_INIT(NULL);
 
 _Static_assert((NUWAX_POWER_KEY_TASK_STACK_BYTES % sizeof(StackType_t)) == 0U,
                "power-key stack size must be StackType_t aligned");
@@ -115,6 +147,8 @@ static esp_err_t configure_power_hold_output(int pin, int hold_level)
     if (err == ESP_OK) {
         err = gpio_set_level((gpio_num_t)pin, hold_level);
     }
+    /* A failed preload/configuration must not release the retained supply. */
+    if (err != ESP_OK) return err;
     gpio_deep_sleep_hold_dis();
     const esp_err_t hold_err = gpio_hold_dis((gpio_num_t)pin);
     if (err == ESP_OK) {
@@ -171,6 +205,24 @@ static bool power_key_is_pressed(void)
            power_key_active_level();
 }
 
+static bool key_event_listener_present(void)
+{
+    return atomic_load_explicit(&s_key_event_callback,
+                                memory_order_acquire) != NULL;
+}
+
+static void emit_key_event(nuwax_power_key_event_t event)
+{
+    const nuwax_power_key_event_cb_t callback = atomic_load_explicit(
+        &s_key_event_callback, memory_order_acquire);
+    if (!callback) {
+        return;
+    }
+    void *const context = atomic_load_explicit(&s_key_event_context,
+                                               memory_order_acquire);
+    callback(context, event);
+}
+
 static void force_output_level(gpio_num_t pin, int level)
 {
     esp_err_t err = gpio_set_level(pin, level);
@@ -202,7 +254,7 @@ static void silence_outputs_for_shutdown(void)
 #endif
 }
 
-static esp_err_t configure_shutdown_wakeup(void)
+static esp_err_t configure_shutdown_wakeup(bool key_is_held)
 {
     const gpio_num_t key_pin = (gpio_num_t)CONFIG_NUWAX_POWER_KEY_GPIO;
     esp_err_t err;
@@ -229,7 +281,9 @@ static esp_err_t configure_shutdown_wakeup(void)
     }
     if (err == ESP_OK) {
         err = esp_sleep_enable_ext1_wakeup_io(
-            1ULL << key_pin, ESP_EXT1_WAKEUP_ANY_LOW);
+            1ULL << key_pin,
+            key_is_held ? ESP_EXT1_WAKEUP_ANY_HIGH
+                        : ESP_EXT1_WAKEUP_ANY_LOW);
     }
 #else
     err = rtc_gpio_pullup_dis(key_pin);
@@ -238,7 +292,9 @@ static esp_err_t configure_shutdown_wakeup(void)
     }
     if (err == ESP_OK) {
         err = esp_sleep_enable_ext1_wakeup_io(
-            1ULL << key_pin, ESP_EXT1_WAKEUP_ANY_HIGH);
+            1ULL << key_pin,
+            key_is_held ? ESP_EXT1_WAKEUP_ANY_LOW
+                        : ESP_EXT1_WAKEUP_ANY_HIGH);
     }
 #endif
     return err;
@@ -266,7 +322,7 @@ static esp_err_t honor_power_off_marker_before_hold(int hold_pin)
         return ESP_OK;
     }
 
-    err = configure_shutdown_wakeup();
+    err = configure_shutdown_wakeup(false);
     if (err != ESP_OK) {
         clear_power_off_marker();
         return err;
@@ -304,7 +360,7 @@ static bool claim_shutdown_gate(bool force,
             current & NUWAX_SHUTDOWN_INHIBIT_OWNER_MASK;
         if (owners != 0U && !force) {
             if (previous_owners) {
-                *previous_owners = owners;
+                *previous_owners = current;
             }
             return false;
         }
@@ -313,7 +369,7 @@ static bool claim_shutdown_gate(bool force,
                 &s_shutdown_gate, &expected, NUWAX_SHUTDOWN_GATE_CLAIMED,
                 memory_order_acq_rel, memory_order_acquire)) {
             if (previous_owners) {
-                *previous_owners = owners;
+                *previous_owners = current;
             }
             return true;
         }
@@ -325,7 +381,8 @@ static void restore_shutdown_gate(uint_fast32_t previous_owners)
 {
     atomic_store_explicit(
         &s_shutdown_gate,
-        previous_owners & NUWAX_SHUTDOWN_INHIBIT_OWNER_MASK,
+        previous_owners & (NUWAX_SHUTDOWN_INHIBIT_OWNER_MASK |
+                           NUWAX_SHUTDOWN_GATE_PREPARING),
         memory_order_release);
 }
 
@@ -340,14 +397,13 @@ static bool enter_power_off_state(bool force)
         return false;
     }
 
-    /* Shutdown is release-triggered. This final check prevents a fresh press
-     * from becoming an already-active EXT1 wake condition. */
-    if (power_key_is_pressed()) {
-        restore_shutdown_gate(previous_owners);
-        return false;
-    }
-
-    esp_err_t err = configure_shutdown_wakeup();
+    const bool key_is_held = power_key_is_pressed();
+    /* At the normal three-second threshold SW3 is intentionally still held.
+     * Arm the opposite level in that case so this same press cannot wake the
+     * device immediately after deep-sleep entry. A release wake retains the
+     * off marker; the early boot/application handoff then rearms the next
+     * press as the real power-on request. */
+    esp_err_t err = configure_shutdown_wakeup(key_is_held);
     if (err != ESP_OK) {
         restore_shutdown_gate(previous_owners);
         return false;
@@ -368,6 +424,10 @@ static bool enter_power_off_state(bool force)
      * connected USB cable keeps the MCU powered, deep sleep keeps the device
      * visibly off until the next SW3 press. */
     REG_WRITE(RTC_CNTL_STORE0_REG, NUWAX_POWER_OFF_MARKER);
+    ESP_LOGI(TAG,
+             "power-off committed key_held=%d wake_on=%s",
+             key_is_held ? 1 : 0,
+             key_is_held ? "release" : "press");
     (void)gpio_set_level(hold_pin, release_level);
     esp_deep_sleep_start();
 
@@ -393,17 +453,16 @@ static TickType_t milliseconds_to_ticks_ceil(uint32_t milliseconds)
 
 static bool reset_press_is_shutdown_recovery(esp_reset_reason_t reason)
 {
-    switch (reason) {
-    case ESP_RST_SW:
-    case ESP_RST_PANIC:
-    case ESP_RST_INT_WDT:
-    case ESP_RST_TASK_WDT:
-    case ESP_RST_WDT:
-    case ESP_RST_BROWNOUT:
-        return true;
-    default:
-        return false;
-    }
+    (void)reason;
+    /*
+     * A key that is still held while the chip reboots is the same physical
+     * startup gesture that the bootloader has already qualified.  Treating
+     * WDT/panic/brownout recovery as an implicit shutdown request can turn a
+     * transient boot failure into a power-cycle loop.  The runtime task still
+     * emits LONG_PRESS after a fresh debounced press, and the bootloader keeps
+     * the explicit three-second startup qualification.
+     */
+    return false;
 }
 
 static void power_key_task(void *arg)
@@ -421,6 +480,8 @@ static void power_key_task(void *arg)
         CONFIG_NUWAX_POWER_KEY_DEBOUNCE_MS);
     const TickType_t force_hold_ticks = milliseconds_to_ticks_ceil(
         CONFIG_NUWAX_POWER_KEY_FORCE_OFF_HOLD_MS);
+    const TickType_t long_press_ticks = milliseconds_to_ticks_ceil(
+        CONFIG_NUWAX_POWER_KEY_LONG_PRESS_MS);
     TickType_t now = xTaskGetTickCount();
     TickType_t last_wake = now;
     TickType_t sampled_since = now;
@@ -428,6 +489,7 @@ static void power_key_task(void *arg)
     bool sampled_pressed = power_key_is_pressed();
     bool force_on_release =
         sampled_pressed && s_recovery_boot_press_forces_shutdown;
+    bool long_press_emitted = false;
     state = force_on_release ? PRESSED : WAIT_BOOT_RELEASE;
 
     for (;;) {
@@ -447,8 +509,12 @@ static void power_key_task(void *arg)
         } else if (state == ARMED) {
             if (sampled_pressed && stable_ticks >= debounce_ticks) {
                 state = PRESSED;
+                /* Start the product threshold after the debounced edge. This
+                 * prevents contact chatter from shortening the configured
+                 * three-second long-press contract. */
                 press_started = now;
                 force_on_release = false;
+                long_press_emitted = false;
                 sampled_since = now;
             }
         } else {
@@ -456,21 +522,53 @@ static void power_key_task(void *arg)
             if (sampled_pressed && held_ticks >= force_hold_ticks) {
                 force_on_release = true;
             }
+            if (sampled_pressed && !long_press_emitted &&
+                held_ticks >= long_press_ticks) {
+                long_press_emitted = true;
+                emit_key_event(NUWAX_POWER_KEY_EVENT_LONG_PRESS);
+            }
             if (!sampled_pressed && stable_ticks >= debounce_ticks) {
                 const bool force = force_on_release ||
                                    held_ticks >= force_hold_ticks;
-                (void)enter_power_off_state(force);
-                /* A failed wake configuration or an ordinary OTA-inhibited
-                 * click returns here. Stay armed so the user can immediately
-                 * retry or use the bounded force-off hold. */
+                if (force) {
+                    /* Emergency force-off remains a hardware-owned fallback
+                     * and is intentionally independent of the app owner. */
+                    (void)enter_power_off_state(true);
+                } else if (long_press_emitted) {
+                    if (key_event_listener_present()) {
+                        emit_key_event(NUWAX_POWER_KEY_EVENT_LONG_RELEASE);
+                    } else {
+                        /* Preserve the legacy fail-safe when the application
+                         * has not installed a semantic listener yet. */
+                        (void)enter_power_off_state(false);
+                    }
+                } else if (key_event_listener_present()) {
+                    emit_key_event(NUWAX_POWER_KEY_EVENT_SHORT_PRESS);
+                } else {
+                    (void)enter_power_off_state(false);
+                }
                 state = ARMED;
                 force_on_release = false;
+                long_press_emitted = false;
                 sampled_since = now;
             }
         }
 
         xTaskDelayUntil(&last_wake, poll_ticks);
     }
+}
+
+void nuwax_power_ctrl_set_key_event_listener(
+    nuwax_power_key_event_cb_t callback,
+    void *ctx)
+{
+    atomic_store_explicit(&s_key_event_context, ctx, memory_order_release);
+    atomic_store_explicit(&s_key_event_callback, callback, memory_order_release);
+}
+
+bool nuwax_power_ctrl_commit_shutdown(bool force)
+{
+    return enter_power_off_state(force);
 }
 
 static esp_err_t start_power_key_task(void)
@@ -498,6 +596,24 @@ static esp_err_t start_power_key_task(void)
 }
 
 #endif /* CONFIG_NUWAX_POWER_KEY_ENABLE */
+
+#if !CONFIG_NUWAX_POWER_CTRL_OBSERVE
+static bool s_restart_hold_registered;
+
+/* esp_restart is also used by provisioning and OTA. Latch PG2 across the
+ * reset boundary; configure_power_hold_output preloads HIGH before releasing
+ * this pad hold on the next boot. Deep-sleep shutdown does not call this. */
+static void preserve_power_on_restart(void)
+{
+    if (nuwax_power_ctrl_shutdown_preparing()) return;
+    const gpio_num_t pin = (gpio_num_t)CONFIG_NUWAX_POWER_CTRL_GPIO;
+    const esp_err_t level_err = gpio_set_level(pin, power_hold_level());
+    const esp_err_t hold_err = level_err == ESP_OK ? gpio_hold_en(pin) : level_err;
+    if (hold_err != ESP_OK) {
+        ESP_LOGE(TAG, "restart PG2 pad hold failed: %s", esp_err_to_name(hold_err));
+    }
+}
+#endif
 
 esp_err_t nuwax_power_ctrl_init(void)
 {
@@ -536,6 +652,11 @@ esp_err_t nuwax_power_ctrl_init(void)
     err = configure_power_hold_output(pin, hold_level);
     if (err != ESP_OK) {
         return err;
+    }
+    if (!s_restart_hold_registered) {
+        err = esp_register_shutdown_handler(preserve_power_on_restart);
+        if (err != ESP_OK) return err;
+        s_restart_hold_registered = true;
     }
 #if CONFIG_NUWAX_POWER_KEY_ENABLE
     clear_power_off_marker();
@@ -578,7 +699,17 @@ bool nuwax_power_ctrl_acquire_shutdown_inhibit(
     uint_fast32_t current = atomic_load_explicit(&s_shutdown_gate,
                                                  memory_order_acquire);
     for (;;) {
-        if ((current & NUWAX_SHUTDOWN_GATE_CLAIMED) != 0U) {
+        if ((current & (NUWAX_SHUTDOWN_GATE_CLAIMED |
+                        NUWAX_SHUTDOWN_GATE_PREPARING)) != 0U) {
+            return false;
+        }
+        /* Profile maintenance may coexist with boot validation, but never
+         * with an update/reprovision transaction that can write or reboot. */
+        const uint_fast32_t maintenance = NUWAX_POWER_INHIBIT_BATTERY_PROFILE;
+        const uint_fast32_t writers = NUWAX_POWER_INHIBIT_OTA_UPDATE |
+                                     NUWAX_POWER_INHIBIT_REPROVISION;
+        if (((uint32_t)owner == maintenance && (current & writers) != 0U) ||
+            (((uint32_t)owner & writers) != 0U && (current & maintenance) != 0U)) {
             return false;
         }
         const uint_fast32_t desired = current | (uint32_t)owner;
@@ -631,10 +762,28 @@ bool nuwax_power_ctrl_shutdown_is_inhibited(void)
 
 #else /* not Miaopan or POWER_CTRL disabled */
 
+bool nuwax_power_ctrl_prepare_shutdown(void) { return true; }
+bool nuwax_power_ctrl_shutdown_preparing(void) { return false; }
+void nuwax_power_ctrl_abort_shutdown(void) {}
+
 esp_err_t nuwax_power_ctrl_init(void)
 {
     ESP_LOGD(TAG, "Miaopan power control skipped for this board/profile");
     return ESP_OK;
+}
+
+void nuwax_power_ctrl_set_key_event_listener(
+    nuwax_power_key_event_cb_t callback,
+    void *ctx)
+{
+    (void)callback;
+    (void)ctx;
+}
+
+bool nuwax_power_ctrl_commit_shutdown(bool force)
+{
+    (void)force;
+    return false;
 }
 
 bool nuwax_power_ctrl_acquire_shutdown_inhibit(

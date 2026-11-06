@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
 
@@ -15,3 +16,13 @@ static inline void heap_caps_free(void *ptr) {
     free(ptr);
 }
 
+static inline void *heap_caps_calloc(size_t count, size_t bytes, unsigned int caps) {
+    (void)caps;
+#if defined(NUWAX_HOST_HEAP_CAPS_FAULT_INJECT)
+    extern bool nuwax_host_heap_caps_fail_calloc;
+    if (nuwax_host_heap_caps_fail_calloc) {
+        return NULL;
+    }
+#endif
+    return calloc(count, bytes);
+}

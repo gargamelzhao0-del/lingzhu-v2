@@ -18,6 +18,7 @@
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "device_error_report.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nuwax_ota.h"
@@ -289,6 +290,11 @@ esp_err_t nuwax_ota_transport_run(const nuwax_ota_manifest_t *manifest)
     if (update_partition == NULL) {
         nuwax_ota_fail("ota_partition_not_found");
         return ESP_ERR_NOT_FOUND;
+    }
+    const esp_partition_t *running_partition = esp_ota_get_running_partition();
+    if (running_partition == NULL || update_partition->address == running_partition->address) {
+        nuwax_ota_fail("update_targets_running_partition");
+        return ESP_ERR_INVALID_STATE;
     }
     if (manifest->size_bytes > update_partition->size) {
         nuwax_ota_fail("image_exceeds_partition");
@@ -774,6 +780,8 @@ cleanup:
     restore_wifi_power_save(&wifi_ps_guard);
     ESP_LOGE(TAG, "OTA failed reason=%s err=%s", failure_reason,
              esp_err_to_name(err));
+    (void)nuwax_device_error_report_enqueue(
+        "error", "ota", "transport", err, "ota", 0U, NULL);
     log_ota_heap("failure_cleanup");
     nuwax_ota_fail(failure_reason);
     return err;

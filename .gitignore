@@ -1,7 +1,11 @@
-﻿# macOS
+# macOS
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Paired PC SD test gateway identity and generated test configuration.
+/runtime-logs/sd-test-gateway/settings.json
+/tmp/sdkconfig.sd-session-test*
 
 # Directory metadata
 .directory
@@ -26,7 +30,7 @@ build-preflight*/
 *.o
 *.a
 *.out
-*.exe # For any host-side utilities compiled on Windows
+*.exe
 
 # ESP-IDF specific build outputs
 *.bin
@@ -34,7 +38,7 @@ build-preflight*/
 !docs/protocol/fixtures/na/*.bin
 *.elf
 *.map
-flasher_args.json # Generated in build directory
+flasher_args.json
 sdkconfig.old
 sdkconfig
 
@@ -99,11 +103,44 @@ config/public.local.json
 Thumbs.db
 ehthumbs.db
 Desktop.ini
-/CON
-/tmp/
 
 # User-specific configuration files
 *.user
-*.workspace # General workspace files, can be from various tools
-*.suo       # Visual Studio Solution User Options
-*.sln.docstates # Visual Studio
+*.workspace
+*.suo
+*.sln.docstates
+
+# Repository publication: generated output and machine-local inputs
+/.clangd
+/.vscode/
+/.agents/
+/.claude/
+/.zcode/
+/.host-check-build/
+/artifacts/
+/output/
+/rollback/
+/sd卡数据备份/
+**/build-*/
+**/build_*/
+**/node_modules/
+*.obj
+*.pdb
+*.ilk
+*.ppm
+*.zip
+*.7z
+*.rar
+*.rsp
+.env
+.env.*
+!.env.example
+/config/*.local.json
+/sdkconfig.*
+!/sdkconfig.defaults
+!/sdkconfig.ci
+!/sdkconfig.*.defaults
+/tools/ui-speaking-capture/conversation-v1/
+/tools/face_transition_preview*/
+# This pinned input is required by the top-level CMakeLists.txt.
+!/assets/emotion/emotion-assets.bin

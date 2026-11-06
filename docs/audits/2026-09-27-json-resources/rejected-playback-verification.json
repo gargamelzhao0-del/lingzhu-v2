@@ -1,0 +1,14 @@
+{
+  "revision": "20260924-rejected-playback-v1",
+  "elfSha256": "fee56b4caffc46d9eacc0251e23a2e249a96511b43bc3b6257a4a675fcc1a8ff",
+  "binSha256": "5718f2a361242f85562db1ff13e49b8d0a66e9d8e3eee7ddbd740089e81bc61e",
+  "bytes": 3835312,
+  "hardwareValidated": false,
+  "sourceHashes": {
+    "main/nuwax_ai_partner_main.c": "07b6c9d62a3038690202e1b1dd24600a400565bae3f5ba5f2d6b6054a6450867",
+    "main/session_protocol.h": "04943f7d33db38b9f7a745c0422a53408e5edd526d7bbbe59726104dd384b3ab",
+    "main/conversation/turn_guard.c": "bf5e5a168c8fdbb2ae674bfca04eaee40f3402b4c58aebc5ff6d68a31f1dce75",
+    "main/conversation/turn_guard.h": "40693c6eef147dc025db65d79d0b1f0eca3c091944932cac346dd51a02682e4b",
+    "tools/test-rejected-playback-owner.py": "45398436b922dfe57570649c5dab0e1b31ad5183a7ecf5014fab7fe4522a1b13"
+  }
+}

@@ -1,9 +1,13 @@
 #include "meeting_protocol.h"
+#include "sd_audio_identity.h"
+#include "audio_command_deadline.h"
+#include "esp_timer.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
+#include "json_resource_budget.h"
 
 static const cJSON *get_unique_object_item(const cJSON *root, const char *name) {
     const cJSON *match = NULL;
@@ -95,8 +99,9 @@ static esp_err_t send_json_object(nuwax_ws_client_t *ws, cJSON *root) {
     if (!json) {
         return ESP_ERR_NO_MEM;
     }
-    esp_err_t err = nuwax_ws_send_text(ws, json);
-    free(json);
+    esp_err_t err = nuwax_ws_send_text_until_if_epoch(ws, json,
+        esp_timer_get_time() + NUWAX_AUDIO_COMMAND_SEND_SLICE_US, nuwax_ws_connection_epoch(ws));
+    cJSON_free(json);
     return err;
 }
 
@@ -111,7 +116,7 @@ bool nuwax_meeting_protocol_parse(const char *payload,
     }
 
     const char *parse_end = NULL;
-    cJSON *root = cJSON_ParseWithLengthOpts(payload,
+    cJSON *root = nuwax_json_parse_with_length_opts(payload,
                                            (size_t)len,
                                            &parse_end,
                                            false);
@@ -196,11 +201,12 @@ bool nuwax_meeting_protocol_parse(const char *payload,
     return recognized;
 }
 
-esp_err_t nuwax_meeting_protocol_send_request(nuwax_ws_client_t *ws,
+static esp_err_t send_mode_request(nuwax_ws_client_t *ws,
                                               const char *request_id,
                                               bool enabled,
                                               bool interrupt_current_turn,
-                                              const char *reason) {
+                                              const char *reason,
+                                              const char *audio_session_id) {
     cJSON request_id_item = {0};
     request_id_item.type = cJSON_String;
     request_id_item.valuestring = (char *)request_id;
@@ -214,19 +220,34 @@ esp_err_t nuwax_meeting_protocol_send_request(nuwax_ws_client_t *ws,
     if (!root) {
         return ESP_ERR_NO_MEM;
     }
-    cJSON_AddStringToObject(root, "type", "audio_mode_request");
-    cJSON_AddStringToObject(root, "request_id", validated_request_id);
-    cJSON_AddStringToObject(root, "mode", "meeting");
-    cJSON_AddStringToObject(root, "state", enabled ? "enabled" : "disabled");
-    if (interrupt_current_turn) {
-        cJSON_AddTrueToObject(root, "interrupt_current_turn");
+    bool created = cJSON_AddStringToObject(root, "type", "audio_mode_request") &&
+        cJSON_AddStringToObject(root, "request_id", validated_request_id) &&
+        cJSON_AddStringToObject(root, "mode", "meeting") &&
+        cJSON_AddStringToObject(root, "state", enabled ? "enabled" : "disabled");
+    if (created && audio_session_id && audio_session_id[0]) {
+        created = cJSON_AddStringToObject(root, "audio_session_id", audio_session_id);
     }
-    if (reason && reason[0] != '\0') {
-        cJSON_AddStringToObject(root, "reason", reason);
+    if (created && interrupt_current_turn) {
+        created = cJSON_AddTrueToObject(root, "interrupt_current_turn");
     }
-    esp_err_t err = send_json_object(ws, root);
+    if (created && reason && reason[0] != '\0') {
+        created = cJSON_AddStringToObject(root, "reason", reason);
+    }
+    const esp_err_t err = created ? send_json_object(ws, root) : ESP_ERR_NO_MEM;
     cJSON_Delete(root);
     return err;
+}
+
+esp_err_t nuwax_meeting_protocol_send_request(nuwax_ws_client_t *ws,
+    const char *request_id, bool enabled, bool interrupt_current_turn, const char *reason)
+{
+    return send_mode_request(ws, request_id, enabled, interrupt_current_turn, reason, NULL);
+}
+
+esp_err_t nuwax_meeting_protocol_send_resume_request(nuwax_ws_client_t *ws,
+    const char *request_id, const char *audio_session_id)
+{
+    return send_mode_request(ws, request_id, true, false, "offline_audio_recovered", audio_session_id);
 }
 
 esp_err_t nuwax_meeting_protocol_send_command_ack(nuwax_ws_client_t *ws,
@@ -234,6 +255,21 @@ esp_err_t nuwax_meeting_protocol_send_command_ack(nuwax_ws_client_t *ws,
                                                   bool enabled,
                                                   bool ok,
                                                   const char *message) {
+    return nuwax_meeting_protocol_send_command_ack_with_session(
+        ws, request_id, enabled, ok, message, NULL);
+}
+
+esp_err_t nuwax_meeting_protocol_send_command_ack_with_session(nuwax_ws_client_t *ws,
+    const char *request_id, bool enabled, bool ok, const char *message,
+    const char *audio_session_id) {
+    return nuwax_meeting_protocol_send_command_ack_until(ws, request_id, enabled, ok,
+        message, audio_session_id, 0, 0);
+}
+
+esp_err_t nuwax_meeting_protocol_send_command_ack_until(nuwax_ws_client_t *ws,
+    const char *request_id, bool enabled, bool ok, const char *message,
+    const char *audio_session_id, int64_t deadline_us, uint32_t expected_epoch) {
+    if (audio_session_id && !sd_audio_identity_valid(audio_session_id)) return ESP_ERR_INVALID_ARG;
     cJSON request_id_item = {0};
     request_id_item.type = cJSON_String;
     request_id_item.valuestring = (char *)request_id;
@@ -247,14 +283,24 @@ esp_err_t nuwax_meeting_protocol_send_command_ack(nuwax_ws_client_t *ws,
     if (!root) {
         return ESP_ERR_NO_MEM;
     }
-    cJSON_AddStringToObject(root, "type", "device_command_ack");
-    cJSON_AddStringToObject(root, "request_id", validated_request_id);
-    cJSON_AddStringToObject(root, "command", "set_audio_mode");
-    cJSON_AddBoolToObject(root, "ok", ok);
-    cJSON_AddStringToObject(root, "mode", "meeting");
-    cJSON_AddStringToObject(root, "state", enabled ? "enabled" : "disabled");
-    cJSON_AddStringToObject(root, "message", message ? message : "");
-    esp_err_t err = send_json_object(ws, root);
+    const bool created = cJSON_AddStringToObject(root, "type", "device_command_ack") &&
+        cJSON_AddStringToObject(root, "request_id", validated_request_id) &&
+        cJSON_AddStringToObject(root, "command", "set_audio_mode") &&
+        cJSON_AddBoolToObject(root, "ok", ok) &&
+        cJSON_AddStringToObject(root, "mode", "meeting") &&
+        cJSON_AddStringToObject(root, "state", enabled ? "enabled" : "disabled") &&
+        cJSON_AddStringToObject(root, "message", message ? message : "") &&
+        (!audio_session_id || cJSON_AddStringToObject(root, "audio_session_id", audio_session_id));
+    if (!created) { cJSON_Delete(root); return ESP_ERR_NO_MEM; }
+    esp_err_t err;
+    if (deadline_us > 0) {
+        char *json = cJSON_PrintUnformatted(root);
+        err = json ? nuwax_ws_send_text_until_if_epoch(ws, json, deadline_us, expected_epoch)
+                   : ESP_ERR_NO_MEM;
+        cJSON_free(json);
+    } else {
+        err = send_json_object(ws, root);
+    }
     cJSON_Delete(root);
     return err;
 }

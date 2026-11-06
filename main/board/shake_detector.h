@@ -8,13 +8,16 @@
 extern "C" {
 #endif
 
-#define NUWAX_HEAD_TOUCH_INTERACTION_COOLDOWN_MS 2000U
-#define NUWAX_SHAKE_INTERACTION_COOLDOWN_MS 4000U
+#define NUWAX_HEAD_TOUCH_INTERACTION_COOLDOWN_MS 1000U
+#define NUWAX_SHAKE_INTERACTION_COOLDOWN_MS 2000U
 
 typedef void (*nuwax_shake_detector_event_cb_t)(void *ctx);
 
 /* Starts the low-rate QMI8658A polling worker. The callback is invoked once
- * per qualified shake and must be non-blocking. */
+ * per qualified shake and must be non-blocking. ESP_OK means creation was
+ * accepted; is_running becomes true only after sensor initialization. A
+ * sensor failure is terminal for this boot (bounded retained static storage);
+ * allocation/creation failure leaves the start entry retryable. */
 esp_err_t nuwax_shake_detector_start(nuwax_shake_detector_event_cb_t callback,
                                      void *ctx);
 

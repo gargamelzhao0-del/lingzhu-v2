@@ -29,8 +29,8 @@ int main(void) {
     if (NUWAX_CONVERSATION_CAPTURE_SLOT_DEPTH != 12U ||
         NUWAX_CONVERSATION_CAPTURE_PRE_DSP_MAX_AGE_MS != 60U ||
         NUWAX_CONVERSATION_BARGE_END_TO_END_MAX_AGE_MS != 100U ||
-        NUWAX_CONVERSATION_UPLINK_PACKET_SLOT_DEPTH != 16U ||
-        NUWAX_CONVERSATION_UPLINK_STAGING_MAX_AGE_MS != 160U ||
+        NUWAX_CONVERSATION_UPLINK_PACKET_SLOT_DEPTH != 64U ||
+        NUWAX_CONVERSATION_UPLINK_STAGING_MAX_AGE_MS != 1000U ||
         NUWAX_CONVERSATION_CAPTURE_PRE_DSP_MAX_AGE_MS +
                 NUWAX_CONVERSATION_PROFILE_MIN_DSP_RESERVE_MS >
             NUWAX_CONVERSATION_BARGE_END_TO_END_MAX_AGE_MS) {
@@ -40,7 +40,7 @@ int main(void) {
         puts("[PASS] normal-conversation latency contract reserves DSP time");
     }
 
-    if (NUWAX_AUDIO_UPLINK_REALTIME_QUEUE_DEPTH != 16U ||
+    if (NUWAX_AUDIO_UPLINK_REALTIME_QUEUE_DEPTH != 64U ||
 #if CONFIG_NUWAX_VOICE_UPLINK_CODEC_OPUS
         NUWAX_AUDIO_UPLINK_RELIABLE_QUEUE_DEPTH != 32U ||
 #else
@@ -128,40 +128,40 @@ int main(void) {
             NUWAX_AUDIO_UPLINK_PROFILE_RELIABLE, 1000U, 999999U) !=
             UINT32_MAX ||
         nuwax_audio_uplink_send_budget_ms(
-            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 0U, 1000U) != 160U ||
+            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 0U, 1000U) != 1000U ||
         nuwax_audio_uplink_send_budget_ms(
-            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 1000U, 141000U) != 20U ||
+            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 1000U, 999000U) != 2U ||
         nuwax_audio_uplink_send_budget_ms(
-            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 1000U, 160999U) != 1U ||
+            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 1000U, 1000999U) != 1U ||
         nuwax_audio_uplink_send_budget_ms(
-            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 1000U, 161000U) != 0U) {
+            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 1000U, 1001000U) != 0U) {
         puts("[FAIL] realtime packet age budget is incorrect");
         failures++;
     } else {
-        puts("[PASS] realtime packet age is bounded to 160 ms");
+        puts("[PASS] realtime packet age is bounded to 1000 ms");
     }
 
     if (nuwax_audio_uplink_recovery_send_budget_ms(
-            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 1000U, 161000U) != 160U ||
+            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 1000U, 1001000U) != 200U ||
         nuwax_audio_uplink_recovery_send_budget_ms(
-            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 1000U, 320000U) != 1U ||
+            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 1000U, 1200999U) != 1U ||
         nuwax_audio_uplink_recovery_send_budget_ms(
-            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 1000U, 321000U) != 0U ||
+            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, 1000U, 1201000U) != 0U ||
         nuwax_audio_uplink_packet_recovery_send_budget_ms(
-            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, true, 1000U, 321000U) !=
+            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, true, 1000U, 1201000U) !=
             NUWAX_AUDIO_UPLINK_REALTIME_TERMINAL_SEND_TIMEOUT_MS) {
         puts("[FAIL] realtime bounded recovery or terminal budget is incorrect");
         failures++;
     } else {
-        puts("[PASS] realtime recovery is bounded to 320 ms; END remains transactional");
+        puts("[PASS] realtime recovery is bounded to 1200 ms; END remains transactional");
     }
 
     if (nuwax_audio_uplink_packet_send_budget_ms(
             NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, true, 1000U, 999999U) !=
             NUWAX_AUDIO_UPLINK_REALTIME_TERMINAL_SEND_TIMEOUT_MS ||
         nuwax_audio_uplink_packet_send_budget_ms(
-            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, false, 1000U, 141000U) !=
-            20U ||
+            NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, false, 1000U, 221000U) !=
+            780U ||
         !nuwax_audio_uplink_can_skip_unsent_data_packet(
             NUWAX_AUDIO_UPLINK_PROFILE_REALTIME, false, ESP_ERR_TIMEOUT,
             true, true) ||

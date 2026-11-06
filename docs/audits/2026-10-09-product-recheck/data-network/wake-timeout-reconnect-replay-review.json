@@ -1,0 +1,29 @@
+{
+  "question": "If a genuinely incomplete wake greeting times out and the matching WS epoch is forcibly retired, does ordinary disconnect handling endanger background offline replay?",
+  "verdict": "No source path found that deletes a ready archive merely due to cancellation or a chunk ACK. Use the existing disconnect ownership sequence. Interruption and retry costs remain; server durability/idempotency require formal-cloud verification.",
+  "coexistence": "Normal wake waiting can overlap a previously started formal replay. main:12839-12846 does not exclude wake greeting, and audio_uplink.c:1024-1035 allows background traffic when no real-time sender is active or queued.",
+  "safety_chain": [
+    "main:35072-35089 cancels the formal worker for its connection epoch before ws owner reuse. It waits up to 6000 ms; failure uses controlled restart rather than reusing an object still referenced by a worker.",
+    "offline_audio_spool.c:4370-4386 sets cancellation and wakes ACK waits. An in-progress send remains subject to its transport timeout.",
+    "replay_wait_ack checks cancellation before waiting, during each wait iteration, and after the event wakes (3056-3059,3075-3077,3085-3088). Setting the wake bits alone is not a successful ACK.",
+    "The same function rejects disconnected/wrong-epoch transport at 3070-3072 and checks the actual ACK ok, epoch, request and control/chunk kind at 3102-3109. ACK parsing also matches expected message type and, if present, segment at 4772-4781.",
+    "replay_one_ready waits specifically for offline_audio_commit_ack (3833-3840). remove(path) is only reached with err==ESP_OK, after that wait, and after the storage-busy check (3853-3863). A chunk ACK never enters this deletion branch.",
+    "Cancelled/disconnected/timeout replay keeps the file; replay_ready_impl only quarantines independently revalidated size/CRC corruption (4186-4202), not cancellation.",
+    "If the server committed but its ACK was lost or cancellation won, the local ready file stays. The next connection begins from the server's acknowledged offset and requires idempotent commit handling.",
+    "If a valid matching commit ACK was already accepted before cancellation, local deletion can still finish. That is safe only under the documented server contract that commit ACK means durable accepted storage; firmware cannot prove the server fsync/database semantics."
+  ],
+  "costs_and_constraints": [
+    "The exceptional reconnect interrupts replay, may repeat data/control transactions and increases completion time. It is not zero-impact.",
+    "Cancellation exceeding the existing six-second owner fence can cause controlled reboot; persisted ready archives survive but unrelated volatile session state is lost.",
+    "Retire only the timed-out greeting's current epoch under a narrow reason, after checking it is still the unresolved transaction. Do not make ordinary healthy-connection playback errors force reconnect.",
+    "Do not change binding scope, reassign archives or bypass commit ACK checks as part of this fix. R3 owner isolation is a separate missing protection.",
+    "Existing replay buffers contain copies read from the archived file. Cancelling them does not delete the source. Recording staging/close workers are separate owners and must retain their existing gates."
+  ],
+  "targeted_verification": [
+    "Force the genuine wake timeout while replay waits for begin ACK, while a chunk is being sent, while waiting for chunk ACK and while waiting for commit ACK.",
+    "Race cancellation with a correct commit ACK and with stale/wrong-epoch/wrong-request ACKs. Inspect ready-file retention/deletion and the cloud's unique committed segment count.",
+    "Drop commit ACK after server durability, reconnect and repeat begin/commit; verify no double-appended audio and eventual local deletion only after the new valid ACK.",
+    "Use an intentionally slow transport/SD read to exercise six-second cancellation fallback and boot recovery, without interpreting a retained local file as upload failure or a retry as duplicate user audio."
+  ],
+  "evidence_level": "Read-only current-source control-flow review; no cloud action or product hardware test executed for this cross-check."
+}

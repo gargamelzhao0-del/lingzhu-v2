@@ -8,6 +8,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "p3_software_ref.h"
+#include "wake_word_detector.h"
 
 static const char *TAG = "p3_l3";
 static const char *NVS_NS = "nuwax_l3";
@@ -163,6 +164,14 @@ esp_err_t nuwax_p3_l3_set_enabled(bool enabled, bool persist) {
     s_stats.en = enabled;
 
     if (persist) {
+        const esp_err_t guard_err =
+            nuwax_wake_word_detector_begin_flash_operation(500U);
+        if (guard_err != ESP_OK) {
+            ESP_LOGW(TAG,
+                     "L3 persistence deferred while wake detector is active: %s",
+                     esp_err_to_name(guard_err));
+            return guard_err;
+        }
         nvs_handle_t handle;
         esp_err_t persist_err = nvs_open(NVS_NS, NVS_READWRITE, &handle);
         if (persist_err == ESP_OK) {
@@ -172,6 +181,7 @@ esp_err_t nuwax_p3_l3_set_enabled(bool enabled, bool persist) {
             }
             nvs_close(handle);
         }
+        nuwax_wake_word_detector_end_flash_operation();
         if (persist_err != ESP_OK) {
             ESP_LOGE(TAG,
                      "L3 %s at runtime but NVS persistence failed: %s",

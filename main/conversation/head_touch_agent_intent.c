@@ -124,6 +124,11 @@ bool nuwax_head_touch_agent_intent_arm_kind(
     intent->capture_released = !capture_required;
     intent->terminal_required = terminal_required;
     intent->terminal_released = !terminal_required;
+    if (source == NUWAX_HEAD_TOUCH_AGENT_SOURCE_POST_END_ASR &&
+        interaction == NUWAX_AGENT_INTERACTION_HEAD_TOUCH) {
+        intent->asr_deferred = true;
+        intent->asr_deadline_ms = now_ms + NUWAX_HEAD_TOUCH_AGENT_ASR_WAIT_MS;
+    }
     copy_id(intent->audio_session_id,
             sizeof(intent->audio_session_id),
             audio_session_id);
@@ -155,7 +160,8 @@ nuwax_head_touch_agent_intent_observe_frame(
     bool user_speech_confirmed,
     bool user_speech_candidate) {
     if (!intent || intent->state !=
-                       NUWAX_HEAD_TOUCH_AGENT_STATE_ARBITRATING) {
+                       NUWAX_HEAD_TOUCH_AGENT_STATE_ARBITRATING ||
+        intent->asr_deferred) {
         return NUWAX_HEAD_TOUCH_AGENT_FRAME_WAIT;
     }
     if (user_speech_confirmed) {
@@ -182,11 +188,74 @@ nuwax_head_touch_agent_intent_observe_frame(
 bool nuwax_head_touch_agent_intent_begin_quiesce(
     nuwax_head_touch_agent_intent_t *intent) {
     if (!intent || intent->state !=
-                       NUWAX_HEAD_TOUCH_AGENT_STATE_ARBITRATING) {
+                       NUWAX_HEAD_TOUCH_AGENT_STATE_ARBITRATING ||
+        (intent->asr_deferred &&
+         (!intent->asr_no_speech || !intent->capture_released ||
+          !intent->terminal_released))) {
         return false;
     }
     intent->state = NUWAX_HEAD_TOUCH_AGENT_STATE_QUIESCING;
     return true;
+}
+
+bool nuwax_head_touch_agent_intent_defer_asr(
+    nuwax_head_touch_agent_intent_t *intent,
+    const char *audio_session_id, uint32_t now_ms) {
+    if (!intent || intent->state != NUWAX_HEAD_TOUCH_AGENT_STATE_ARBITRATING ||
+        intent->interaction != NUWAX_AGENT_INTERACTION_HEAD_TOUCH ||
+        intent->source != NUWAX_HEAD_TOUCH_AGENT_SOURCE_LISTENING ||
+        !intent->capture_required || !nonempty(audio_session_id) ||
+        strlen(audio_session_id) >= sizeof(intent->audio_session_id) ||
+        (nonempty(intent->audio_session_id) &&
+         strcmp(intent->audio_session_id, audio_session_id) != 0)) {
+        return false;
+    }
+    intent->source = NUWAX_HEAD_TOUCH_AGENT_SOURCE_POST_END_ASR;
+    intent->asr_deferred = true;
+    intent->asr_no_speech = false;
+    intent->asr_deadline_ms = now_ms + NUWAX_HEAD_TOUCH_AGENT_ASR_WAIT_MS;
+    intent->capture_released = false;
+    intent->terminal_required = true;
+    intent->terminal_released = false;
+    copy_id(intent->audio_session_id, sizeof(intent->audio_session_id),
+            audio_session_id);
+    return true;
+}
+
+bool nuwax_head_touch_agent_intent_asr_expired(
+    const nuwax_head_touch_agent_intent_t *intent, uint32_t now_ms) {
+    return intent && intent->asr_deferred && active_state(intent->state) &&
+           intent->state != NUWAX_HEAD_TOUCH_AGENT_STATE_SENT &&
+           (int32_t)(now_ms - intent->asr_deadline_ms) >= 0;
+}
+
+bool nuwax_head_touch_agent_intent_accept_no_speech(
+    nuwax_head_touch_agent_intent_t *intent,
+    uint32_t ws_epoch, uint32_t awake_generation,
+    const char *audio_session_id, uint32_t now_ms) {
+    if (!intent || !intent->asr_deferred ||
+        intent->state < NUWAX_HEAD_TOUCH_AGENT_STATE_ARBITRATING ||
+        intent->state >= NUWAX_HEAD_TOUCH_AGENT_STATE_SENT ||
+        !intent->terminal_released ||
+        !nuwax_head_touch_agent_intent_owner_matches(
+            intent, ws_epoch, awake_generation) ||
+        !nuwax_head_touch_agent_intent_audio_matches(intent, audio_session_id) ||
+        nuwax_head_touch_agent_intent_asr_expired(intent, now_ms)) {
+        return false;
+    }
+    if (intent->state != NUWAX_HEAD_TOUCH_AGENT_STATE_ARBITRATING) {
+        return intent->asr_no_speech; /* duplicate result during drain */
+    }
+    intent->asr_no_speech = true;
+    return true;
+}
+
+static bool accepting_capture_release(
+    const nuwax_head_touch_agent_intent_t *intent) {
+    return intent &&
+           (intent->state == NUWAX_HEAD_TOUCH_AGENT_STATE_QUIESCING ||
+            (intent->state == NUWAX_HEAD_TOUCH_AGENT_STATE_ARBITRATING &&
+             intent->asr_deferred));
 }
 
 bool nuwax_head_touch_agent_intent_bind_capture_transaction(
@@ -234,8 +303,7 @@ bool nuwax_head_touch_agent_intent_mark_capture_released(
     uint32_t ws_epoch,
     uint32_t awake_generation,
     const char *audio_session_id) {
-    if (!intent || intent->state !=
-                       NUWAX_HEAD_TOUCH_AGENT_STATE_QUIESCING ||
+    if (!accepting_capture_release(intent) ||
         !intent->capture_required || intent->ws_epoch != ws_epoch ||
         intent->awake_generation != awake_generation) {
         return false;
@@ -253,8 +321,7 @@ bool nuwax_head_touch_agent_intent_mark_terminal_released(
     nuwax_head_touch_agent_intent_t *intent,
     uint32_t ws_epoch,
     const char *audio_session_id) {
-    if (!intent || intent->state !=
-                       NUWAX_HEAD_TOUCH_AGENT_STATE_QUIESCING ||
+    if (!accepting_capture_release(intent) ||
         !intent->terminal_required || intent->ws_epoch != ws_epoch ||
         !nuwax_head_touch_agent_intent_audio_matches(intent,
                                                       audio_session_id)) {

@@ -1,0 +1,54 @@
+{
+  "revision": "20260923-shake-gap-v1",
+  "elfSha256": "0967932e51cd0451f52c785ab6615f7115b0694b36340e9dfbbf05828829b804",
+  "binSha256": "c2d3ecc7f7338c98f9956537919b724e86fca17605585cecad433875bd4e44e8",
+  "bytes": 3824000,
+  "workerStackFrame": 224,
+  "hardwareValidated": false,
+  "sourceHashes": {
+    "main/board/shake_detector.c": "2a26b61cf9d91eb9f72c73aee09b169d7e56bb92c66bee42f512f7b14d5010b7",
+    "tools/test-shake-gap.py": "b4b795cd1a54163077192dbc18f00cf9ff814bb91eb649202814e999d150adbe"
+  },
+  "captureStackFrames": {
+    "stream_microphone_audio": 3488
+  },
+  "images": [
+    {
+      "offset": "0x0",
+      "file": "bootloader/bootloader.bin",
+      "sha256": "d336b79f7952b2816ae10a501fa229646986ad55639656ac8e1cd2b5ca502258"
+    },
+    {
+      "offset": "0x8000",
+      "file": "partition_table/partition-table.bin",
+      "sha256": "2d14d431e660392a4f6bd8610a97f298b6a7e5810dbdcaf5d16ab98089abb06d"
+    },
+    {
+      "offset": "0xf000",
+      "file": "ota_data_initial.bin",
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    },
+    {
+      "offset": "0x20000",
+      "file": "srmodels/srmodels.bin",
+      "sha256": "dec3196aaadcf4e6305434462f5735e1148e5ddfe1f6a0696776d666f9066d34"
+    },
+    {
+      "offset": "0x2c0000",
+      "file": "NuwaxAIPartner.bin",
+      "sha256": "c2d3ecc7f7338c98f9956537919b724e86fca17605585cecad433875bd4e44e8"
+    },
+    {
+      "offset": "0xb00000",
+      "file": "emotion_assets/emotion-assets.bin",
+      "sha256": "c8e9258f5963f6b08089ef80af6190ba1053e3e73dfc990d529d090a6f752897"
+    }
+  ],
+  "checks": {
+    "productHost": true,
+    "conversationHost": true,
+    "shakeFaultInjection": true,
+    "formalBuild": true,
+    "hardwareValidated": false
+  }
+}

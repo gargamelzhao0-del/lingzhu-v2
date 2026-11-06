@@ -1,0 +1,12 @@
+{
+  "revision": "20260923-shake-gap-v1",
+  "elfSha256": "0967932e51cd0451f52c785ab6615f7115b0694b36340e9dfbbf05828829b804",
+  "binSha256": "c2d3ecc7f7338c98f9956537919b724e86fca17605585cecad433875bd4e44e8",
+  "bytes": 3824000,
+  "workerStackFrame": 224,
+  "hardwareValidated": false,
+  "sourceHashes": {
+    "main/board/shake_detector.c": "2a26b61cf9d91eb9f72c73aee09b169d7e56bb92c66bee42f512f7b14d5010b7",
+    "tools/test-shake-gap.py": "b4b795cd1a54163077192dbc18f00cf9ff814bb91eb649202814e999d150adbe"
+  }
+}

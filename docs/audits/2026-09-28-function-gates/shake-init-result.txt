@@ -1,0 +1,2 @@
+REPRODUCED early init failure: deleted worker reported running, restart rejected
+REPRODUCED late init failure + explicit retry: retained allocation pointers overwritten (no current auto-retry caller)

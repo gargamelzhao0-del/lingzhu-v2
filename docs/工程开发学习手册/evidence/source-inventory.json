@@ -1,0 +1,3161 @@
+{
+  "scope": [
+    "main",
+    "bootloader_components",
+    "tools"
+  ],
+  "note": "Navigation only. Generated build folders excluded; not a production-linked-file list.",
+  "count": 630,
+  "files": [
+    {
+      "path": "main/_archive/v15-goertzel-failed/data/device_dict.h",
+      "bytes": 27778,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/_archive/v15-goertzel-failed/p3_device_voiceprint_goertzel.c",
+      "bytes": 7525,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/_archive/v15-goertzel-failed/p3_device_voiceprint_goertzel.h",
+      "bytes": 2031,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/adaptive_endpoint_host_check.c",
+      "bytes": 15254,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/aec_delay_shadow_host_check.c",
+      "bytes": 8159,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/aec_fir_delay_control_host_check.c",
+      "bytes": 4457,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/aec_reference_provenance_host_check.c",
+      "bytes": 1259,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/app_shell.c",
+      "bytes": 67574,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/app_shell.h",
+      "bytes": 8949,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/app_state.c",
+      "bytes": 800,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/app_state.h",
+      "bytes": 389,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/archive_directory_host_check.c",
+      "bytes": 3943,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/assets/ling_zhu_boot_logo.c",
+      "bytes": 89573,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/assets/ling_zhu_boot_logo.h",
+      "bytes": 199,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_frame.c",
+      "bytes": 6147,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_frame.h",
+      "bytes": 2459,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_frame_terminal_host_check.c",
+      "bytes": 8298,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_mode_identity.h",
+      "bytes": 851,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_mode_ui_lifecycle_host_check.c",
+      "bytes": 3149,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/host_stubs/audio_uplink_producer_host.h",
+      "bytes": 2207,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/host_stubs/device_error_report.c",
+      "bytes": 790,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/host_stubs/esp_err.h",
+      "bytes": 1232,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/host_stubs/esp_heap_caps.h",
+      "bytes": 633,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/host_stubs/esp_log.h",
+      "bytes": 326,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/host_stubs/esp_random.h",
+      "bytes": 63,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/host_stubs/esp_timer.h",
+      "bytes": 70,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/host_stubs/freertos/FreeRTOS.h",
+      "bytes": 274,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/host_stubs/freertos/queue.h",
+      "bytes": 489,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/host_stubs/freertos/task.h",
+      "bytes": 73,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/host_stubs/sdkconfig.h",
+      "bytes": 941,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_capture_transaction_host_check.c",
+      "bytes": 18186,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_mode.c",
+      "bytes": 66389,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_mode.h",
+      "bytes": 5073,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_mode_host_check.c",
+      "bytes": 23898,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_processor.c",
+      "bytes": 8414,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_processor.h",
+      "bytes": 2542,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_processor_host_check.c",
+      "bytes": 5028,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_protocol.c",
+      "bytes": 11541,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_protocol.h",
+      "bytes": 1986,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_protocol_host_check.c",
+      "bytes": 6654,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/monitoring/host_stubs/sdkconfig.h",
+      "bytes": 1645,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/monitoring/monitoring_capture_host_check.c",
+      "bytes": 37737,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/monitoring/monitoring_mode.c",
+      "bytes": 90602,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_modes/monitoring/monitoring_mode.h",
+      "bytes": 5759,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_modes/monitoring/monitoring_mode_host_check.c",
+      "bytes": 19952,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/monitoring/monitoring_protocol.c",
+      "bytes": 12897,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_modes/monitoring/monitoring_protocol.h",
+      "bytes": 2203,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_modes/monitoring/monitoring_protocol_host_check.c",
+      "bytes": 11471,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_modes/monitoring/monitoring_speech_detector.h",
+      "bytes": 8232,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_modes/monitoring/monitoring_speech_policy.h",
+      "bytes": 1235,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_modes/monitoring/monitoring_speech_policy_host_check.c",
+      "bytes": 992,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_reliable_capture.c",
+      "bytes": 900,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_reliable_playback.c",
+      "bytes": 934,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_runtime_memory_policy.h",
+      "bytes": 1741,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/audio_runtime_memory_policy_host_check.c",
+      "bytes": 1256,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_terminal_recovery_host_check.c",
+      "bytes": 2031,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/audio_uplink_low_latency_host_check.c",
+      "bytes": 11408,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/awake_session_state_host_check.c",
+      "bytes": 7045,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/barge_in_controller_host_check.c",
+      "bytes": 43470,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/barge_in_detector_host_check.c",
+      "bytes": 25822,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/battery_policy_host_check.c",
+      "bytes": 4301,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/board/audio_board.c",
+      "bytes": 21736,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/audio_board.h",
+      "bytes": 6528,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/battery_history.h",
+      "bytes": 2481,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/battery_insights.c",
+      "bytes": 4664,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/battery_insights.h",
+      "bytes": 1773,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/battery_policy.h",
+      "bytes": 5839,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/battery_service.c",
+      "bytes": 34304,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/battery_service.h",
+      "bytes": 3585,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/board_drivers.h",
+      "bytes": 3856,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/board_gpio_inputs.c",
+      "bytes": 14410,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/board_gpio_inputs.h",
+      "bytes": 1975,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/bq27220_driver.c",
+      "bytes": 37750,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/esp_vocat_v1_0_pins.h",
+      "bytes": 4446,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/hardware_selftest.c",
+      "bytes": 13739,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/hardware_selftest.h",
+      "bytes": 1409,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/i2c_bus_manager.c",
+      "bytes": 16830,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/i2c_bus_manager.h",
+      "bytes": 2579,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/led_driver.c",
+      "bytes": 12140,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/led_status.c",
+      "bytes": 6756,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/led_status.h",
+      "bytes": 1354,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/nuwax_board.c",
+      "bytes": 3842,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/nuwax_board.h",
+      "bytes": 637,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/nuwax_power_ctrl.c",
+      "bytes": 26380,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/nuwax_power_ctrl.h",
+      "bytes": 2227,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/qmi8658a_driver.c",
+      "bytes": 12115,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/sd_card_driver.c",
+      "bytes": 18240,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/sd_card_driver.h",
+      "bytes": 1715,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/sd_dma_bulk.c",
+      "bytes": 6651,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/sd_dma_bulk.h",
+      "bytes": 680,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/sd_event_profile.c",
+      "bytes": 1473,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/sd_event_profile.h",
+      "bytes": 627,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/shake_detector.c",
+      "bytes": 14129,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/shake_detector.h",
+      "bytes": 1200,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/shake_motion_policy.h",
+      "bytes": 7162,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/uart_driver.c",
+      "bytes": 7814,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/uart_driver.h",
+      "bytes": 904,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/vocat_audio_board.c",
+      "bytes": 104768,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/board/vocat_audio_board.h",
+      "bytes": 7866,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/boot_logo.c",
+      "bytes": 1176,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/boot_logo.h",
+      "bytes": 503,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/capture_phase_handoff_host_check.c",
+      "bytes": 7836,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/cloud_connection_epoch_policy.h",
+      "bytes": 1437,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/cloud_connection_epoch_policy_host_check.c",
+      "bytes": 1149,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/cloud_protocol_compat.c",
+      "bytes": 6757,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/cloud_protocol_compat.h",
+      "bytes": 742,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/cloud_protocol_compat_host_check.c",
+      "bytes": 5087,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/cloud_ready_sleep_host_check.c",
+      "bytes": 2124,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/control_center_timing_policy_host_check.c",
+      "bytes": 1217,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/conversation/adaptive_endpoint.c",
+      "bytes": 19888,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/adaptive_endpoint.h",
+      "bytes": 5018,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/aec_delay_shadow.c",
+      "bytes": 20980,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/aec_delay_shadow.h",
+      "bytes": 4665,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/aec_fir_delay_control.c",
+      "bytes": 3628,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/aec_fir_delay_control.h",
+      "bytes": 2103,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/aec_reference_provenance.h",
+      "bytes": 2269,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/audio_cleaner.c",
+      "bytes": 55268,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/audio_cleaner.h",
+      "bytes": 4427,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/audio_terminal_recovery.c",
+      "bytes": 17015,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/audio_terminal_recovery.h",
+      "bytes": 2762,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/audio_terminal_recovery_policy.h",
+      "bytes": 2313,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/audio_uplink.c",
+      "bytes": 110688,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/audio_uplink.h",
+      "bytes": 20029,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/audio_uplink_terminal.c",
+      "bytes": 3069,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/audio_uplink_terminal.h",
+      "bytes": 1080,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/awake_session_state.c",
+      "bytes": 4679,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/awake_session_state.h",
+      "bytes": 2140,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/barge_in_controller.c",
+      "bytes": 41365,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/barge_in_controller.h",
+      "bytes": 7835,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/barge_in_detector.c",
+      "bytes": 8707,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/barge_in_detector.h",
+      "bytes": 2200,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/barge_in_dispatcher.c",
+      "bytes": 21871,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/barge_in_dispatcher.h",
+      "bytes": 2630,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/capture_phase_handoff.h",
+      "bytes": 7789,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/conversation_audio_health.c",
+      "bytes": 10134,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/conversation_audio_health.h",
+      "bytes": 2269,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/conversation_audio_health_host_check.c",
+      "bytes": 13836,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/conversation/conversation_endpoint_policy.h",
+      "bytes": 8854,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/conversation_latency_contract.h",
+      "bytes": 5410,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/conversation_metrics.c",
+      "bytes": 17096,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/conversation_metrics.h",
+      "bytes": 7205,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/conversation_metrics_host_check.c",
+      "bytes": 7834,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/conversation/conversation_state.c",
+      "bytes": 1620,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/conversation_state.h",
+      "bytes": 1074,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/conversation_visual_round.h",
+      "bytes": 5067,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/d1_playback_path.c",
+      "bytes": 1126,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/deferred_state_pending.h",
+      "bytes": 1726,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/emotion_ui_pending.h",
+      "bytes": 3619,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/head_touch_agent_intent.c",
+      "bytes": 14404,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/head_touch_agent_intent.h",
+      "bytes": 5551,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/head_touch_control.c",
+      "bytes": 13306,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/head_touch_control.h",
+      "bytes": 675,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/head_touch_control_policy.c",
+      "bytes": 1042,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/head_touch_control_policy.h",
+      "bytes": 481,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/listen_resume_state.c",
+      "bytes": 7826,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/listen_resume_state.h",
+      "bytes": 3789,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/live_aec.c",
+      "bytes": 154902,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/live_aec.h",
+      "bytes": 13504,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/live_aec_output_provenance.c",
+      "bytes": 5137,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/live_aec_output_provenance.h",
+      "bytes": 1907,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/mic_level.c",
+      "bytes": 2054,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/mic_level.h",
+      "bytes": 468,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/notification_playback.c",
+      "bytes": 19699,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/notification_playback.h",
+      "bytes": 6033,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/notification_rx_barrier.c",
+      "bytes": 8995,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/notification_rx_barrier.h",
+      "bytes": 3004,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/p5_fullduplex_overlap_probe.c",
+      "bytes": 49427,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/p5_fullduplex_overlap_probe.h",
+      "bytes": 2290,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/playback_terminal_guard.c",
+      "bytes": 10529,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/playback_terminal_guard.h",
+      "bytes": 4609,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/prelisten_state.c",
+      "bytes": 4444,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/prelisten_state.h",
+      "bytes": 1625,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/preroll_window.c",
+      "bytes": 6584,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/preroll_window.h",
+      "bytes": 3320,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/realtime_log.h",
+      "bytes": 1110,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/rt_capture_wait_policy.h",
+      "bytes": 841,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/runtime_metrics_storage.inc",
+      "bytes": 721,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/session_dispatch.c",
+      "bytes": 39956,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/session_dispatch.h",
+      "bytes": 7240,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/shell_action_dispatch.c",
+      "bytes": 4678,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/shell_action_dispatch.h",
+      "bytes": 1375,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/short_speech_tracker.c",
+      "bytes": 8540,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/short_speech_tracker.h",
+      "bytes": 2516,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/sleep_transaction.c",
+      "bytes": 14601,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/sleep_transaction.h",
+      "bytes": 5434,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/speaker_backpressure_policy.h",
+      "bytes": 754,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/speaker_generation_policy.h",
+      "bytes": 8898,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/speaker_jitter_policy.h",
+      "bytes": 9204,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/speaker_playback.c",
+      "bytes": 258268,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/speaker_playback.h",
+      "bytes": 14205,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/speaker_stream_policy.h",
+      "bytes": 6543,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/speech_confirmation.c",
+      "bytes": 5220,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/speech_confirmation.h",
+      "bytes": 1647,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/touch_cancel_recovery.c",
+      "bytes": 4405,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/touch_cancel_recovery.h",
+      "bytes": 2490,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/touch_gesture.c",
+      "bytes": 34268,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/touch_gesture.h",
+      "bytes": 362,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/turn_guard.c",
+      "bytes": 12109,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/turn_guard.h",
+      "bytes": 3827,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/turn_guard_host_check.c",
+      "bytes": 12814,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/conversation/ui_sync_pending.h",
+      "bytes": 1176,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/volume_save_pending.h",
+      "bytes": 1075,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/wake_noise_policy.h",
+      "bytes": 2656,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/wake_word_alias_policy.h",
+      "bytes": 2917,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/wake_word_config.c",
+      "bytes": 3566,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/wake_word_config.h",
+      "bytes": 889,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/wake_word_detection_policy.h",
+      "bytes": 7800,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/wake_word_input_policy.h",
+      "bytes": 1718,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/wake_word_interrupt_filter.c",
+      "bytes": 7891,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/wake_word_interrupt_filter.h",
+      "bytes": 1049,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation/wake_word_probe_policy.h",
+      "bytes": 1519,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/conversation_endpoint_policy_host_check.c",
+      "bytes": 10108,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/conversation_visual_round_host_check.c",
+      "bytes": 3993,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ctype_compat.c",
+      "bytes": 2116,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/deferred_state_pending_host_check.c",
+      "bytes": 2624,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/device_error_report.c",
+      "bytes": 43725,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/device_error_report.h",
+      "bytes": 3567,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/diagnostics.c",
+      "bytes": 5811,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/diagnostics.h",
+      "bytes": 1001,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/dialog_state_policy_host_check.c",
+      "bytes": 3124,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/display.c",
+      "bytes": 60591,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/display.h",
+      "bytes": 3299,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/emotion_component_bridge_policy_host_check.c",
+      "bytes": 10097,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/emotion_delta_format_host_check.c",
+      "bytes": 4024,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/emotion_display_policy_host_check.c",
+      "bytes": 17449,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/emotion_face_policy_host_check.c",
+      "bytes": 18947,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/emotion_segment_policy_host_check.c",
+      "bytes": 1807,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/emotion_ui_pending_host_check.c",
+      "bytes": 4239,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/filter_conservative.c",
+      "bytes": 3678,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/firmware_identity_policy_host_check.c",
+      "bytes": 3313,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/firmware_report_policy_host_check.c",
+      "bytes": 3141,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/full_duplex_coord.c",
+      "bytes": 190,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/head_touch_agent_intent_host_check.c",
+      "bytes": 11280,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/head_touch_control_policy_host_check.c",
+      "bytes": 3845,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/idf_component.yml",
+      "bytes": 224,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/json_resource_budget.h",
+      "bytes": 4217,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/listen_resume_state_host_check.c",
+      "bytes": 6013,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/live_aec_output_provenance_host_check.c",
+      "bytes": 4858,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/lvgl_env_probe.c",
+      "bytes": 522,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/lvgl_env_probe.h",
+      "bytes": 118,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/lvgl_psram_mem.c",
+      "bytes": 6116,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/mcp_server.c",
+      "bytes": 13509,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/mcp_server.h",
+      "bytes": 2222,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/mcp_server_capability_host_check.c",
+      "bytes": 7076,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/mic_dma_reader.inc",
+      "bytes": 2245,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/mic_dma_reader_host_check.c",
+      "bytes": 4909,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/mic_input.c",
+      "bytes": 46388,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/mic_input.h",
+      "bytes": 4402,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/music_playback/music_playback.c",
+      "bytes": 20030,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/music_playback/music_playback.h",
+      "bytes": 436,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/music_url_test/music_url_test.c",
+      "bytes": 12952,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/music_url_test/music_url_test.h",
+      "bytes": 620,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/notification_playback_host_check.c",
+      "bytes": 14527,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/notification_rx_barrier_host_check.c",
+      "bytes": 8005,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/nuwax_ai_partner_main.c",
+      "bytes": 1650259,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_lvgl_port.c",
+      "bytes": 79115,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_lvgl_port.h",
+      "bytes": 3635,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_firmware_identity_policy.h",
+      "bytes": 3411,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_firmware_report.c",
+      "bytes": 18960,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_firmware_report.h",
+      "bytes": 1346,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_firmware_report_policy.h",
+      "bytes": 2726,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota.c",
+      "bytes": 12991,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota.h",
+      "bytes": 2630,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_device.c",
+      "bytes": 72104,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_device.h",
+      "bytes": 2990,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_identity_recovery_policy.h",
+      "bytes": 546,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_main.c",
+      "bytes": 48932,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_main.h",
+      "bytes": 3107,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_manifest.c",
+      "bytes": 17546,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_manifest.h",
+      "bytes": 1561,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_power_policy.h",
+      "bytes": 2483,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_release_policy.h",
+      "bytes": 2199,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_result_ack_policy.h",
+      "bytes": 932,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_retry_policy.h",
+      "bytes": 1752,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_transport.c",
+      "bytes": 29075,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_transport.h",
+      "bytes": 898,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_ui_policy.h",
+      "bytes": 538,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_cloud_config.c",
+      "bytes": 10099,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_cloud_config.h",
+      "bytes": 1271,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_device_uid.c",
+      "bytes": 6314,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_device_uid.h",
+      "bytes": 1824,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_provision_main.c",
+      "bytes": 135479,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_provision_main.h",
+      "bytes": 5112,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_provision_policy.h",
+      "bytes": 7896,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_provision_policy_host_check.c",
+      "bytes": 13980,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_provision_qr_payload.h",
+      "bytes": 2928,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_provision_qr_payload_host_check.c",
+      "bytes": 1126,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_provision_usb_control.c",
+      "bytes": 3703,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_provision_usb_control.h",
+      "bytes": 520,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/fonts/nuwax_font_control_center_cjk_10.c",
+      "bytes": 14603,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/fonts/nuwax_font_control_center_cjk_11.c",
+      "bytes": 53043,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/fonts/nuwax_font_control_center_cjk_12.c",
+      "bytes": 87036,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/fonts/nuwax_font_control_center_cjk_13.c",
+      "bytes": 8157,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/fonts/nuwax_font_control_center_cjk_7.c",
+      "bytes": 4933,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/fonts/nuwax_font_control_center_cjk_8.c",
+      "bytes": 8011,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/fonts/nuwax_font_control_center_cjk_9.c",
+      "bytes": 15174,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/fonts/nuwax_font_lingzhu.c",
+      "bytes": 3567823,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/fonts/nuwax_font_ota.c",
+      "bytes": 6007,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/nuwax_control_center_icons.c",
+      "bytes": 286234,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/nuwax_control_center_icons.h",
+      "bytes": 844,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/ota_capsule.c",
+      "bytes": 61530,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/assets/ota_logo.c",
+      "bytes": 165302,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/control_center_timing_policy.h",
+      "bytes": 880,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/emotion_display_policy.c",
+      "bytes": 16322,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/emotion_display_policy.h",
+      "bytes": 3637,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/conversation_visual.c",
+      "bytes": 6139,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/conversation_visual.h",
+      "bytes": 1713,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/conversation_visual_assets.h",
+      "bytes": 220268,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/emotion_animation_player.c",
+      "bytes": 180208,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/emotion_animation_player.h",
+      "bytes": 1790,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/emotion_asset_pack.c",
+      "bytes": 46372,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/emotion_asset_pack.h",
+      "bytes": 4535,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/emotion_component_bridge_policy.h",
+      "bytes": 9602,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/emotion_delta_format.h",
+      "bytes": 3965,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/emotion_segment_policy.h",
+      "bytes": 1847,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/rgb565_scene.h",
+      "bytes": 3117,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/menu/nuwax_detail_style.h",
+      "bytes": 3283,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/menu/nuwax_device_qr_view.c",
+      "bytes": 3719,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/menu/nuwax_device_qr_view.h",
+      "bytes": 464,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_anim.c",
+      "bytes": 837,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_anim.h",
+      "bytes": 293,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_app.c",
+      "bytes": 5085,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_app.h",
+      "bytes": 868,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_device_state.c",
+      "bytes": 4578,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_device_state.h",
+      "bytes": 5094,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_dialog_policy.h",
+      "bytes": 933,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_drawer.c",
+      "bytes": 216708,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_drawer.h",
+      "bytes": 2323,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_face.c",
+      "bytes": 26322,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_face.h",
+      "bytes": 1228,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_gesture.c",
+      "bytes": 848,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_gesture.h",
+      "bytes": 579,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_state_bridge.c",
+      "bytes": 43438,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_state_bridge.h",
+      "bytes": 2099,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_theme.c",
+      "bytes": 216,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_theme.h",
+      "bytes": 1019,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_ui_config.h",
+      "bytes": 707,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/ota_progress.c",
+      "bytes": 6667,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/ota_progress.h",
+      "bytes": 359,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/test/nuwax_font_test_panel_11.c",
+      "bytes": 51401,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/test/nuwax_test_panel.c",
+      "bytes": 3450,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/test/nuwax_test_panel.h",
+      "bytes": 362,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/nuwax_ui_v28/ui_bridge_revision_policy.h",
+      "bytes": 1210,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_archive_commit_host_check.c",
+      "bytes": 2768,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/offline_archive_directory.h",
+      "bytes": 5237,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_audio_dispatch_host_check.c",
+      "bytes": 7804,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/offline_audio_mirror_host_check.c",
+      "bytes": 7173,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/offline_audio_policy.h",
+      "bytes": 2093,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_audio_spool.c",
+      "bytes": 219557,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_audio_spool.h",
+      "bytes": 10852,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_audio_voice.c",
+      "bytes": 4344,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_audio_voice.h",
+      "bytes": 1162,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_audio_voice_host_check.c",
+      "bytes": 4229,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/offline_formal_capability_host_check.c",
+      "bytes": 1182,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/offline_io_schedule.h",
+      "bytes": 2183,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_replay_identity.h",
+      "bytes": 573,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_replay_metadata.h",
+      "bytes": 892,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_replay_prefetch.inc",
+      "bytes": 10465,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_replay_pressure.inc",
+      "bytes": 1812,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_replay_read.inc",
+      "bytes": 11236,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_replay_stream.inc",
+      "bytes": 5309,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/offline_storage_host_check.c",
+      "bytes": 2865,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/opus_encoder_wrapper.c",
+      "bytes": 5119,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/opus_encoder_wrapper.h",
+      "bytes": 1070,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/ota_identity_recovery_policy_host_check.c",
+      "bytes": 744,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ota_power_policy_host_check.c",
+      "bytes": 2517,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ota_release_policy_host_check.c",
+      "bytes": 6008,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ota_retry_policy_host_check.c",
+      "bytes": 2586,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ota_ui_progress_policy_host_check.c",
+      "bytes": 1036,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/p3_afe_l3.c",
+      "bytes": 9871,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/p3_afe_l3.h",
+      "bytes": 540,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/p3_nearend_candidate.c",
+      "bytes": 33794,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/p3_nearend_candidate.h",
+      "bytes": 1425,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/p3_softref_aec_diag.c",
+      "bytes": 35504,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/p3_softref_aec_diag.h",
+      "bytes": 2855,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/p3_software_ref.c",
+      "bytes": 27613,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/p3_software_ref.h",
+      "bytes": 3000,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/p5_live_fast_gate_fixtures.h",
+      "bytes": 1882,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/p5_live_fast_gate_host_check.c",
+      "bytes": 14972,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/p6_gray_confirm.c",
+      "bytes": 4381,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/p6_gray_confirm.h",
+      "bytes": 2215,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/p6_gray_confirm_host_check.c",
+      "bytes": 4657,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/playback_terminal_guard_host_check.c",
+      "bytes": 14914,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/prelisten_state_host_check.c",
+      "bytes": 3005,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/preroll_window_host_check.c",
+      "bytes": 13052,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/product_ready.c",
+      "bytes": 3534,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/product_ready.h",
+      "bytes": 1438,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/project_include.cmake",
+      "bytes": 2284,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/replay_retry_host_check.c",
+      "bytes": 3225,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/replay_window_host_check.c",
+      "bytes": 56173,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/rt_capture_wait_policy_host_check.c",
+      "bytes": 2221,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/runtime_metrics_storage_host_check.c",
+      "bytes": 1930,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/sd_dma_bulk_host_check.c",
+      "bytes": 5833,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/sd_event_profile_host_check.c",
+      "bytes": 1091,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/sd_speed_host_check.c",
+      "bytes": 9390,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/session_protocol.c",
+      "bytes": 111884,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/session_protocol.h",
+      "bytes": 11300,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/session_protocol_host_stubs/esp_app_desc.h",
+      "bytes": 158,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/session_protocol_host_stubs/esp_check.h",
+      "bytes": 85,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/session_protocol_host_stubs/esp_err.h",
+      "bytes": 616,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/session_protocol_host_stubs/esp_log.h",
+      "bytes": 618,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/session_protocol_host_stubs/esp_timer.h",
+      "bytes": 108,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/session_protocol_host_stubs/freertos/FreeRTOS.h",
+      "bytes": 110,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/session_protocol_host_stubs/freertos/task.h",
+      "bytes": 106,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/session_protocol_host_stubs/sdkconfig.h",
+      "bytes": 685,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/session_wake_word_host_check.c",
+      "bytes": 35614,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/shake_motion_policy_host_check.c",
+      "bytes": 9359,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/short_speech_tracker_host_check.c",
+      "bytes": 4621,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/sleep_transaction_host_check.c",
+      "bytes": 16860,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/speaker_backpressure_policy_host_check.c",
+      "bytes": 1419,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/speaker_generation_policy_host_check.c",
+      "bytes": 8128,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/speaker_jitter_policy_host_check.c",
+      "bytes": 9156,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/speaker_output.c",
+      "bytes": 39799,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/speaker_output.h",
+      "bytes": 1794,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/speaker_stream_policy_host_check.c",
+      "bytes": 5664,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/speaker_volume_persistence_host_check.c",
+      "bytes": 6484,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/speech_confirmation_host_check.c",
+      "bytes": 8159,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/state_cmd_fast.c",
+      "bytes": 1132,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/synthetic_audio.c",
+      "bytes": 1018,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/synthetic_audio.h",
+      "bytes": 431,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/test_controls.h",
+      "bytes": 584,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/time_sync.c",
+      "bytes": 1902,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/time_sync.h",
+      "bytes": 74,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/touch_cancel_recovery_host_check.c",
+      "bytes": 1967,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/touch_input.c",
+      "bytes": 37719,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/touch_input.h",
+      "bytes": 907,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/touch_read_policy.h",
+      "bytes": 516,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/touch_read_policy_host_check.c",
+      "bytes": 899,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/touch_task_host_check.c",
+      "bytes": 3076,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ui_bridge_revision_policy_host_check.c",
+      "bytes": 2624,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ui_host_stubs/esp_err.h",
+      "bytes": 368,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ui_host_stubs/esp_log.h",
+      "bytes": 366,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ui_host_stubs/esp_random.h",
+      "bytes": 88,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ui_host_stubs/esp_timer.h",
+      "bytes": 153,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ui_host_stubs/lvgl.h",
+      "bytes": 4115,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ui_sync_pending_host_check.c",
+      "bytes": 811,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/wake_capture_host_check.c",
+      "bytes": 10543,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/wake_response_host_check.c",
+      "bytes": 2964,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/wake_supervisor_host_check.c",
+      "bytes": 3128,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/wake_word_detection_policy_host_check.c",
+      "bytes": 7776,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/wake_word_detector.c",
+      "bytes": 136863,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/wake_word_detector.h",
+      "bytes": 5057,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/wake_word_input_policy_host_check.c",
+      "bytes": 1615,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/wake_word_interrupt_filter_host_check.c",
+      "bytes": 3086,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/wake_word_probe_policy_host_check.c",
+      "bytes": 1259,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/wifi_background_recovery_host_check.c",
+      "bytes": 7797,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/wifi_manager.c",
+      "bytes": 81017,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/wifi_manager.h",
+      "bytes": 2719,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/wifi_recovery_host_check.c",
+      "bytes": 8401,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/wifi_saved_network_list_host_check.c",
+      "bytes": 4264,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/wifi_saved_network_list_internal.h",
+      "bytes": 1341,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/ws_archive_batch.h",
+      "bytes": 259,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/ws_close_policy.h",
+      "bytes": 3063,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/ws_close_policy_host_check.c",
+      "bytes": 2760,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ws_frame_host_check.c",
+      "bytes": 26395,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ws_mask.h",
+      "bytes": 2461,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/ws_receive_deadline_policy.h",
+      "bytes": 997,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/ws_receive_deadline_policy_host_check.c",
+      "bytes": 2036,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ws_send_failure_policy.h",
+      "bytes": 4266,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/ws_send_failure_policy_host_check.c",
+      "bytes": 3586,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "main/ws_send_metrics.h",
+      "bytes": 421,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/ws_transport.c",
+      "bytes": 135445,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "main/ws_transport.h",
+      "bytes": 12165,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "bootloader_components/nuwax_power_hold/nuwax_early_power_hold.c",
+      "bytes": 4927,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/_archive/v15-goertzel-failed/device_voiceprint_trainer/collect_device_playback_dataset.py",
+      "bytes": 48646,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/_archive/v15-goertzel-failed/device_voiceprint_trainer/evaluate.py",
+      "bytes": 2554,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/_archive/v15-goertzel-failed/device_voiceprint_trainer/extract.py",
+      "bytes": 3331,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/_archive/v15-goertzel-failed/device_voiceprint_trainer/output/device_dict.h",
+      "bytes": 27778,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/_archive/v15-goertzel-failed/device_voiceprint_trainer/record_dataset.py",
+      "bytes": 2059,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/_archive/v15-goertzel-failed/device_voiceprint_trainer/sanity_check.py",
+      "bytes": 3005,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/_archive/v15-goertzel-failed/device_voiceprint_trainer/train.py",
+      "bytes": 8006,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/_archive/v15-goertzel-failed/device_voiceprint_trainer/verify_dataset.py",
+      "bytes": 2387,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/apply-network-provision-reset-fix.py",
+      "bytes": 2476,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/audit-audio-teardown.py",
+      "bytes": 14676,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/audit-remaining-boundaries.py",
+      "bytes": 4975,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/build-sd-replay-formal.ps1",
+      "bytes": 5559,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/capture-lingzhu-ui.py",
+      "bytes": 6582,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/check-aec-human-protection-replay.ps1",
+      "bytes": 21948,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/check-device-longrun-gate.ps1",
+      "bytes": 884,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/check-device-longrun-gate.py",
+      "bytes": 12372,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/check-runtime-optimization.py",
+      "bytes": 9995,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/cmake/protocomm-lifecycle-fix.cmake",
+      "bytes": 1685,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/cmake/rnnt-growth-fix.cmake",
+      "bytes": 1642,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/cmake/sd-event-profile.cmake",
+      "bytes": 2304,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/compare-speaking-frames.py",
+      "bytes": 6140,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/convert-boot-logo.py",
+      "bytes": 2662,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/convert-emotion-pack-v2.py",
+      "bytes": 9086,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/convert-emotion-pack-v3.py",
+      "bytes": 13706,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/convert-emotion-pack-v4.py",
+      "bytes": 19668,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/d0_host_check.c",
+      "bytes": 6019,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/esp_err.h",
+      "bytes": 176,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/fake-device/fake-device-conformance.js",
+      "bytes": 21294,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/fixtures/uplink-cleanup-before-au04.c",
+      "bytes": 2465,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/flash-sd-replay-formal.ps1",
+      "bytes": 360,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/flash-sd-replay-test.ps1",
+      "bytes": 4032,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/generate-conversation-visual.py",
+      "bytes": 2285,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/generate-lingzhu-ui-assets.py",
+      "bytes": 9371,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/generate-ota-capsule.py",
+      "bytes": 1920,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/generate-ota-font.py",
+      "bytes": 2033,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/generate-ota-logo.py",
+      "bytes": 1649,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/monitor-sd-replay-test.ps1",
+      "bytes": 2062,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/music-url-test/public/app.js",
+      "bytes": 8665,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/music-url-test/server.js",
+      "bytes": 6798,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/patch-protocomm-lifecycle.py",
+      "bytes": 6246,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/patch-rnnt-growth.py",
+      "bytes": 6067,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/prepare-audio-uplink-producer-host.ps1",
+      "bytes": 1234,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/prepare-sd-event-profile.py",
+      "bytes": 3318,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/preview-ota-progress.py",
+      "bytes": 1479,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/protocol/audit-offline-session.js",
+      "bytes": 2861,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/protocol/generate-na-fixtures.js",
+      "bytes": 7993,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/protocol/offline-audio-batch-test.js",
+      "bytes": 6857,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/protocol/offline-audio-gateway-report-test.js",
+      "bytes": 3740,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/protocol/offline-audio-replay-gateway.js",
+      "bytes": 42414,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/protocol/offline-audio-stability-test.js",
+      "bytes": 6152,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/protocol/offline-audio-window-test.js",
+      "bytes": 8404,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/protocol/offline-replay-throughput-test.js",
+      "bytes": 2503,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/protocol/offline-replay-throughput.js",
+      "bytes": 2909,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/protocol/sd-replay-supervisor-test.js",
+      "bytes": 3046,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/protocol/sd-replay-supervisor.js",
+      "bytes": 3330,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/protocol/validate-protocol-assets.js",
+      "bytes": 24492,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-archive-directory-host-checks.ps1",
+      "bytes": 1221,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-audio-lifecycle-host-checks.ps1",
+      "bytes": 2315,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-audit-tooling-checks.py",
+      "bytes": 1074,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-cloud-ready-sleep-host-checks.ps1",
+      "bytes": 1078,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-conversation-host-checks.ps1",
+      "bytes": 145366,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-conversation-visual-checks.ps1",
+      "bytes": 1149,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-meeting-host-checks.ps1",
+      "bytes": 4017,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-mic-dma-reader-host-checks.ps1",
+      "bytes": 428,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-monitoring-host-checks.ps1",
+      "bytes": 3986,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-offline-audio-host-checks.ps1",
+      "bytes": 2827,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-offline-dispatch-host-checks.ps1",
+      "bytes": 4047,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-provisioning-host-checks.ps1",
+      "bytes": 30146,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-replay-retry-host-checks.ps1",
+      "bytes": 906,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-replay-window-host-checks.ps1",
+      "bytes": 3031,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-runtime-metrics-storage-host-checks.ps1",
+      "bytes": 504,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-sd-dma-host-checks.ps1",
+      "bytes": 661,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-sd-event-host-checks.ps1",
+      "bytes": 472,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-sd-speed-host-checks.ps1",
+      "bytes": 797,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-speaker-volume-persistence-host-checks.ps1",
+      "bytes": 831,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-touch-read-host-checks.ps1",
+      "bytes": 931,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-v2-product-host-checks.ps1",
+      "bytes": 133652,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-wake-capture-host-checks.ps1",
+      "bytes": 1244,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-wake-supervisor-host-checks.ps1",
+      "bytes": 805,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-wake-word-host-check.ps1",
+      "bytes": 1038,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-wifi-background-host-checks.ps1",
+      "bytes": 1030,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-wifi-recovery-host-checks.ps1",
+      "bytes": 1084,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/run-ws-frame-host-checks.ps1",
+      "bytes": 1324,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/sd-archive-dev/build-audit/cmake_install.cmake",
+      "bytes": 2185,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/sd-archive-dev/build-audit/CMakeFiles/4.0.3/CMakeCCompiler.cmake",
+      "bytes": 3250,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/sd-archive-dev/build-audit/CMakeFiles/4.0.3/CMakeRCCompiler.cmake",
+      "bytes": 212,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/sd-archive-dev/build-audit/CMakeFiles/4.0.3/CMakeSystem.cmake",
+      "bytes": 395,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/sd-archive-dev/build-audit/CMakeFiles/4.0.3/CompilerIdC/CMakeCCompilerId.c",
+      "bytes": 28653,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/sd-archive-dev/build-audit/CTestTestfile.cmake",
+      "bytes": 3036,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/sd-archive-dev/include/sd_archive_store.h",
+      "bytes": 4405,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/sd-archive-dev/src/sd_archive_store.c",
+      "bytes": 36945,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/sd-archive-dev/tests/test_sd_archive_store.c",
+      "bytes": 7696,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/start-sd-replay-gateway.ps1",
+      "bytes": 2222,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/test-battery-history.py",
+      "bytes": 4770,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-board-power-boundaries.py",
+      "bytes": 16742,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-boot-logo.py",
+      "bytes": 6793,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-charge-config-diagnostic.py",
+      "bytes": 4613,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-charging-led.py",
+      "bytes": 9206,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-cloud-resume.py",
+      "bytes": 10730,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-detail-qr.py",
+      "bytes": 1234,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-diagnostic-idle-gate.py",
+      "bytes": 7580,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-display-buffer-lease.py",
+      "bytes": 9704,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-display-pixels.py",
+      "bytes": 5243,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-drawer-composition.py",
+      "bytes": 6767,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-drawer-contact.py",
+      "bytes": 3000,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-drawer-pixels.py",
+      "bytes": 5164,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-flash-sd-replay-identity.py",
+      "bytes": 2373,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-interaction-boundaries.py",
+      "bytes": 5712,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-jitter-stability.py",
+      "bytes": 2019,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-json-budget.py",
+      "bytes": 3691,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-json-resource-budget.py",
+      "bytes": 10159,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-link-convergence.py",
+      "bytes": 8528,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-longrun-gate.py",
+      "bytes": 7958,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-mic-init-owner.py",
+      "bytes": 3685,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-network-join-handoff.py",
+      "bytes": 14342,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-network-recovery-boundaries.py",
+      "bytes": 7615,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-notification-startup.py",
+      "bytes": 4178,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-ota-identity-cache.py",
+      "bytes": 21578,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-playback-startup.py",
+      "bytes": 19707,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-provision-finish.py",
+      "bytes": 15011,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-provisioning-buffer-lifecycle.py",
+      "bytes": 7613,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-provisioning-contracts.py",
+      "bytes": 2679,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-qmi-poll.py",
+      "bytes": 3205,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-rejected-playback-owner.py",
+      "bytes": 5641,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-rnnt-growth-fix.py",
+      "bytes": 4541,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-runtime-privacy.py",
+      "bytes": 3443,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-sd-event-profile.py",
+      "bytes": 1622,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-sd-media-admission.py",
+      "bytes": 1890,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-shake-gap.py",
+      "bytes": 6950,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-shake-startup.py",
+      "bytes": 5715,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-startup-admission-boundaries.py",
+      "bytes": 12665,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-uplink-cleanup-handoff.py",
+      "bytes": 6594,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-uplink-reaper-budget.py",
+      "bytes": 6727,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-wake-evidence.py",
+      "bytes": 3147,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-wake-response.py",
+      "bytes": 7689,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/test-ws-mask-codegen.py",
+      "bytes": 7617,
+      "kind": "test_or_stub"
+    },
+    {
+      "path": "tools/ui-drawer-capture/capture.c",
+      "bytes": 38282,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/ui-speaking-capture/build-capture.ps1",
+      "bytes": 3497,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/ui-speaking-capture/capture_main.c",
+      "bytes": 19105,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/ui-speaking-capture/esp_err.h",
+      "bytes": 221,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/ui-speaking-capture/esp_heap_caps.h",
+      "bytes": 463,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/ui-speaking-capture/esp_log.h",
+      "bytes": 320,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/ui-speaking-capture/esp_random.h",
+      "bytes": 60,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/ui-speaking-capture/esp_timer.h",
+      "bytes": 69,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/ui-speaking-capture/sim_stubs.c",
+      "bytes": 4484,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-audio-owner-build.py",
+      "bytes": 2398,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-board-power-build.py",
+      "bytes": 2682,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-cloud-resume-build.py",
+      "bytes": 3083,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-emotion-pack.py",
+      "bytes": 32250,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-interaction-build.py",
+      "bytes": 2817,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-jitter-stability-build.py",
+      "bytes": 1807,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-json-resource-build.py",
+      "bytes": 1624,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-link-convergence-build.py",
+      "bytes": 1790,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-network-recovery-build.py",
+      "bytes": 2027,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-ota-identity-build.py",
+      "bytes": 1732,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-playback-startup-build.py",
+      "bytes": 2318,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-provision-finish-build.py",
+      "bytes": 3518,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-rejected-playback-build.py",
+      "bytes": 1413,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-runtime-hardening-build.py",
+      "bytes": 3087,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-sd-formal-build.py",
+      "bytes": 3222,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-sd-media-admission-build.py",
+      "bytes": 1149,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-shake-gap-build.py",
+      "bytes": 2708,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-startup-build.py",
+      "bytes": 1578,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-uplink-handoff-build.py",
+      "bytes": 1295,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-uplink-reaper-build.py",
+      "bytes": 1202,
+      "kind": "source_or_tool"
+    },
+    {
+      "path": "tools/verify-wake-evidence-build.py",
+      "bytes": 4266,
+      "kind": "source_or_tool"
+    }
+  ]
+}

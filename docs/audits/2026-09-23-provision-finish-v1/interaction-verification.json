@@ -1,0 +1,11 @@
+{
+  "revision": "20260922-interaction-v3",
+  "elfSha256": "010aaaacaa9e1c4ddb6b5e455ecd3cc97988b59ae52530042c43d9b316ffcec9",
+  "binSha256": "b2177ab2a9e5afe56fad910b561f396cb3fe24725aa889db6fd7152bfc53ccbb",
+  "captureStackFrames": {
+    "stream_microphone_audio": 3488
+  },
+  "previousCaptureStackFrame": 5424,
+  "linkedMarkersVerified": true,
+  "hardwareValidated": false
+}

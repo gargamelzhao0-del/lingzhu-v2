@@ -1,0 +1,15 @@
+{
+  "revision": "20260922-network-recovery-v1",
+  "elfSha256": "fa75a680331bc682f15d6fe3eb8ee8343cdb7fdb3a65f03bcc01f062daeff454",
+  "binSha256": "0d01b2f5c2dac762724f19ed7e399bccfb4fb000118178c94947e62d85d9e0a4",
+  "bytes": 3819984,
+  "sourceHashes": {
+    "main/wifi_manager.c": "5672553f6285bc4a9dfc1c13ca90eb27497585a295f70d45d25d522f7ae4ff49",
+    "main/app_shell.c": "b9ba635592337149d68db5308992351759789344790db96a70191859311f9c2b",
+    "main/nuwax_ui_v28/nuwax_face.c": "fd09bfc153c62ab6e42f97cea1c621a5d6e09f1e42e215612aedddd4d5a3a41b",
+    "main/board/nuwax_power_ctrl.c": "b47e85b6951c88130736687f45975775e23bb3eb7d4d2d44b733472695dc4de9",
+    "main/nuwax_provision_new/nuwax_provision_main.c": "a3f04d0f570a5ce04adb33b7561c560c8b4419ba858a9471a272928f83001553",
+    "managed_components/espressif__network_provisioning/src/manager.c": "176c22d6c64e4f17832bba3995552ff50446353bcb7f654c33c84a1c1bb74c9c"
+  },
+  "hardwareValidated": false
+}

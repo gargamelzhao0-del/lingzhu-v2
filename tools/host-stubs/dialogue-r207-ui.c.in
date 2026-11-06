@@ -1,0 +1,231 @@
+
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include "conversation/conversation_state.h"
+#include "conversation/ui_sync_pending.h"
+#include "conversation/deferred_state_pending.h"
+#include "conversation/awake_session_state.h"
+#include "conversation/prelisten_state.h"
+#include "nuwax_ui_v28/emotion_display_policy.h"
+#include "nuwax_ui_v28/ui_bridge_revision_policy.h"
+#define CONFIG_NUWAX_SPEAKER_ENABLE 1
+#define CONFIG_NUWAX_AUDIO_SOURCE_I2S_MIC 1
+#define portENTER_CRITICAL(x) ((void)(x))
+#define portEXIT_CRITICAL(x) ((void)(x))
+#define taskENTER_CRITICAL(x) ((void)(x))
+#define taskEXIT_CRITICAL(x) ((void)(x))
+#define ESP_LOGI(tag,...) do { (void)(tag); if(0) printf(__VA_ARGS__); } while(0)
+#define ESP_LOGD ESP_LOGI
+static const char *TAG="probe";
+static int s_conversation_state_lock,s_bridge_state_mux;
+typedef uint32_t nuwax_app_shell_state_fields_t;
+
+enum {
+    NUWAX_APP_SHELL_STATE_EMOTION = 1U << 0,
+    NUWAX_APP_SHELL_STATE_WIFI = 1U << 1,
+    NUWAX_APP_SHELL_STATE_CLOUD = 1U << 2,
+    NUWAX_APP_SHELL_STATE_DIALOG = 1U << 3,
+    NUWAX_APP_SHELL_STATE_APP_LOW_POWER = 1U << 4,
+    NUWAX_APP_SHELL_STATE_BATTERY = 1U << 5,
+    NUWAX_APP_SHELL_STATE_MEETING = 1U << 6,
+    NUWAX_APP_SHELL_STATE_MONITORING = 1U << 7,
+    NUWAX_APP_SHELL_STATE_VOLUME = 1U << 8,
+    NUWAX_APP_SHELL_STATE_PROVISIONING = 1U << 9,
+    NUWAX_APP_SHELL_STATE_TOUCH_SEQUENCE = 1U << 10,
+    NUWAX_APP_SHELL_STATE_WIFI_SIGNAL = 1U << 11,
+    NUWAX_APP_SHELL_STATE_SEMANTIC_EMOTION = 1U << 12,
+    NUWAX_APP_SHELL_STATE_TOUCH_EMOTION = 1U << 13,
+    NUWAX_APP_SHELL_STATE_SPEAKING_PCM = 1U << 14,
+    NUWAX_APP_SHELL_STATE_OTA_PROGRESS = 1U << 15,
+    NUWAX_APP_SHELL_STATE_SIMULATED_OFFLINE = 1U << 16,
+    NUWAX_APP_SHELL_STATE_BRIGHTNESS = 1U << 17,
+    NUWAX_APP_SHELL_STATE_ALL = (1U << 18) - 1U,
+};
+static nuwax_conversation_state_t s_conversation_state;
+static nuwax_ui_sync_pending_t s_ui_state_sync;
+static nuwax_deferred_state_pending_t s_deferred_speaker_state;
+static nuwax_emotion_display_policy_t s_emotion_policy;
+static bool s_emotion_policy_initialized;
+static nuwax_app_state_t s_current_app_state,s_last_app_state;
+static uint32_t s_bridge_revision,s_lifecycle_publication_seq;
+static char s_semantic_owner_source[24];
+static uint32_t s_semantic_owner_revision;
+
+
+static uint32_t fake_now;
+static bool inject_sleep;
+static bool inject_after_accept;
+static unsigned prelisten_starts,sleep_entries;
+static nuwax_awake_session_state_t s_awake_session;
+static nuwax_prelisten_state_t s_prelisten;
+static struct { bool active; } s_turn_guard;
+static struct { int unused; } s_listen_resume;
+static uint32_t monotonic_ms(void){return fake_now;}
+static uint32_t bridge_now_ms(void){return fake_now;}
+static bool ui_ready_snapshot(void){return true;}
+typedef struct { uint32_t submitted_generation,submitted_connection_epoch; } nuwax_speaker_playback_stats_t;
+static bool nuwax_speaker_playback_has_pending(void){return false;}
+static void nuwax_speaker_playback_get_stats(nuwax_speaker_playback_stats_t *stats){memset(stats,0,sizeof(*stats));}
+static void cancel_pending_semantic_emotion_for_state(nuwax_app_state_t s){(void)s;}
+static void set_state(nuwax_app_state_t state);
+static bool nuwax_state_bridge_update_owned_real(nuwax_app_state_t state,uint32_t seq);
+static bool nuwax_state_bridge_update_owned(nuwax_app_state_t state,uint32_t seq){
+    if(inject_sleep && state==NUWAX_APP_STATE_LISTENING){inject_sleep=false;set_state(NUWAX_APP_STATE_SLEEPING);}
+    return nuwax_state_bridge_update_owned_real(state,seq);
+}
+
+
+static bool product_music_blocks_audio(void){return false;}
+static bool sleep_transaction_blocks_new_audio(void){return false;}
+static bool exclusive_audio_mode_blocks_normal_audio(void){return false;}
+static bool nuwax_app_shell_blocks_auto_followup(void){return false;}
+static bool nuwax_listen_resume_state_holds_idle_expiry_boundary(const void *p){(void)p;return false;}
+static uint32_t awake_session_listen_window_ms(uint32_t t){return nuwax_awake_session_state_remaining_ms(&s_awake_session,t);}
+static void start_prelisten_window(const char *mode,uint32_t ms,uint32_t delay){(void)mode;(void)ms;(void)delay;++prelisten_starts;}
+static void enter_sleeping_conversation_state(const char *reason){(void)reason;++sleep_entries;}
+typedef struct {
+    uint32_t revision;
+    uint32_t published_revision;
+    /* Each bridge-owned field has an independent producer watermark. A newer
+     * narrow update must not discard unrelated fields from an older delayed
+     * transaction. */
+    uint32_t bridge_field_revisions[17];
+    bool initialized;
+    bool app_state_valid;
+    nuwax_app_state_t app_state;
+    /* The requested expression is retained while a low-battery warning owns
+     * the visible face, then restored when the warning clears. */
+    nuwax_emotion_t base_emotion;
+    nuwax_device_state_t snapshot;
+} app_shell_state_mailbox_t;
+static app_shell_state_mailbox_t s_state_mailbox;
+static int s_ui_mailbox_mux;
+static nuwax_device_state_t initial_state;
+const nuwax_device_state_t *nuwax_device_state_get(void){return &initial_state;}
+static void nuwax_lvgl_port_wake(void){}
+static size_t strlcpy(char *dst,const char *src,size_t capacity){
+    size_t n=strlen(src);if(capacity){size_t k=n<capacity-1?n:capacity-1;memcpy(dst,src,k);dst[k]=0;}return n;
+}
+
+@FUNCTION:app_shell_next_revision@
+
+@FUNCTION:app_shell_next_state_revision_locked@
+
+@FUNCTION:app_shell_ensure_state_snapshot_locked@
+
+@FUNCTION:app_shell_state_fields_valid@
+
+@FUNCTION:app_shell_merge_device_state_locked@
+
+@FUNCTION:nuwax_app_shell_publish_app_state_delta_from_bridge@
+
+@FUNCTION:nuwax_app_shell_publish_device_state_delta_from_bridge@
+
+@FUNCTION:nuwax_app_shell_get_device_state_snapshot@
+
+@FUNCTION:app_shell_post_dialog@
+
+@FUNCTION:state_snapshot@
+
+@FUNCTION:ensure_policy_initialized_locked@
+
+@FUNCTION:next_bridge_revision_locked@
+
+@FUNCTION:emotion_name@
+
+@FUNCTION:dialog_name@
+
+@FUNCTION:power_overrides_emotion@
+
+@FUNCTION:power_has_default_emotion@
+
+@FUNCTION:emotion_for_power@
+
+@FUNCTION:current_or_neutral@
+
+@FUNCTION:default_emotion_for_app_state@
+
+@FUNCTION:publish_app_state_delta@
+
+@FUNCTION:nuwax_state_bridge_update_owned@
+
+@FUNCTION:publish_state_delta@
+
+@FUNCTION:nuwax_state_bridge_service@
+
+@FUNCTION:conversation_state_snapshot@
+
+@FUNCTION:conversation_state_current@
+
+@FUNCTION:conversation_state_generation@
+
+@FUNCTION:set_state_logical@
+
+@FUNCTION:set_state@
+
+@FUNCTION:sync_pending_ui_state@
+
+
+
+
+
+typedef enum {
+    NUWAX_EMOTION_ASSET_DIZZINESS = 1,
+    NUWAX_EMOTION_ASSET_HAPPY,
+    NUWAX_EMOTION_ASSET_EXCITED,
+    NUWAX_EMOTION_ASSET_SLEEPING,
+    NUWAX_EMOTION_ASSET_PROVISIONING,
+    NUWAX_EMOTION_ASSET_DISCONNECTED,
+    NUWAX_EMOTION_ASSET_THINKING,
+    NUWAX_EMOTION_ASSET_THOUGHT_COMPLETE,
+    NUWAX_EMOTION_ASSET_MEETING,
+    NUWAX_EMOTION_ASSET_MONITORING,
+    NUWAX_EMOTION_ASSET_TOUCH,
+    NUWAX_EMOTION_ASSET_PLAYFUL,
+    NUWAX_EMOTION_ASSET_LIKE,
+    NUWAX_EMOTION_ASSET_ANGRY,
+    NUWAX_EMOTION_ASSET_LISTENING,
+    NUWAX_EMOTION_ASSET_QUESTION,
+} nuwax_emotion_asset_id_t;
+static bool s_provisioning_boot_visual,s_speaking_fallback_active;
+static nuwax_emotion_asset_id_t s_speaking_asset;
+static bool touch_visual_allowed(const nuwax_device_state_t *s){(void)s;assert(!"unexpected touch branch");return false;}
+static nuwax_emotion_asset_id_t semantic_asset(nuwax_emotion_t e){(void)e;assert(!"unexpected semantic branch");return NUWAX_EMOTION_ASSET_HAPPY;}
+
+@FUNCTION:asset_for_state@
+
+
+static void reset_ui(void){
+    memset(&s_conversation_state,0,sizeof(s_conversation_state));
+    memset(&s_ui_state_sync,0,sizeof(s_ui_state_sync));
+    memset(&s_state_mailbox,0,sizeof(s_state_mailbox));
+    memset(&s_emotion_policy,0,sizeof(s_emotion_policy));
+    s_emotion_policy_initialized=false;s_current_app_state=s_last_app_state=NUWAX_APP_STATE_BOOTING;s_bridge_revision=0;s_lifecycle_publication_seq=0;
+    initial_state=(nuwax_device_state_t){.wifi=NUWAX_WIFI_CONNECTED,.cloud=NUWAX_CLOUD_CONNECTED};
+    inject_sleep=inject_after_accept=false;fake_now=100;
+}
+int main(void){
+    (void)prelisten_starts;
+    reset_ui();set_state(NUWAX_APP_STATE_LISTENING);set_state(NUWAX_APP_STATE_SLEEPING);
+    assert(s_state_mailbox.app_state==NUWAX_APP_STATE_SLEEPING);
+    assert(asset_for_state(&s_state_mailbox.snapshot)==NUWAX_EMOTION_ASSET_SLEEPING);
+    puts("control: ordered transitions -> real mailbox and face both SLEEPING");
+    reset_ui();assert(set_state_logical(NUWAX_APP_STATE_LISTENING,NULL,false));
+    inject_sleep=true;sync_pending_ui_state();
+    assert(conversation_state_current()==NUWAX_APP_STATE_SLEEPING);
+    assert(s_state_mailbox.app_state==NUWAX_APP_STATE_SLEEPING);
+    assert(!s_ui_state_sync.pending);
+    assert(asset_for_state(&s_state_mailbox.snapshot)==NUWAX_EMOTION_ASSET_SLEEPING);
+    fake_now+=10000;nuwax_state_bridge_service(fake_now);sync_pending_ui_state();
+    set_state(NUWAX_APP_STATE_SLEEPING);app_shell_post_dialog(NUWAX_DIALOG_LISTENING);
+    assert(asset_for_state(&s_state_mailbox.snapshot)==NUWAX_EMOTION_ASSET_SLEEPING);
+    puts("PASS stale LISTENING rejected before bridge policy mutation; real mailbox and face remain SLEEPING");
+    reset_ui();inject_after_accept=true;set_state(NUWAX_APP_STATE_LISTENING);
+    assert(conversation_state_current()==NUWAX_APP_STATE_SLEEPING);
+    assert(s_state_mailbox.app_state==NUWAX_APP_STATE_SLEEPING);
+    assert(asset_for_state(&s_state_mailbox.snapshot)==NUWAX_EMOTION_ASSET_SLEEPING);
+    assert(!s_ui_state_sync.pending);
+    puts("PASS field watermark rejects old patch delayed after bridge acceptance");
+    return 0;
+}

@@ -29,6 +29,12 @@ typedef struct {
  */
 esp_err_t nuwax_lvgl_port_init(void);
 
+/* Keep LVGL rendering in memory without publishing it to the panel. Startup
+ * uses this gate to keep the panel black until the full UI has been
+ * constructed. Must be called while holding the LVGL mutex after
+ * initialization. */
+void nuwax_lvgl_port_set_panel_output_enabled(bool enabled);
+
 /* Select the memory profile before initialization.  Provisioning keeps the
  * draw buffer in PSRAM so Wi-Fi/NimBLE management frames retain internal RAM;
  * normal runtime keeps the measured internal-RAM rendering path. */
@@ -55,6 +61,10 @@ void nuwax_lvgl_port_set_flush_filter(
 /* Wake the LVGL owner after a producer posts UI work. Thread-safe and
  * non-blocking; the next pre-handler pass drains the producer mailbox. */
 void nuwax_lvgl_port_wake(void);
+/* Soft idle hint for noncritical background Flash work, not a Flash safety
+ * lock. Both calls are thread-safe and never acquire the LVGL mutex. */
+void nuwax_lvgl_port_note_interaction(void);
+bool nuwax_lvgl_port_background_work_deferred(void);
 
 /**
  * Acquire LVGL mutex. Must be held when calling any lv_* API from outside the LVGL task.

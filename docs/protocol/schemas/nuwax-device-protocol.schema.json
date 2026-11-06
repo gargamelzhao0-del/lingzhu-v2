@@ -257,6 +257,8 @@
         { "$ref": "#/$defs/otaResult" },
         { "$ref": "#/$defs/devicePing" },
         { "$ref": "#/$defs/listen" },
+        { "$ref": "#/$defs/offlineAudioBegin" },
+        { "$ref": "#/$defs/offlineAudioCommit" },
         { "$ref": "#/$defs/monitoringCaptureControl" },
         { "$ref": "#/$defs/textRequest" },
         { "$ref": "#/$defs/cancelTurn" },
@@ -264,8 +266,10 @@
         { "$ref": "#/$defs/wifiScanResult" },
         { "$ref": "#/$defs/wifiStatus" },
         { "$ref": "#/$defs/volumeChanged" },
+        { "$ref": "#/$defs/deviceErrorReport" },
         { "$ref": "#/$defs/deviceCommandAck" },
-        { "$ref": "#/$defs/legacySetWakeWordAck" },
+        { "$ref": "#/$defs/musicPlaybackStatus" },
+         { "$ref": "#/$defs/legacySetWakeWordAck" },
         { "$ref": "#/$defs/notifyPlaybackAck" },
         { "$ref": "#/$defs/notifyPlaybackCancelled" },
         { "$ref": "#/$defs/pcStatusRequest" },
@@ -277,6 +281,9 @@
         { "$ref": "#/$defs/pong" },
         { "$ref": "#/$defs/firmwareReportAck" },
         { "$ref": "#/$defs/otaResultAck" },
+        { "$ref": "#/$defs/offlineAudioBeginAck" },
+        { "$ref": "#/$defs/offlineAudioChunkAck" },
+        { "$ref": "#/$defs/offlineAudioCommitAck" },
         { "$ref": "#/$defs/monitoringCaptureControlAck" },
         { "$ref": "#/$defs/deviceCommand" },
         { "$ref": "#/$defs/legacySetWakeWordCommand" },
@@ -289,6 +296,7 @@
         { "$ref": "#/$defs/playbackEnd" },
         { "$ref": "#/$defs/notifyPlaybackBegin" },
         { "$ref": "#/$defs/notifyPlaybackEnd" },
+        { "$ref": "#/$defs/deviceErrorReportAck" },
         { "$ref": "#/$defs/ttsResult" },
         { "$ref": "#/$defs/ttsSkip" },
         { "$ref": "#/$defs/mcp" },
@@ -306,12 +314,14 @@
         "device_id": { "type": "string", "maxLength": 63 },
         "device_secret": { "type": "string", "minLength": 1, "maxLength": 95 },
         "transport": { "const": "websocket" },
+        "has_sd_card": { "type": "boolean", "description": "Latest completed SD detection result. Current firmware always sends this field; omitted by older firmware means unknown. Does not imply writable space or a successful mode start." },
         "features": {
           "type": "object",
           "additionalProperties": true,
           "properties": {
             "audio_upload": { "type": "boolean" },
             "audio_playback": { "type": "boolean" },
+            "music_playback_mp3": { "type": "boolean" },
             "mcp": { "type": "boolean" },
             "meeting_mode_v1": { "type": "boolean" },
             "monitoring_mode_v1": { "type": "boolean" },
@@ -407,6 +417,69 @@
         "audio_session_id": { "$ref": "#/$defs/audioSessionId" },
         "audioSessionId": { "$ref": "#/$defs/audioSessionId" },
         "request_id": { "$ref": "#/$defs/requestId" }
+      }
+    },
+    "offlineSegmentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 47,
+      "x-maxUtf8Bytes": 47,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "offlineAudioBegin": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "request_id", "segment_id", "total_bytes", "crc32"],
+      "properties": {
+        "type": { "const": "offline_audio_begin" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "segment_id": { "$ref": "#/$defs/offlineSegmentId" },
+        "total_bytes": { "$ref": "#/$defs/nonNegativeInt" },
+        "crc32": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+      }
+    },
+    "offlineAudioCommit": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "request_id", "segment_id", "total_bytes", "crc32"],
+      "properties": {
+        "type": { "const": "offline_audio_commit" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "segment_id": { "$ref": "#/$defs/offlineSegmentId" },
+        "total_bytes": { "$ref": "#/$defs/nonNegativeInt" },
+        "crc32": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+      }
+    },
+    "offlineAudioBeginAck": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "request_id", "ok"],
+      "properties": {
+        "type": { "const": "offline_audio_begin_ack" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "ok": { "type": "boolean" },
+        "next_offset": { "$ref": "#/$defs/nonNegativeInt" }
+      }
+    },
+    "offlineAudioChunkAck": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "request_id", "ok", "next_offset"],
+      "properties": {
+        "type": { "const": "offline_audio_chunk_ack" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "ok": { "type": "boolean" },
+        "next_offset": { "$ref": "#/$defs/nonNegativeInt" }
+      }
+    },
+    "offlineAudioCommitAck": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "request_id", "ok"],
+      "properties": {
+        "type": { "const": "offline_audio_commit_ack" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "ok": { "type": "boolean" }
       }
     },
     "monitoringCaptureControl": {
@@ -532,6 +605,56 @@
         "source": { "type": "string", "enum": ["device_ui", "device_sync"] }
       }
     },
+    "deviceErrorReport": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "event_id", "severity", "component", "code"],
+      "properties": {
+        "type": { "const": "device_error_report" },
+        "event_id": { "$ref": "#/$defs/eventId" },
+        "severity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 11,
+          "x-maxUtf8Bytes": 11
+        },
+        "component": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 23,
+          "x-maxUtf8Bytes": 23
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 47,
+          "x-maxUtf8Bytes": 47
+        },
+        "result": {
+          "type": "string",
+          "maxLength": 159,
+          "x-maxUtf8Bytes": 159
+        },
+        "uptime_ms": { "$ref": "#/$defs/nonNegativeInt" },
+        "state": {
+          "type": "string",
+          "maxLength": 23,
+          "x-maxUtf8Bytes": 23
+        },
+        "generation": { "$ref": "#/$defs/nonNegativeInt" },
+        "turn_id": { "$ref": "#/$defs/turnId" }
+      }
+    },
+    "deviceErrorReportAck": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "event_id", "accepted"],
+      "properties": {
+        "type": { "const": "device_error_report_ack" },
+        "event_id": { "$ref": "#/$defs/eventId" },
+        "accepted": { "type": "boolean" }
+      }
+    },
     "deviceCommandAck": {
       "type": "object",
       "additionalProperties": true,
@@ -542,6 +665,17 @@
         "command": { "$ref": "#/$defs/commandName" },
         "ok": { "type": "boolean" },
         "message": { "$ref": "#/$defs/errorText" }
+      }
+    },
+    "musicPlaybackStatus": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "request_id", "state"],
+      "properties": {
+        "type": { "const": "music_playback_status" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "state": { "type": "string", "enum": ["playing", "completed", "failed", "cancelled"] },
+        "reason": { "$ref": "#/$defs/errorText" }
       }
     },
     "legacySetWakeWordAck": {
@@ -580,6 +714,8 @@
         { "$ref": "#/$defs/otaUpdateCommand" },
         { "$ref": "#/$defs/setEmotionCommand" },
         { "$ref": "#/$defs/setVolumeCommand" },
+        { "$ref": "#/$defs/playMusicCommand" },
+        { "$ref": "#/$defs/stopMusicCommand" },
         { "$ref": "#/$defs/stopPlaybackCommand" },
         { "$ref": "#/$defs/setStateCommand" },
         { "$ref": "#/$defs/sleepConversationCommand" },
@@ -656,6 +792,36 @@
             "persist": { "type": "boolean" },
             "volume_persist": { "type": "boolean" },
             "volumePersist": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "playMusicCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/deviceCommandBase" },
+        {
+          "type": "object",
+          "required": ["url", "format"],
+          "properties": {
+            "command": { "const": "play_music" },
+            "url": {
+              "type": "string",
+              "minLength": 9,
+              "maxLength": 255,
+              "pattern": "^https://[^\\\\#\\s\\x00-\\x1f\\x7f]+$"
+            },
+            "format": { "const": "mp3" }
+          }
+        }
+      ]
+    },
+    "stopMusicCommand": {
+      "allOf": [
+        { "$ref": "#/$defs/deviceCommandBase" },
+        {
+          "type": "object",
+          "properties": {
+            "command": { "const": "stop_music" }
           }
         }
       ]

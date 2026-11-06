@@ -51,6 +51,8 @@ typedef struct {
 } qmi8658a_config_t;
 
 esp_err_t qmi8658a_init(const qmi8658a_config_t *config);
+/* NOT_FINISHED means bounded lock contention, not a failed sensor transfer.
+ * TIMEOUT and other errors invalidate the observation; output is not usable. */
 esp_err_t qmi8658a_read_data(qmi8658a_sensor_data_t *data);
 bool qmi8658a_is_present(void);
 esp_err_t qmi8658a_get_device_id(uint8_t *id);
@@ -62,6 +64,11 @@ esp_err_t qmi8658a_deinit(void);
 
 typedef struct {
     uint16_t voltage_mv;
+    /* Safety group (voltage + presence + operation) is published even if a
+     * later telemetry register fails. It has its own acquisition timestamp. */
+    bool power_sample_valid;
+    bool telemetry_valid;
+    uint64_t power_timestamp_ms;
     int16_t current_ma;
     uint16_t capacity_percent;
     uint16_t remaining_mah;
@@ -90,6 +97,8 @@ typedef struct {
 
 esp_err_t bq27220_init(const bq27220_config_t *config);
 esp_err_t bq27220_get_status(bq27220_battery_status_t *status);
+esp_err_t bq27220_get_status_partial(bq27220_battery_status_t *status);
+esp_err_t bq27220_revalidate_profile(void);
 esp_err_t bq27220_get_capacity_percent(uint8_t *percent);
 esp_err_t bq27220_get_voltage(uint16_t *voltage_mv);
 esp_err_t bq27220_get_current(int16_t *current_ma);

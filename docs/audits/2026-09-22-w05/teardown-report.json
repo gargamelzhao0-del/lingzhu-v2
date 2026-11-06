@@ -1,0 +1,13 @@
+{
+  "kind": "production-function fault injection; simulated hardware boundary",
+  "status": "INVARIANT_FAILURE",
+  "exit_code": 1,
+  "stdout": "normal_init_deinit=PASS\nreleased_output_still_ready=FAIL\ninit_accepts_released_output=FAIL\nold_cleanup_consumes_new_reference=FAIL\n",
+  "stderr": "",
+  "source_sha256": {
+    "main/board/audio_board.c": "4674a381e95ac8cb446dfcea87925a7ee18cc36ea23ed7c2a994f934210be40d",
+    "main/speaker_output.c": "c8d6eb22eae3c681ea0bf6e2bbf9b581b128e06ea3ff6a4ab0f280873e798162",
+    "main/speaker_output.h": "9defd09fdfae762e80aadccdf3a1f2c3ade357a35b2f4fd905e6e6fa7fdb7740",
+    "main/conversation/speaker_playback.c": "5e89176c72835ab59b251041d1ffaa7154abf79a86e929c72a03aae31054846b"
+  }
+}

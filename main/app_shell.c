@@ -30,8 +30,10 @@
 #include "nuwax_drawer.h"
 #include "nuwax_gesture.h"
 #include "nuwax_face.h"
+#include "nuwax_ui_v28/ota_progress.h"
 #include "nuwax_state_bridge.h"
 #include "nuwax_ui_v28/ui_bridge_revision_policy.h"
+#include "nuwax_ui_v28/control_center_input_policy.h"
 #include "wifi_manager.h"
 
 static const char *TAG = "app_shell_lvgl";
@@ -49,6 +51,7 @@ static const char *TAG = "app_shell_lvgl";
 #define APP_SHELL_STATUS_LINE_LEN 48
 #define APP_SHELL_WIFI_SIGNAL_POLL_MS 2000U
 #define APP_SHELL_PROVISIONING_QR_RETRY_MS 500U
+#define APP_SHELL_PROVISIONING_FACE_HOLD_MS 3000U
 
 static bool phase_equals(const char *phase, const char *expected) {
     if (!phase || !expected) {
@@ -68,6 +71,14 @@ static nuwax_app_shell_result_t drawer_action_to_shell_action(
 static nuwax_app_shell_result_t app_shell_handle_touch_event_on_lvgl(
     nuwax_app_shell_event_t event,
     const nuwax_touch_point_t *point);
+static void app_shell_cancel_touch_locked(void);
+static void app_shell_cancel_volume_preview_locked(void);
+
+typedef struct {
+    uint32_t contact_sequence;
+    int16_t delta_y;
+    bool begin_pull;
+} app_shell_panel_motion_t;
 
 static portMUX_TYPE s_ui_mailbox_mux = portMUX_INITIALIZER_UNLOCKED;
 static int8_t s_pending_menu_scroll;
@@ -75,39 +86,68 @@ static bool s_pending_menu_drag;
 static int16_t s_pending_menu_drag_delta_y;
 static bool s_pending_menu_finish;
 static int8_t s_pending_detail_adjust;
-static bool s_pending_drawer_drag;
-static int16_t s_pending_drawer_y = -226;
-static bool s_pending_drawer_begin_pull;
-static bool s_pending_drawer_finish;
-static bool s_pending_drawer_finish_close;
+static bool s_pending_drawer_contact, s_drawer_contact_down;
+static uint16_t s_drawer_contact_x, s_drawer_contact_y;
+static app_shell_panel_motion_t s_pending_panel_motion;
+static app_shell_panel_motion_t s_touch_panel_motion;
+static bool s_pending_close_overlays;
+static bool s_system_closing;
 static bool s_pending_drawer_page_drag;
 static int16_t s_pending_drawer_page_delta_x;
-static bool s_pending_drawer_page_finish;
-static bool s_pending_drawer_page_commit;
-static bool s_pending_drawer_volume_preview;
-static uint8_t s_pending_drawer_volume;
 static bool s_pending_provisioning_qr;
 static int64_t s_pending_provisioning_qr_deadline_us;
 static bool s_pending_provisioning_qr_close;
-static int16_t s_cached_drawer_y = -226;
 static bool s_ui_ready;
 static QueueHandle_t s_shell_actions;
+static TaskHandle_t s_shell_action_owner;
 static nuwax_app_shell_reprovision_cb_t s_reprovision_cb;
 static void *s_reprovision_ctx;
+static nuwax_drawer_input_state_t s_drawer_input;
+static nuwax_drawer_input_state_t s_touch_input;
+static uint32_t s_touch_contact_sequence, s_touch_completed_sequence;
+static uint32_t s_touch_cancelled_sequence;
+static uint32_t s_visual_contact_sequence;
+static uint32_t s_contact_sequence, s_page_sequence;
+static uint32_t s_panel_anchor_sequence;
+static int16_t s_panel_anchor_y;
+static bool s_touch_page_moved;
+static int16_t s_touch_last_page_dx;
+static nuwax_app_shell_volume_preview_cb_t s_volume_preview_cb;
+static nuwax_app_shell_volume_cancel_cb_t s_volume_cancel_cb;
+static nuwax_app_shell_volume_queued_cb_t s_volume_queued_cb;
+static uint32_t s_volume_setting_sequence;
+static struct {
+    uint32_t contact_sequence;
+    uint32_t volume_sequence;
+    uint8_t value;
+} s_volume_preview;
+
+typedef enum {
+    APP_SHELL_INPUT_TOUCH,
+    APP_SHELL_INPUT_PANEL_FINISH,
+    APP_SHELL_INPUT_PAGE_FINISH,
+    APP_SHELL_INPUT_VOLUME_FINISH,
+} app_shell_input_kind_t;
 
 typedef struct {
+    app_shell_input_kind_t kind;
+    uint32_t contact_sequence;
+    uint32_t scene_generation;
+    uint32_t volume_sequence;
+    bool finish_target, begin_pull, has_motion;
+    bool tap_allowed;
+    int16_t final_position;
+    int16_t panel_total_dy;
+    int16_t panel_velocity_y;
     nuwax_app_shell_event_t event;
     nuwax_touch_point_t point;
     bool has_point;
-    uint32_t sequence;
-    int64_t queued_ms;
 } app_shell_touch_event_t;
 
 static StaticQueue_t s_touch_event_queue_storage;
 static uint8_t s_touch_event_queue_buffer[
     APP_SHELL_TOUCH_EVENT_QUEUE_DEPTH * sizeof(app_shell_touch_event_t)];
 static QueueHandle_t s_touch_event_queue;
-static uint32_t s_touch_event_sequence;
 
 typedef struct {
     bool menu_open;
@@ -164,7 +204,7 @@ typedef struct {
     /* Each bridge-owned field has an independent producer watermark. A newer
      * narrow update must not discard unrelated fields from an older delayed
      * transaction. */
-    uint32_t bridge_field_revisions[16];
+    uint32_t bridge_field_revisions[17];
     bool initialized;
     bool app_state_valid;
     nuwax_app_state_t app_state;
@@ -188,16 +228,6 @@ static app_shell_overlay_state_t app_shell_overlay_state_get(void) {
     return state;
 }
 
-static void app_shell_overlay_state_set(
-    const app_shell_overlay_state_t *state) {
-    if (!state) {
-        return;
-    }
-    taskENTER_CRITICAL(&s_ui_mailbox_mux);
-    s_overlay_state = *state;
-    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
-}
-
 /* Must run on the LVGL task or while the LVGL port mutex is held. */
 static void app_shell_overlay_state_sync_from_lvgl(void) {
     const app_shell_overlay_state_t state = {
@@ -205,7 +235,22 @@ static void app_shell_overlay_state_sync_from_lvgl(void) {
         .menu_detail = nuwax_drawer_is_detail(),
         .drawer_open = nuwax_drawer_is_open(),
     };
-    app_shell_overlay_state_set(&state);
+    nuwax_drawer_input_state_t input;
+    nuwax_drawer_get_input_state(&input);
+    input.modal_blocked = input.modal_blocked || nuwax_ota_progress_is_visible();
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    s_overlay_state = state;
+    if (input.modal_blocked || s_drawer_input.modal_blocked) {
+        app_shell_cancel_touch_locked();
+    } else if (!input.volume_available ||
+               input.scene_generation != s_drawer_input.scene_generation) {
+        app_shell_cancel_volume_preview_locked();
+    }
+    s_drawer_input = input;
+    if (!state.drawer_open && !s_pending_close_overlays) {
+        s_system_closing = false;
+    }
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
 }
 
 static void app_shell_lvgl_unlock(void) {
@@ -229,7 +274,17 @@ bool nuwax_app_shell_is_ui_ready(void) {
 void nuwax_app_shell_set_action_queue(QueueHandle_t queue) {
     taskENTER_CRITICAL(&s_ui_mailbox_mux);
     s_shell_actions = queue;
+    s_shell_action_owner = queue ? xTaskGetCurrentTaskHandle() : NULL;
     taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+}
+
+void nuwax_app_shell_action_queued(void) {
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    const TaskHandle_t owner = s_shell_action_owner;
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    /* The registered business owner waits on notifications between drains.
+     * Queue admission must wake it, rather than wait out its 100 ms idle poll. */
+    if (owner) xTaskNotifyGive(owner);
 }
 
 void nuwax_app_shell_set_reprovision_callback(
@@ -238,6 +293,17 @@ void nuwax_app_shell_set_reprovision_callback(
     taskENTER_CRITICAL(&s_ui_mailbox_mux);
     s_reprovision_cb = callback;
     s_reprovision_ctx = ctx;
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+}
+
+void nuwax_app_shell_set_volume_callbacks(
+    nuwax_app_shell_volume_preview_cb_t preview,
+    nuwax_app_shell_volume_cancel_cb_t cancel,
+    nuwax_app_shell_volume_queued_cb_t queued) {
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    s_volume_preview_cb = preview;
+    s_volume_cancel_cb = cancel;
+    s_volume_queued_cb = queued;
     taskEXIT_CRITICAL(&s_ui_mailbox_mux);
 }
 
@@ -253,27 +319,58 @@ static uint32_t app_shell_next_state_revision_locked(void) {
     return s_state_mailbox.revision;
 }
 
+static bool app_shell_touch_allowed_locked(uint32_t sequence) {
+    return !s_system_closing && !s_drawer_input.modal_blocked &&
+           !s_state_mailbox.snapshot.ota_update_active &&
+           nuwax_cc_sequence_after(sequence, s_touch_cancelled_sequence);
+}
+
+static void app_shell_clear_volume_preview_locked(void) {
+    if (s_volume_preview.contact_sequence == 0U) return;
+    memset(&s_volume_preview, 0, sizeof(s_volume_preview));
+    (void)app_shell_next_state_revision_locked();
+}
+
+static void app_shell_restore_volume_locked(uint32_t sequence) {
+    if (s_volume_cancel_cb && sequence != 0U) {
+        s_volume_cancel_cb(sequence);
+    }
+}
+
+static void app_shell_cancel_volume_preview_locked(void) {
+    app_shell_restore_volume_locked(s_volume_preview.volume_sequence);
+    app_shell_clear_volume_preview_locked();
+}
+
+static void app_shell_cancel_touch_locked(void) {
+    s_touch_cancelled_sequence = s_touch_contact_sequence;
+    s_pending_drawer_contact = false;
+    s_drawer_contact_down = false;
+    s_pending_panel_motion.contact_sequence = 0U;
+    s_touch_panel_motion.contact_sequence = 0U;
+    s_pending_drawer_page_drag = false;
+    s_touch_page_moved = false;
+    app_shell_cancel_volume_preview_locked();
+}
+
 static void app_shell_clear_transient_ui_locked(void) {
+    app_shell_cancel_touch_locked();
     s_pending_menu_scroll = 0;
+    s_pending_drawer_contact = false;
+    s_drawer_contact_down = false;
     s_pending_menu_drag = false;
     s_pending_menu_drag_delta_y = 0;
     s_pending_menu_finish = false;
     s_pending_detail_adjust = 0;
-    s_pending_drawer_drag = false;
-    s_pending_drawer_y = -226;
-    s_pending_drawer_begin_pull = false;
-    s_pending_drawer_finish = false;
-    s_pending_drawer_finish_close = false;
-    s_pending_drawer_page_drag = false;
+    s_pending_close_overlays = false;
+    s_system_closing = false;
     s_pending_drawer_page_delta_x = 0;
-    s_pending_drawer_page_finish = false;
-    s_pending_drawer_page_commit = false;
-    s_pending_drawer_volume_preview = false;
-    s_pending_drawer_volume = 0;
     s_pending_provisioning_qr = false;
     s_pending_provisioning_qr_deadline_us = 0;
     s_pending_provisioning_qr_close = false;
-    s_cached_drawer_y = -226;
+    memset(&s_drawer_input, 0, sizeof(s_drawer_input));
+    s_panel_anchor_sequence = 0U;
+    s_touch_completed_sequence = s_touch_contact_sequence;
     s_drawer_action_reject_mask = 0U;
     memset(&s_overlay_state, 0, sizeof(s_overlay_state));
 }
@@ -391,8 +488,12 @@ static void app_shell_merge_device_state_locked(
     if ((fields & NUWAX_APP_SHELL_STATE_VOLUME) != 0U) {
         state->volume = patch->volume > 100U ? 100U : patch->volume;
     }
+    if ((fields & NUWAX_APP_SHELL_STATE_BRIGHTNESS) != 0U) {
+        state->brightness_percent = patch->brightness_percent == 40U || patch->brightness_percent == 70U ? patch->brightness_percent : 100U;
+    }
     if ((fields & NUWAX_APP_SHELL_STATE_PROVISIONING) != 0U) {
         state->provisioning_active = patch->provisioning_active;
+        state->provisioning_starting = patch->provisioning_starting;
     }
     if ((fields & NUWAX_APP_SHELL_STATE_TOUCH_SEQUENCE) != 0U) {
         state->touch_sequence = patch->touch_sequence;
@@ -410,6 +511,9 @@ static void app_shell_merge_device_state_locked(
                                                ? 100U
                                                : patch->ota_update_percent)
                                         : 0U;
+    }
+    if ((fields & NUWAX_APP_SHELL_STATE_SIMULATED_OFFLINE) != 0U) {
+        state->simulated_offline = patch->simulated_offline;
     }
     if ((fields & NUWAX_APP_SHELL_STATE_WIFI_SIGNAL) != 0U) {
         state->wifi_signal_valid = patch->wifi_signal_valid;
@@ -577,10 +681,17 @@ static void app_shell_post_monitoring(nuwax_monitoring_ui_state_t monitoring) {
         &patch, NUWAX_APP_SHELL_STATE_MONITORING);
 }
 
-static void app_shell_post_volume(uint8_t volume) {
+static void app_shell_post_volume_locked(uint8_t volume, uint32_t sequence) {
+    if (s_volume_setting_sequence != 0U &&
+        (sequence == 0U || nuwax_cc_sequence_after(s_volume_setting_sequence, sequence))) {
+        return;
+    }
+    s_volume_setting_sequence = sequence;
+    app_shell_ensure_state_snapshot_locked();
+    if (s_state_mailbox.snapshot.volume == volume) return;
     nuwax_device_state_t patch = {.volume = volume};
-    (void)nuwax_app_shell_publish_device_state_delta(
-        &patch, NUWAX_APP_SHELL_STATE_VOLUME);
+    app_shell_merge_device_state_locked(&patch, NUWAX_APP_SHELL_STATE_VOLUME);
+    (void)app_shell_next_state_revision_locked();
 }
 
 static bool app_shell_queue_result(const nuwax_app_shell_result_t *result) {
@@ -624,30 +735,19 @@ static bool app_shell_queue_result(const nuwax_app_shell_result_t *result) {
         return false;
     }
     if (result->action == NUWAX_APP_SHELL_ACTION_SET_VOLUME) {
-        /* Volume application is non-rejecting once admitted to the owner
-         * queue. Publish the accepted target immediately so a later failed
-         * preview rolls back to this command instead of an older UI sample. */
-        app_shell_post_volume((uint8_t)(result->index < 0
-                                            ? 0
-                                            : (result->index > 100
-                                                   ? 100
-                                                   : result->index)));
+        /* Keep the latest admitted target available for a later rollback.
+         * An owner confirmation can arrive before this producer resumes. */
+        taskENTER_CRITICAL(&s_ui_mailbox_mux);
+        if (s_volume_queued_cb) {
+            s_volume_queued_cb(result->index, result->volume_sequence);
+        }
+        app_shell_post_volume_locked((uint8_t)(result->index < 0 ? 0 :
+            result->index > 100 ? 100 : result->index), result->volume_sequence);
+        taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+        nuwax_lvgl_port_wake();
     }
+    nuwax_app_shell_action_queued();
     return true;
-}
-
-static int16_t app_shell_cached_drawer_y_get(void) {
-    int16_t y;
-    taskENTER_CRITICAL(&s_ui_mailbox_mux);
-    y = s_cached_drawer_y;
-    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
-    return y;
-}
-
-static void app_shell_cached_drawer_y_set(int16_t y) {
-    taskENTER_CRITICAL(&s_ui_mailbox_mux);
-    s_cached_drawer_y = y;
-    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
 }
 
 static void app_shell_post_menu_scroll(int direction) {
@@ -705,161 +805,245 @@ static void app_shell_post_detail_adjust(int direction) {
     nuwax_lvgl_port_wake();
 }
 
-static void app_shell_post_drawer_drag(int16_t y) {
+static bool app_shell_enqueue_input(app_shell_touch_event_t *queued) {
     taskENTER_CRITICAL(&s_ui_mailbox_mux);
-    if (!s_ui_ready) {
+    if (!s_ui_ready || !app_shell_touch_allowed_locked(s_touch_contact_sequence)) {
         taskEXIT_CRITICAL(&s_ui_mailbox_mux);
-        return;
+        return false;
     }
-    s_pending_drawer_y = y;
-    s_cached_drawer_y = y;
-    s_pending_drawer_drag = true;
-    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
-    nuwax_lvgl_port_wake();
-}
-
-static void app_shell_post_drawer_begin_pull(void) {
-    taskENTER_CRITICAL(&s_ui_mailbox_mux);
-    if (s_ui_ready) {
-        s_pending_drawer_begin_pull = true;
-        s_cached_drawer_y = -226;
+    queued->contact_sequence = s_touch_contact_sequence;
+    queued->scene_generation = s_touch_input.scene_generation;
+    queued->tap_allowed = s_touch_input.tap_allowed;
+    if (queued->kind == APP_SHELL_INPUT_VOLUME_FINISH) {
+        if (s_volume_preview.contact_sequence != queued->contact_sequence) {
+            taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+            return false;
+        }
+        queued->volume_sequence = s_volume_preview.volume_sequence;
     }
     taskEXIT_CRITICAL(&s_ui_mailbox_mux);
-    nuwax_lvgl_port_wake();
-}
-
-static void app_shell_post_drawer_finish(bool close) {
-    taskENTER_CRITICAL(&s_ui_mailbox_mux);
-    if (!s_ui_ready) {
-        taskEXIT_CRITICAL(&s_ui_mailbox_mux);
-        return;
+    if (!s_touch_event_queue || xQueueSend(s_touch_event_queue, queued,
+            pdMS_TO_TICKS(APP_SHELL_TOUCH_EVENT_QUEUE_WAIT_MS)) != pdTRUE) {
+        /* The same fence handles overflow and a system-requested close. */
+        nuwax_app_shell_request_close_overlays();
+        ESP_LOGE(TAG, "touch boundary queue full kind=%d", (int)queued->kind);
+        return false;
     }
-    s_pending_drawer_finish = true;
-    s_pending_drawer_finish_close = close;
-    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
     nuwax_lvgl_port_wake();
+    return true;
 }
 
 static void app_shell_post_drawer_page_drag(int16_t delta_x) {
     taskENTER_CRITICAL(&s_ui_mailbox_mux);
-    if (s_ui_ready) {
+    const bool allowed = s_ui_ready && app_shell_touch_allowed_locked(s_touch_contact_sequence);
+    if (allowed) {
         s_pending_drawer_page_delta_x = delta_x;
+        s_touch_last_page_dx = delta_x;
+        s_touch_page_moved = true;
+        s_page_sequence = s_touch_contact_sequence;
         s_pending_drawer_page_drag = true;
     }
     taskEXIT_CRITICAL(&s_ui_mailbox_mux);
-    nuwax_lvgl_port_wake();
+    if (allowed) nuwax_lvgl_port_wake();
 }
 
 static void app_shell_post_drawer_page_finish(bool commit) {
+    app_shell_touch_event_t queued = {
+        .kind = APP_SHELL_INPUT_PAGE_FINISH, .finish_target = commit,
+    };
     taskENTER_CRITICAL(&s_ui_mailbox_mux);
-    if (s_ui_ready) {
-        s_pending_drawer_page_finish = true;
-        s_pending_drawer_page_commit = commit;
-    }
+    queued.has_motion = s_touch_page_moved;
+    queued.final_position = s_touch_last_page_dx;
     taskEXIT_CRITICAL(&s_ui_mailbox_mux);
-    nuwax_lvgl_port_wake();
+    (void)app_shell_enqueue_input(&queued);
 }
 
-static void app_shell_post_drawer_volume_preview(uint8_t volume) {
+static bool app_shell_touch_allowed_on_lvgl(uint32_t sequence, bool current_contact) {
+    if (!nuwax_cc_sequence_after(sequence, s_touch_completed_sequence)) return false;
     taskENTER_CRITICAL(&s_ui_mailbox_mux);
-    if (!s_ui_ready) {
-        taskEXIT_CRITICAL(&s_ui_mailbox_mux);
-        return;
-    }
-    s_pending_drawer_volume_preview = true;
-    s_pending_drawer_volume = volume > 100 ? 100 : volume;
+    const bool allowed = s_ui_ready && app_shell_touch_allowed_locked(sequence) &&
+        (!current_contact || sequence == s_touch_contact_sequence);
     taskEXIT_CRITICAL(&s_ui_mailbox_mux);
-    nuwax_lvgl_port_wake();
+    return allowed;
+}
+
+static void app_shell_apply_pending_close(void) {
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    const bool close = s_pending_close_overlays;
+    if (close) {
+        s_pending_close_overlays = false;
+        app_shell_cancel_touch_locked();
+    }
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    if (close) {
+        s_panel_anchor_sequence = 0U;
+        s_visual_contact_sequence = 0U;
+        nuwax_drawer_contact(false, 0, 0);
+        if (nuwax_drawer_is_open()) nuwax_drawer_close();
+    }
+}
+
+static bool app_shell_apply_panel_motion(const app_shell_panel_motion_t *motion) {
+    if (motion->begin_pull && !nuwax_drawer_is_open()) nuwax_drawer_begin_pull();
+    if (!nuwax_drawer_is_open()) return false;
+    if (s_panel_anchor_sequence != motion->contact_sequence) {
+        /* This runs under LVGL ownership, after any preceding timer tick
+         * or FIFO boundary. An old touch-task snapshot cannot move the view. */
+        s_panel_anchor_y = nuwax_drawer_current_y();
+        s_panel_anchor_sequence = motion->contact_sequence;
+    }
+    nuwax_drawer_drag_to((int16_t)(s_panel_anchor_y + motion->delta_y));
+    return true;
+}
+
+static void app_shell_finish_volume_on_lvgl(const app_shell_touch_event_t *queued,
+                                             bool allowed) {
+    nuwax_drawer_input_state_t input;
+    nuwax_drawer_get_input_state(&input);
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    const bool commit = allowed && input.volume_available &&
+        input.scene_generation == queued->scene_generation &&
+        app_shell_touch_allowed_locked(queued->contact_sequence) &&
+        (queued->volume_sequence == 0U ||
+         !nuwax_cc_sequence_after(s_volume_setting_sequence, queued->volume_sequence));
+    /* Claim this release before sending the command. A later close cancels
+     * the live finger, while a release already claimed here keeps its order. */
+    if (s_volume_preview.contact_sequence == queued->contact_sequence) {
+        app_shell_clear_volume_preview_locked();
+    }
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+
+    const nuwax_app_shell_result_t result = {
+        .action = NUWAX_APP_SHELL_ACTION_SET_VOLUME,
+        .index = queued->final_position,
+        .volume_sequence = queued->volume_sequence,
+    };
+    if (!commit || !app_shell_queue_result(&result)) {
+        taskENTER_CRITICAL(&s_ui_mailbox_mux);
+        app_shell_restore_volume_locked(queued->volume_sequence);
+        taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    }
+}
+
+/* The terminal FIFO preserves releases. Only an active contact's movement
+ * may coalesce, and every final pose is applied before its settle decision. */
+static bool app_shell_drain_touch_events(bool discard) {
+    const int64_t started_us = esp_timer_get_time();
+    unsigned drained = 0U;
+    while (s_touch_event_queue && drained++ < APP_SHELL_TOUCH_EVENT_QUEUE_DEPTH &&
+           esp_timer_get_time() - started_us < APP_SHELL_TOUCH_EVENT_DRAIN_BUDGET_US) {
+        app_shell_touch_event_t queued = {0};
+        if (xQueueReceive(s_touch_event_queue, &queued, 0) != pdTRUE) break;
+        const bool live = !discard && app_shell_touch_allowed_on_lvgl(queued.contact_sequence, false);
+        if (live && s_visual_contact_sequence == queued.contact_sequence) {
+            nuwax_drawer_contact(false, 0, 0);
+            s_visual_contact_sequence = 0U;
+        }
+        if (queued.kind == APP_SHELL_INPUT_VOLUME_FINISH) {
+            app_shell_finish_volume_on_lvgl(&queued, live);
+        } else if (live && queued.kind == APP_SHELL_INPUT_PANEL_FINISH && queued.has_motion) {
+            const app_shell_panel_motion_t motion = {
+                .contact_sequence = queued.contact_sequence,
+                .delta_y = queued.final_position,
+                .begin_pull = queued.begin_pull,
+            };
+            if (app_shell_apply_panel_motion(&motion)) {
+                const bool close = queued.finish_target ? queued.begin_pull :
+                    nuwax_cc_drawer_release_close(queued.begin_pull, queued.panel_total_dy,
+                        queued.panel_velocity_y, nuwax_drawer_current_y());
+                nuwax_drawer_finish_drag(close);
+            }
+        } else if (live && queued.kind == APP_SHELL_INPUT_PAGE_FINISH) {
+            if (queued.has_motion) nuwax_drawer_page_drag_to(queued.final_position);
+            nuwax_drawer_page_finish_drag(queued.finish_target);
+        } else if (live && queued.kind == APP_SHELL_INPUT_TOUCH) {
+            nuwax_drawer_input_state_t input;
+            nuwax_drawer_get_input_state(&input);
+            if (input.scene_generation == queued.scene_generation &&
+                (queued.event != NUWAX_APP_SHELL_EVENT_TAP ||
+                 (queued.tap_allowed && input.tap_allowed))) {
+                const nuwax_app_shell_result_t result = app_shell_handle_touch_event_on_lvgl(
+                    queued.event, queued.has_point ? &queued.point : NULL);
+                (void)app_shell_queue_result(&result);
+            }
+        }
+        if (nuwax_cc_sequence_after(queued.contact_sequence, s_touch_completed_sequence)) {
+            s_touch_completed_sequence = queued.contact_sequence;
+        }
+    }
+    const bool pending = s_touch_event_queue && uxQueueMessagesWaiting(s_touch_event_queue) > 0U;
+    if (pending) nuwax_lvgl_port_wake();
+    return pending;
 }
 
 static void app_shell_lvgl_pre_handler(void *user_data) {
     (void)user_data;
-    if (!nuwax_app_shell_is_ui_ready()) {
-        return;
-    }
-    bool do_drag = false;
-    int16_t drag_y = -226;
-    bool do_begin_pull = false;
-    bool do_finish = false;
-    bool finish_close = false;
+    if (!nuwax_app_shell_is_ui_ready()) return;
+    nuwax_face_service_decode();
+    app_shell_apply_pending_close();
+    /* LVGL timers may have changed the scene since the last pre-handler.
+     * Retire that scene's preview before copying state for this frame. */
+    app_shell_overlay_state_sync_from_lvgl();
+
+    bool do_contact = false, contact_down = false;
+    uint16_t contact_x = 0, contact_y = 0;
+    uint32_t contact_seq = 0U, contact_scene = 0U;
+    app_shell_panel_motion_t panel_motion;
     bool do_page_drag = false;
     int16_t page_delta_x = 0;
-    bool do_page_finish = false;
-    bool page_commit = false;
-    bool do_volume_preview = false;
-    uint8_t volume_preview = 0;
+    uint32_t page_seq = 0U;
     bool do_provisioning_qr = false;
     int64_t provisioning_qr_retry_deadline_us = 0;
     bool do_provisioning_qr_close = false;
     nuwax_device_state_t state_snapshot = {0};
     uint32_t state_revision = 0U;
     bool have_state_update = false;
-    uint32_t rejected_actions = 0U;
+    uint32_t rejected_actions;
 
     taskENTER_CRITICAL(&s_ui_mailbox_mux);
     if (s_state_mailbox.initialized &&
         s_state_mailbox.revision != s_state_mailbox.published_revision) {
         state_snapshot = s_state_mailbox.snapshot;
+        if (s_volume_preview.contact_sequence != 0U) {
+            state_snapshot.volume = s_volume_preview.value;
+        }
         state_revision = s_state_mailbox.revision;
         have_state_update = true;
     }
-    if (s_wifi_detail_mailbox.revision !=
-        s_wifi_detail_mailbox.published_revision) {
-        s_wifi_detail_mailbox.published_revision =
-            s_wifi_detail_mailbox.revision;
+    if (s_wifi_detail_mailbox.revision != s_wifi_detail_mailbox.published_revision) {
+        s_wifi_detail_mailbox.published_revision = s_wifi_detail_mailbox.revision;
     }
-    if (s_status_detail_mailbox.revision !=
-        s_status_detail_mailbox.published_revision) {
-        s_status_detail_mailbox.published_revision =
-            s_status_detail_mailbox.revision;
+    if (s_status_detail_mailbox.revision != s_status_detail_mailbox.published_revision) {
+        s_status_detail_mailbox.published_revision = s_status_detail_mailbox.revision;
     }
-    if (s_pending_menu_drag) {
-        s_pending_menu_drag = false;
+    if (s_pending_drawer_contact) {
+        do_contact = true;
+        contact_down = s_drawer_contact_down;
+        contact_x = s_drawer_contact_x;
+        contact_y = s_drawer_contact_y;
+        contact_seq = s_contact_sequence;
+        contact_scene = s_touch_input.scene_generation;
+        s_pending_drawer_contact = false;
     }
-    if (s_pending_menu_finish) {
-        s_pending_menu_finish = false;
-    }
+    s_pending_menu_drag = false;
+    s_pending_menu_finish = false;
     s_pending_detail_adjust = 0;
-    if (s_pending_drawer_begin_pull) {
-        do_begin_pull = true;
-        s_pending_drawer_begin_pull = false;
-    }
-    if (s_pending_drawer_drag) {
-        do_drag = true;
-        drag_y = s_pending_drawer_y;
-        s_pending_drawer_drag = false;
-    }
-    if (s_pending_drawer_finish) {
-        do_finish = true;
-        finish_close = s_pending_drawer_finish_close;
-        s_pending_drawer_finish = false;
-    }
+    panel_motion = s_pending_panel_motion;
+    s_pending_panel_motion.contact_sequence = 0U;
     if (s_pending_drawer_page_drag) {
         do_page_drag = true;
         page_delta_x = s_pending_drawer_page_delta_x;
+        page_seq = s_page_sequence;
         s_pending_drawer_page_drag = false;
-    }
-    if (s_pending_drawer_page_finish) {
-        do_page_finish = true;
-        page_commit = s_pending_drawer_page_commit;
-        s_pending_drawer_page_finish = false;
-    }
-    if (s_pending_drawer_volume_preview) {
-        do_volume_preview = true;
-        volume_preview = s_pending_drawer_volume;
-        s_pending_drawer_volume_preview = false;
     }
     const int64_t now_us = esp_timer_get_time();
     if (s_pending_provisioning_qr &&
         now_us >= s_pending_provisioning_qr_deadline_us) {
-        if (s_state_mailbox.initialized &&
-            s_state_mailbox.snapshot.provisioning_active) {
+        if (s_state_mailbox.initialized && s_state_mailbox.snapshot.provisioning_active) {
             do_provisioning_qr = true;
-            provisioning_qr_retry_deadline_us =
-                now_us +
+            provisioning_qr_retry_deadline_us = now_us +
                 (int64_t)APP_SHELL_PROVISIONING_QR_RETRY_MS * 1000LL;
-            s_pending_provisioning_qr_deadline_us =
-                provisioning_qr_retry_deadline_us;
+            s_pending_provisioning_qr_deadline_us = provisioning_qr_retry_deadline_us;
         } else {
             s_pending_provisioning_qr = false;
             s_pending_provisioning_qr_deadline_us = 0;
@@ -877,46 +1061,77 @@ static void app_shell_lvgl_pre_handler(void *user_data) {
     if (have_state_update) {
         nuwax_device_state_set(&state_snapshot);
         taskENTER_CRITICAL(&s_ui_mailbox_mux);
-        if (s_state_mailbox.published_revision != state_revision) {
-            s_state_mailbox.published_revision = state_revision;
-        }
+        s_state_mailbox.published_revision = state_revision;
         taskEXIT_CRITICAL(&s_ui_mailbox_mux);
     }
 
-    if (do_begin_pull && !nuwax_drawer_is_open()) {
-        nuwax_drawer_begin_pull();
-    }
-    if (do_drag && nuwax_drawer_is_open()) {
-        nuwax_drawer_drag_to(drag_y);
-        app_shell_cached_drawer_y_set(nuwax_drawer_current_y());
-    }
-    if (do_finish && nuwax_drawer_is_open()) {
-        nuwax_drawer_finish_drag(finish_close);
-        app_shell_cached_drawer_y_set(nuwax_drawer_current_y());
-    }
-    if (do_page_drag && nuwax_drawer_is_open()) {
-        nuwax_drawer_page_drag_to(page_delta_x);
-    }
-    if (do_page_finish && nuwax_drawer_is_open()) {
-        nuwax_drawer_page_finish_drag(page_commit);
-    }
-    if (do_volume_preview && nuwax_drawer_is_open()) {
-        nuwax_drawer_preview_volume(volume_preview);
-    }
+    nuwax_drawer_input_state_t input;
+    nuwax_drawer_get_input_state(&input);
+    const bool blocked = input.modal_blocked || nuwax_ota_progress_is_visible();
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    const bool system_closing = s_system_closing;
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
     if (do_provisioning_qr_close) {
         nuwax_drawer_hide_provisioning_qr();
+        nuwax_drawer_input_state_t after;
+        nuwax_drawer_get_input_state(&after);
+        if (after.scene_generation != input.scene_generation) {
+            taskENTER_CRITICAL(&s_ui_mailbox_mux);
+            app_shell_cancel_touch_locked();
+            taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+        }
     }
-    if (do_provisioning_qr) {
+    if (do_provisioning_qr && !blocked && !system_closing) {
         const bool shown = nuwax_drawer_show_provisioning_qr();
         if (shown) {
             taskENTER_CRITICAL(&s_ui_mailbox_mux);
+            app_shell_cancel_touch_locked();
             if (s_pending_provisioning_qr &&
-                s_pending_provisioning_qr_deadline_us ==
-                    provisioning_qr_retry_deadline_us) {
+                s_pending_provisioning_qr_deadline_us == provisioning_qr_retry_deadline_us) {
                 s_pending_provisioning_qr = false;
                 s_pending_provisioning_qr_deadline_us = 0;
             }
             taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+        }
+    }
+    const bool boundaries_pending = app_shell_drain_touch_events(blocked);
+    if (boundaries_pending && !blocked) {
+        /* A newer contact may begin while this frame drains older releases. */
+        taskENTER_CRITICAL(&s_ui_mailbox_mux);
+        if (panel_motion.contact_sequence == s_touch_contact_sequence &&
+            s_pending_panel_motion.contact_sequence == 0U &&
+            app_shell_touch_allowed_locked(panel_motion.contact_sequence)) {
+            s_pending_panel_motion = panel_motion;
+        }
+        if (do_page_drag && !s_pending_drawer_page_drag && page_seq == s_touch_contact_sequence &&
+            app_shell_touch_allowed_locked(page_seq)) {
+            s_pending_drawer_page_drag = true;
+            s_pending_drawer_page_delta_x = page_delta_x;
+            s_page_sequence = page_seq;
+        }
+        taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    }
+    if (do_contact && !blocked) {
+        if (!contact_down && s_visual_contact_sequence == contact_seq) {
+            nuwax_drawer_contact(false, 0, 0);
+            s_visual_contact_sequence = 0U;
+        } else if (contact_down && app_shell_touch_allowed_on_lvgl(contact_seq, true)) {
+            nuwax_drawer_get_input_state(&input);
+            if (input.tap_allowed && input.scene_generation == contact_scene) {
+                if (contact_seq != s_visual_contact_sequence) {
+                    nuwax_drawer_contact(false, 0, 0);
+                    s_visual_contact_sequence = contact_seq;
+                }
+                nuwax_drawer_contact(true, contact_x, contact_y);
+            }
+        }
+    }
+    if (!blocked && !boundaries_pending) {
+        if (app_shell_touch_allowed_on_lvgl(panel_motion.contact_sequence, true)) {
+            (void)app_shell_apply_panel_motion(&panel_motion);
+        }
+        if (do_page_drag && app_shell_touch_allowed_on_lvgl(page_seq, true)) {
+            nuwax_drawer_page_drag_to(page_delta_x);
         }
     }
     if ((rejected_actions &
@@ -931,33 +1146,12 @@ static void app_shell_lvgl_pre_handler(void *user_data) {
          app_shell_action_bit(NUWAX_APP_SHELL_ACTION_SET_VOLUME)) != 0U) {
         nuwax_drawer_reject_action(NUWAX_DRAWER_ACTION_SET_VOLUME);
     }
-    const int64_t touch_drain_started_us = esp_timer_get_time();
-    while (s_touch_event_queue &&
-           esp_timer_get_time() - touch_drain_started_us <
-               APP_SHELL_TOUCH_EVENT_DRAIN_BUDGET_US) {
-        app_shell_touch_event_t queued = {0};
-        if (xQueueReceive(s_touch_event_queue, &queued, 0) != pdTRUE) {
-            break;
-        }
-        const int64_t age_ms = esp_timer_get_time() / 1000 - queued.queued_ms;
-        if (age_ms > (int64_t)APP_SHELL_TOUCH_EVENT_QUEUE_WAIT_MS) {
-            ESP_LOGW(TAG,
-                     "delayed terminal touch event sequence=%lu event=%d age_ms=%lld",
-                     (unsigned long)queued.sequence,
-                     (int)queued.event,
-                     (long long)age_ms);
-        }
-        const nuwax_app_shell_result_t result =
-            app_shell_handle_touch_event_on_lvgl(
-                queued.event,
-                queued.has_point ? &queued.point : NULL);
-        (void)app_shell_queue_result(&result);
+    if ((rejected_actions &
+         app_shell_action_bit(NUWAX_APP_SHELL_ACTION_SET_SIMULATED_OFFLINE)) != 0U) {
+        nuwax_drawer_reject_action(NUWAX_DRAWER_ACTION_SET_SIMULATED_OFFLINE);
     }
-    if (s_touch_event_queue && uxQueueMessagesWaiting(s_touch_event_queue) > 0U) {
-        nuwax_lvgl_port_wake();
-    }
-    if (nuwax_drawer_is_open()) {
-        app_shell_cached_drawer_y_set(nuwax_drawer_current_y());
+    if ((rejected_actions & app_shell_action_bit(NUWAX_APP_SHELL_ACTION_CYCLE_BRIGHTNESS)) != 0U) {
+        nuwax_drawer_reject_action(NUWAX_DRAWER_ACTION_CYCLE_BRIGHTNESS);
     }
     app_shell_overlay_state_sync_from_lvgl();
 }
@@ -1042,28 +1236,36 @@ bool nuwax_app_shell_can_start_listen(void) {
 }
 
 void nuwax_app_shell_close_overlays(void) {
-    if (!nuwax_app_shell_is_ui_ready()) {
-        return;
-    }
+    /* Fence input before waiting for the renderer. If the wait expires,
+     * the LVGL task still owns the pending close. */
+    nuwax_app_shell_request_close_overlays();
+    if (!nuwax_app_shell_is_ui_ready()) return;
     if (!nuwax_lvgl_port_lock(500)) {
-        ESP_LOGW(TAG, "failed to close overlays before sleep");
+        ESP_LOGW(TAG, "overlay close deferred to LVGL task");
         return;
     }
-    if (!nuwax_app_shell_is_ui_ready()) {
+    if (nuwax_app_shell_is_ui_ready()) {
+        app_shell_apply_pending_close();
+        app_shell_lvgl_unlock();
+    } else {
         nuwax_lvgl_port_unlock();
-        return;
     }
-    if (nuwax_drawer_is_open()) {
-        nuwax_drawer_close();
-        app_shell_cached_drawer_y_set(nuwax_drawer_current_y());
+}
+
+void nuwax_app_shell_request_close_overlays(void) {
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    const bool ready = s_ui_ready;
+    if (ready) {
+        s_system_closing = true;
+        s_pending_close_overlays = true;
+        app_shell_cancel_touch_locked();
     }
-    app_shell_lvgl_unlock();
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    if (ready) nuwax_lvgl_port_wake();
 }
 
 bool nuwax_app_shell_drawer_is_open(void) {
-    if (!nuwax_app_shell_is_ui_ready()) {
-        return false;
-    }
+    if (!nuwax_app_shell_is_ui_ready()) return false;
     return app_shell_overlay_state_get().drawer_open;
 }
 
@@ -1072,59 +1274,116 @@ bool nuwax_app_shell_drawer_is_detail(void) {
     return app_shell_overlay_state_get().menu_detail;
 }
 
-void nuwax_app_shell_drawer_begin_pull(void) {
-    if (!nuwax_app_shell_is_ui_ready()) return;
-    app_shell_post_drawer_begin_pull();
+void nuwax_app_shell_touch_begin(void) {
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    s_touch_contact_sequence = app_shell_next_revision(s_touch_contact_sequence);
+    s_touch_input = s_drawer_input;
+    if (!app_shell_touch_allowed_locked(s_touch_contact_sequence)) {
+        s_touch_cancelled_sequence = s_touch_contact_sequence;
+    }
+    /* Earlier releases carry their own final pose in the FIFO. */
+    s_touch_panel_motion.contact_sequence = 0U;
+    s_pending_panel_motion.contact_sequence = 0U;
+    s_touch_page_moved = false;
+    s_pending_drawer_page_drag = false;
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
 }
 
-int16_t nuwax_app_shell_drawer_current_y(void) {
-    int16_t y = app_shell_cached_drawer_y_get();
-    if (!nuwax_app_shell_is_ui_ready()) {
-        return y;
-    }
-    if (!nuwax_lvgl_port_lock(20)) {
-        return y;
-    }
-    if (!nuwax_app_shell_is_ui_ready()) {
-        nuwax_lvgl_port_unlock();
-        return y;
-    }
-    y = nuwax_drawer_current_y();
-    app_shell_cached_drawer_y_set(y);
-    app_shell_lvgl_unlock();
-    return y;
+bool nuwax_app_shell_drawer_can_page_drag(int16_t delta_x) {
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    const bool allowed = s_ui_ready && app_shell_touch_allowed_locked(s_touch_contact_sequence) &&
+        s_touch_input.open && !s_touch_input.detail &&
+        (delta_x < 0 ? s_drawer_input.page_left : s_drawer_input.page_right);
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    return allowed;
 }
 
-bool nuwax_app_shell_drawer_preview_volume_at(uint16_t x, uint16_t y, uint8_t *volume_out) {
-    if (!nuwax_app_shell_is_ui_ready()) {
-        return false;
+bool nuwax_app_shell_drawer_preview_volume_drag_at(uint16_t x, uint16_t y,
+                                                   bool captured, uint8_t *volume_out) {
+    uint8_t volume;
+    if (!nuwax_drawer_volume_value_at(x, y, captured, &volume)) return false;
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    const bool same_contact = s_volume_preview.contact_sequence == s_touch_contact_sequence;
+    const bool allowed = s_ui_ready && app_shell_touch_allowed_locked(s_touch_contact_sequence) &&
+        s_touch_input.volume_available && s_drawer_input.volume_available &&
+        s_touch_input.scene_generation == s_drawer_input.scene_generation &&
+        (!captured || same_contact);
+    const bool changed = allowed && (!same_contact || s_volume_preview.value != volume);
+    if (changed) {
+        s_volume_preview.contact_sequence = s_touch_contact_sequence;
+        s_volume_preview.value = volume;
+        s_volume_preview.volume_sequence = s_volume_preview_cb ? s_volume_preview_cb(volume) : 0U;
+        (void)app_shell_next_state_revision_locked();
     }
-    if (!app_shell_overlay_state_get().drawer_open) {
-        return false;
-    }
-    uint8_t volume = 0;
-    if (!nuwax_drawer_hit_volume_at_panel_y(x, y, app_shell_cached_drawer_y_get(), &volume)) {
-        return false;
-    }
-    if (volume_out) {
-        *volume_out = volume;
-    }
-    app_shell_post_drawer_volume_preview(volume);
-    return true;
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    if (changed) nuwax_lvgl_port_wake();
+    if (allowed && volume_out) *volume_out = volume;
+    return allowed;
 }
 
-void nuwax_app_shell_drawer_drag_to(int16_t y) {
-    if (!nuwax_app_shell_is_ui_ready()) {
-        return;
+void nuwax_app_shell_drawer_finish_volume_drag(int volume) {
+    if (volume >= 0) {
+        app_shell_touch_event_t queued = {
+            .kind = APP_SHELL_INPUT_VOLUME_FINISH,
+            .final_position = volume > 100 ? 100 : volume,
+        };
+        if (app_shell_enqueue_input(&queued)) return;
     }
-    app_shell_post_drawer_drag(y);
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    if (s_volume_preview.contact_sequence == s_touch_contact_sequence) {
+        app_shell_cancel_volume_preview_locked();
+    }
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    nuwax_lvgl_port_wake();
 }
 
-void nuwax_app_shell_drawer_finish_drag(bool close) {
-    if (!nuwax_app_shell_is_ui_ready()) {
-        return;
+void nuwax_app_shell_drawer_contact(bool down, uint16_t x, uint16_t y) {
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    const bool allowed = s_ui_ready && app_shell_touch_allowed_locked(s_touch_contact_sequence) &&
+        (!down || s_touch_input.tap_allowed);
+    const bool changed = allowed && (s_drawer_contact_down != down ||
+        s_drawer_contact_x != x || s_drawer_contact_y != y ||
+        s_contact_sequence != s_touch_contact_sequence);
+    if (changed) {
+        s_pending_drawer_contact = true;
+        s_drawer_contact_down = down;
+        s_drawer_contact_x = x;
+        s_drawer_contact_y = y;
+        s_contact_sequence = s_touch_contact_sequence;
     }
-    app_shell_post_drawer_finish(close);
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    if (changed) nuwax_lvgl_port_wake();
+}
+
+void nuwax_app_shell_drawer_drag_by(int16_t delta_y, bool begin_pull) {
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    const bool allowed = s_ui_ready && app_shell_touch_allowed_locked(s_touch_contact_sequence);
+    if (allowed) {
+        s_touch_panel_motion = (app_shell_panel_motion_t){
+            .contact_sequence = s_touch_contact_sequence,
+            .delta_y = delta_y,
+            .begin_pull = begin_pull,
+        };
+        s_pending_panel_motion = s_touch_panel_motion;
+    }
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    if (allowed) nuwax_lvgl_port_wake();
+}
+
+void nuwax_app_shell_drawer_finish_drag(int16_t final_delta_y, int16_t total_dy,
+                                       int16_t velocity_y, bool cancelled) {
+    app_shell_touch_event_t queued = {
+        .kind = APP_SHELL_INPUT_PANEL_FINISH,
+        .finish_target = cancelled,
+        .panel_total_dy = total_dy,
+        .panel_velocity_y = velocity_y,
+    };
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    queued.has_motion = s_touch_panel_motion.contact_sequence != 0U;
+    queued.begin_pull = s_touch_panel_motion.begin_pull;
+    queued.final_position = cancelled ? s_touch_panel_motion.delta_y : final_delta_y;
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    (void)app_shell_enqueue_input(&queued);
 }
 
 void nuwax_app_shell_drawer_page_drag_to(int16_t delta_x) {
@@ -1174,9 +1433,32 @@ void nuwax_app_shell_update(uint32_t now_ms) {
         return;
     }
     s_wifi_signal_last_poll_ms = now_ms;
+    /* Reflect a lost IP link even while a transport owner is blocked in TLS
+     * cleanup. Keep this in the normal UI mailbox path, not the Wi-Fi event
+     * callback, and never change meeting/monitoring or conversation state. */
+    nuwax_device_state_t snapshot;
+    if (nuwax_app_shell_get_device_state_snapshot(&snapshot, NULL)) {
+        if ((snapshot.wifi == NUWAX_WIFI_CONNECTED || snapshot.wifi == NUWAX_WIFI_WEAK) &&
+            !nuwax_wifi_is_connected()) {
+            nuwax_app_shell_set_wifi_status(NULL, NULL);
+            nuwax_app_shell_set_cloud_state(NUWAX_CLOUD_DISCONNECTED);
+        } else if (!snapshot.provisioning_active && !snapshot.provisioning_starting &&
+                   !nuwax_wifi_provisioning_active() && nuwax_wifi_is_connected()) {
+            char ssid[33] = {0}, ip[16] = {0};
+            if (nuwax_wifi_get_status(ssid, sizeof(ssid), ip, sizeof(ip)) == ESP_OK &&
+                ssid[0] && ip[0] && nuwax_wifi_is_connected() &&
+                !nuwax_wifi_provisioning_active() &&
+                ((snapshot.wifi != NUWAX_WIFI_CONNECTED && snapshot.wifi != NUWAX_WIFI_WEAK) ||
+                 strcmp(snapshot.ssid, ssid) != 0 || strcmp(snapshot.ip, ip) != 0)) {
+                /* Link truth repairs stale UI in both directions. Cloud
+                 * authentication and conversation ownership stay independent. */
+                nuwax_app_shell_set_wifi_status(ssid, ip);
+            }
+        }
+    }
     int8_t rssi_dbm = -127;
-    nuwax_app_shell_set_wifi_signal(
-        nuwax_wifi_get_rssi(&rssi_dbm) == ESP_OK, rssi_dbm);
+    const bool rssi_valid = nuwax_wifi_get_rssi(&rssi_dbm) == ESP_OK;
+    nuwax_app_shell_set_wifi_signal(rssi_valid, rssi_dbm);
 }
 void nuwax_app_shell_render_status_bar(void) {}
 
@@ -1284,12 +1566,27 @@ void nuwax_app_shell_set_wifi_result(const char *ssid, bool ok, const char *mess
     app_shell_post_wifi_detail(&detail);
 }
 
+void nuwax_app_shell_set_brightness_percent(uint8_t percent) {
+    nuwax_device_state_t patch = {.brightness_percent = percent};
+    (void)nuwax_app_shell_publish_device_state_delta(&patch, NUWAX_APP_SHELL_STATE_BRIGHTNESS);
+}
+
+void nuwax_app_shell_confirm_volume(int volume_percent, uint32_t sequence) {
+    const uint8_t volume = (uint8_t)(volume_percent < 0 ? 0 :
+        volume_percent > 100 ? 100 : volume_percent);
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    app_shell_post_volume_locked(volume, sequence);
+    if (sequence != 0U && s_volume_preview.volume_sequence != 0U &&
+        !nuwax_cc_sequence_after(s_volume_preview.volume_sequence, sequence)) {
+        /* The audio owner already retired this preview when it committed. */
+        app_shell_clear_volume_preview_locked();
+    }
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    nuwax_lvgl_port_wake();
+}
+
 void nuwax_app_shell_set_volume_percent(int volume_percent) {
-    app_shell_post_volume((uint8_t)(volume_percent < 0
-                                        ? 0
-                                        : (volume_percent > 100
-                                               ? 100
-                                               : volume_percent)));
+    nuwax_app_shell_confirm_volume(volume_percent, 0U);
 }
 
 void nuwax_app_shell_set_meeting_state(nuwax_meeting_ui_state_t state) {
@@ -1314,6 +1611,12 @@ void nuwax_app_shell_set_monitoring_state(nuwax_monitoring_ui_state_t state) {
         nuwax_state_bridge_cancel_touch();
     }
     app_shell_post_monitoring(state);
+}
+
+void nuwax_app_shell_set_provisioning_starting(void) {
+    nuwax_device_state_t patch = {.provisioning_starting = true};
+    (void)nuwax_app_shell_publish_device_state_delta(
+        &patch, NUWAX_APP_SHELL_STATE_PROVISIONING);
 }
 
 void nuwax_app_shell_set_provisioning_active(bool active) {
@@ -1364,6 +1667,7 @@ void nuwax_app_shell_set_ota_progress(bool active, int percent) {
         app_shell_merge_device_state_locked(
             &patch, NUWAX_APP_SHELL_STATE_OTA_PROGRESS);
         (void)app_shell_next_state_revision_locked();
+        if (active) app_shell_cancel_touch_locked();
     }
     taskEXIT_CRITICAL(&s_ui_mailbox_mux);
     if (changed) {
@@ -1371,7 +1675,17 @@ void nuwax_app_shell_set_ota_progress(bool active, int percent) {
     }
 }
 
+void nuwax_app_shell_set_simulated_offline(bool enabled) {
+    nuwax_device_state_t patch = {.simulated_offline = enabled};
+    (void)nuwax_app_shell_publish_device_state_delta(
+        &patch, NUWAX_APP_SHELL_STATE_SIMULATED_OFFLINE);
+}
+
 void nuwax_app_shell_schedule_provisioning_qr(uint32_t delay_ms) {
+    /* Hold the live provisioning face after service readiness. Failed QR
+     * admission retries use their existing deadline, not another full hold. */
+    if (delay_ms < APP_SHELL_PROVISIONING_FACE_HOLD_MS)
+        delay_ms = APP_SHELL_PROVISIONING_FACE_HOLD_MS;
     const int64_t now_us = esp_timer_get_time();
     taskENTER_CRITICAL(&s_ui_mailbox_mux);
     app_shell_ensure_state_snapshot_locked();
@@ -1513,6 +1827,10 @@ static nuwax_app_shell_result_t drawer_action_to_shell_action(
     nuwax_drawer_action_result_t drawer_action) {
     nuwax_app_shell_result_t result = {.action = NUWAX_APP_SHELL_ACTION_NONE, .index = 0};
     switch (drawer_action.action) {
+        case NUWAX_DRAWER_ACTION_CYCLE_BRIGHTNESS:
+            result.action = NUWAX_APP_SHELL_ACTION_CYCLE_BRIGHTNESS;
+            result.index = drawer_action.value;
+            break;
         case NUWAX_DRAWER_ACTION_SET_VOLUME:
             result.action = NUWAX_APP_SHELL_ACTION_SET_VOLUME;
             result.index = drawer_action.value;
@@ -1523,6 +1841,10 @@ static nuwax_app_shell_result_t drawer_action_to_shell_action(
             break;
         case NUWAX_DRAWER_ACTION_REPROVISION_WIFI:
             result.action = NUWAX_APP_SHELL_ACTION_REPROVISION_WIFI;
+            result.index = drawer_action.value ? 1 : 0;
+            break;
+        case NUWAX_DRAWER_ACTION_SET_SIMULATED_OFFLINE:
+            result.action = NUWAX_APP_SHELL_ACTION_SET_SIMULATED_OFFLINE;
             result.index = drawer_action.value ? 1 : 0;
             break;
         case NUWAX_DRAWER_ACTION_NONE:
@@ -1550,7 +1872,13 @@ static nuwax_app_shell_action_t app_shell_hold_action(void) {
 }
 
 nuwax_app_shell_result_t nuwax_app_shell_handle_touch_event(nuwax_app_shell_event_t event, const nuwax_touch_point_t *point) {
+    nuwax_lvgl_port_note_interaction();
     nuwax_app_shell_result_t result = {.action = NUWAX_APP_SHELL_ACTION_NONE, .index = 0};
+
+    taskENTER_CRITICAL(&s_ui_mailbox_mux);
+    const bool allowed = app_shell_touch_allowed_locked(s_touch_contact_sequence);
+    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
+    if (!allowed) return result;
 
     if (!nuwax_app_shell_is_ui_ready()) {
         if (event == NUWAX_APP_SHELL_EVENT_PRESS ||
@@ -1574,36 +1902,13 @@ nuwax_app_shell_result_t nuwax_app_shell_handle_touch_event(nuwax_app_shell_even
         return result;
     }
 
-    if (!s_touch_event_queue) {
-        ESP_LOGE(TAG,
-                 "terminal touch event rejected before queue initialization event=%d",
-                 (int)event);
-        return result;
-    }
     app_shell_touch_event_t queued = {
+        .kind = APP_SHELL_INPUT_TOUCH,
         .event = event,
         .has_point = point != NULL,
-        .queued_ms = esp_timer_get_time() / 1000,
     };
-    if (point) {
-        queued.point = *point;
-    }
-    taskENTER_CRITICAL(&s_ui_mailbox_mux);
-    queued.sequence = app_shell_next_revision(s_touch_event_sequence);
-    s_touch_event_sequence = queued.sequence;
-    taskEXIT_CRITICAL(&s_ui_mailbox_mux);
-    if (xQueueSend(s_touch_event_queue,
-                   &queued,
-                   pdMS_TO_TICKS(APP_SHELL_TOUCH_EVENT_QUEUE_WAIT_MS)) !=
-        pdTRUE) {
-        ESP_LOGE(TAG,
-                 "terminal touch event queue saturated sequence=%lu event=%d depth=%u; event was not overwritten",
-                 (unsigned long)queued.sequence,
-                 (int)event,
-                 (unsigned)APP_SHELL_TOUCH_EVENT_QUEUE_DEPTH);
-        return result;
-    }
-    nuwax_lvgl_port_wake();
+    if (point) queued.point = *point;
+    (void)app_shell_enqueue_input(&queued);
     return result;
 }
 
@@ -1625,31 +1930,14 @@ static nuwax_app_shell_result_t app_shell_handle_touch_event_on_lvgl(
         return result;
     }
 
+    if (nuwax_ota_progress_is_visible()) return result;
+
     if (nuwax_drawer_is_open()) {
-        if (event == NUWAX_APP_SHELL_EVENT_TAP ||
-            event == NUWAX_APP_SHELL_EVENT_PRESS ||
-            event == NUWAX_APP_SHELL_EVENT_SWIPE_LEFT ||
-            event == NUWAX_APP_SHELL_EVENT_SWIPE_RIGHT ||
-            event == NUWAX_APP_SHELL_EVENT_SWIPE_UP ||
-            event == NUWAX_APP_SHELL_EVENT_SWIPE_DOWN) {
-            uint8_t volume = 0;
-            if (point && nuwax_drawer_hit_volume(point->x, point->y, &volume)) {
-                nuwax_drawer_preview_volume(volume);
-                result.action = NUWAX_APP_SHELL_ACTION_SET_VOLUME;
-                result.index = volume;
-                ESP_LOGD(TAG, "drawer volume touch x=%u y=%u volume=%u",
-                         point->x,
-                         point->y,
-                         (unsigned)volume);
-                return result;
-            }
-        }
         if (nuwax_drawer_is_detail()) {
             if (event == NUWAX_APP_SHELL_EVENT_SWIPE_RIGHT) {
                 nuwax_drawer_back();
             } else if (event == NUWAX_APP_SHELL_EVENT_SWIPE_UP) {
                 nuwax_drawer_finish_drag(true);
-                app_shell_cached_drawer_y_set(nuwax_drawer_current_y());
             } else if (event == NUWAX_APP_SHELL_EVENT_TAP) {
                 result = drawer_action_to_shell_action(
                     nuwax_drawer_tap(point ? point->x : 0, y));
@@ -1662,7 +1950,6 @@ static nuwax_app_shell_result_t app_shell_handle_touch_event_on_lvgl(
             nuwax_drawer_prev_page();
         } else if (event == NUWAX_APP_SHELL_EVENT_SWIPE_UP) {
             nuwax_drawer_finish_drag(true);
-            app_shell_cached_drawer_y_set(nuwax_drawer_current_y());
         } else if (event == NUWAX_APP_SHELL_EVENT_TAP) {
             result = drawer_action_to_shell_action(
                 nuwax_drawer_tap(point ? point->x : 0, y));
@@ -1671,8 +1958,7 @@ static nuwax_app_shell_result_t app_shell_handle_touch_event_on_lvgl(
     }
 
     if (event == NUWAX_APP_SHELL_EVENT_SWIPE_DOWN && y < NUWAX_GESTURE_TOP_BAND) {
-        nuwax_drawer_open_menu();
-        app_shell_cached_drawer_y_set(nuwax_drawer_current_y());
+        nuwax_drawer_open();
     }
 #if CONFIG_NUWAX_FACE_TEST_MODE_ENABLE
     else if (event == NUWAX_APP_SHELL_EVENT_SWIPE_RIGHT) {

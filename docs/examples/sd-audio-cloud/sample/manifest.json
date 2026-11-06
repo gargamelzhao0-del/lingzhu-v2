@@ -1,0 +1,77 @@
+{
+  "description": "Synthetic 960 ms silence; no user audio. Each scenario starts with independent storage; session_end is sent after recording stops.",
+  "device_id_for_test": "NX-CLOUD-EXAMPLE",
+  "total_bytes": 32096,
+  "audio_session_id": "meeting_0123456789abcdef",
+  "segment_index": 0,
+  "mode": "meeting",
+  "start_uptime_ms": 1000,
+  "frame_count": 48,
+  "na_payload_bytes": 31776,
+  "crc32": 3775820668,
+  "complete": true,
+  "audio_duration_ms": 960,
+  "first_sequence": 0,
+  "last_sequence": 47,
+  "sequence_gaps": 0,
+  "timestamp_gaps": 0,
+  "archive_sha256": "9dc9362906c7b5fca4499c5498196d64cfd794260f1584cd60b4294a812fe335",
+  "pcm_bytes": 30720,
+  "sample_rate": 16000,
+  "channels": 1,
+  "sample_bits": 16,
+  "chunk_payload_lengths": [
+    8064,
+    8064,
+    8064,
+    7904
+  ],
+  "commit_confirmed_bytes": 32096,
+  "scenarios": [
+    {
+      "name": "meeting-file",
+      "transcript": "transcript-meeting-file.json",
+      "archive": "archive.bin",
+      "ack_scope": "file_commit",
+      "binary_files": [
+        "meeting-file-chunk-00.bin",
+        "meeting-file-chunk-01.bin",
+        "meeting-file-chunk-02.bin",
+        "meeting-file-chunk-03.bin"
+      ]
+    },
+    {
+      "name": "monitoring-realtime",
+      "transcript": "transcript-monitoring-realtime.json",
+      "archive": "monitoring-archive.bin",
+      "ack_scope": "file_commit",
+      "binary_files": [
+        "monitoring-realtime-chunk-00.bin",
+        "monitoring-realtime-chunk-01.bin",
+        "monitoring-realtime-chunk-02.bin",
+        "monitoring-realtime-chunk-03.bin"
+      ]
+    },
+    {
+      "name": "monitoring-history",
+      "transcript": "transcript-monitoring-history.json",
+      "archive": "monitoring-archive.bin",
+      "ack_scope": "file_commit",
+      "binary_files": [
+        "monitoring-history-chunk-00.bin",
+        "monitoring-history-chunk-01.bin",
+        "monitoring-history-chunk-02.bin",
+        "monitoring-history-chunk-03.bin"
+      ]
+    }
+  ],
+  "monitoring_example": {
+    "file": "monitoring-archive.bin",
+    "audio_session_id": "monitor_0123456789abcdef",
+    "segment_index": 0,
+    "start_uptime_ms": 1000,
+    "audio_duration_ms": 960,
+    "crc32": 3775820668,
+    "archive_sha256": "4cb4a227d1d2efc6f0af0e2ee80397b58857fb59f1235637e1f758cd6388956e"
+  }
+}

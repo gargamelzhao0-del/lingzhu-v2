@@ -10,6 +10,7 @@
 #include "esp_image_format.h"
 #include "esp_log.h"
 #include "esp_partition.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
@@ -18,6 +19,7 @@
 #include "nuwax_ota_manifest.h"
 #include "nuwax_ota_release_policy.h"
 #include "nuwax_ota_transport.h"
+#include "wake_word_detector.h"
 
 static const char *TAG = "nuwax_ota_main";
 static const char *const NVS_NAMESPACE = "nuwax_ota";
@@ -44,6 +46,47 @@ static int s_last_emitted_pct = -1;
 static nuwax_ota_state_t s_last_emitted_state = NUWAX_OTA_STATE_IDLE;
 static uint64_t s_effective_release_sequence =
     NUWAX_OTA_FIRMWARE_RELEASE_SEQUENCE;
+
+/* Volatile, boot-scoped digest of the immutable RUNNING app. Never cache a
+ * manifest's claimed digest, nor a partially read image. Other partitions
+ * cannot use this cache; a reboot naturally discards it. */
+static struct {
+    bool busy;
+    bool valid;
+    uint32_t address;
+    uint32_t size;
+    char version[32];
+    uint8_t elf_sha256[32];
+    char digest[NUWAX_OTA_MANIFEST_SHA256_LEN];
+} s_running_hash;
+
+#define OTA_NVS_FLASH_GUARD_TIMEOUT_MS 500U
+
+/* All OTA metadata reads and writes go through this pair. The wake detector
+ * guard is a no-op before detector initialization and is re-entrant for the
+ * nested metadata helpers used during reconciliation. */
+static esp_err_t ota_nvs_open(const char *namespace_name,
+                              nvs_open_mode_t mode,
+                              nvs_handle_t *out_handle)
+{
+    const esp_err_t guard_err =
+        nuwax_wake_word_detector_begin_flash_operation(
+            OTA_NVS_FLASH_GUARD_TIMEOUT_MS);
+    if (guard_err != ESP_OK) {
+        return guard_err;
+    }
+    const esp_err_t err = nvs_open(namespace_name, mode, out_handle);
+    if (err != ESP_OK) {
+        nuwax_wake_word_detector_end_flash_operation();
+    }
+    return err;
+}
+
+static void ota_nvs_close(nvs_handle_t handle)
+{
+    nvs_close(handle);
+    nuwax_wake_word_detector_end_flash_operation();
+}
 
 typedef struct {
     uint32_t magic;
@@ -94,7 +137,7 @@ static bool sha256_hex_valid(const char *value)
 static esp_err_t nvs_set_status(const char *key, const char *value)
 {
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = ota_nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
         return err;
@@ -103,7 +146,7 @@ static esp_err_t nvs_set_status(const char *key, const char *value)
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
-    nvs_close(handle);
+    ota_nvs_close(handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "persist %s failed: %s", key, esp_err_to_name(err));
     }
@@ -125,20 +168,20 @@ static esp_err_t nvs_get_status(const char *key, char *value, size_t value_size)
         return ESP_ERR_INVALID_ARG;
     }
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    esp_err_t err = ota_nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
         return err;
     }
     size_t required = value_size;
     err = nvs_get_str(handle, key, value, &required);
-    nvs_close(handle);
+    ota_nvs_close(handle);
     return err;
 }
 
 static esp_err_t nvs_set_sequence(const char *key, uint64_t value)
 {
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = ota_nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         return err;
     }
@@ -146,7 +189,7 @@ static esp_err_t nvs_set_sequence(const char *key, uint64_t value)
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
-    nvs_close(handle);
+    ota_nvs_close(handle);
     return err;
 }
 
@@ -156,12 +199,12 @@ static esp_err_t nvs_get_sequence(const char *key, uint64_t *value)
         return ESP_ERR_INVALID_ARG;
     }
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    esp_err_t err = ota_nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
         return err;
     }
     err = nvs_get_u64(handle, key, value);
-    nvs_close(handle);
+    ota_nvs_close(handle);
     return err;
 }
 
@@ -206,7 +249,7 @@ static esp_err_t nvs_set_pending_txn(const nuwax_ota_pending_txn_t *record)
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = ota_nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         return err;
     }
@@ -220,7 +263,7 @@ static esp_err_t nvs_set_pending_txn(const nuwax_ota_pending_txn_t *record)
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
-    nvs_close(handle);
+    ota_nvs_close(handle);
     return err;
 }
 
@@ -230,7 +273,7 @@ static esp_err_t nvs_set_accepted_txn(const nuwax_ota_pending_txn_t *record)
         return ESP_ERR_INVALID_ARG;
     }
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = ota_nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         return err;
     }
@@ -238,7 +281,7 @@ static esp_err_t nvs_set_accepted_txn(const nuwax_ota_pending_txn_t *record)
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
-    nvs_close(handle);
+    ota_nvs_close(handle);
     return err;
 }
 
@@ -249,13 +292,13 @@ static esp_err_t nvs_get_accepted_txn(nuwax_ota_pending_txn_t *record)
     }
     memset(record, 0, sizeof(*record));
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    esp_err_t err = ota_nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
         return err;
     }
     size_t size = sizeof(*record);
     err = nvs_get_blob(handle, NVS_KEY_ACCEPTED_TXN, record, &size);
-    nvs_close(handle);
+    ota_nvs_close(handle);
     if (err != ESP_OK) {
         return err;
     }
@@ -280,7 +323,7 @@ static esp_err_t nvs_get_pending_txn(nuwax_ota_pending_txn_t *record,
     *out_legacy = false;
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    esp_err_t err = ota_nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err == ESP_OK) {
         size_t size = 0;
         err = nvs_get_blob(handle, NVS_KEY_PENDING_TXN, NULL, &size);
@@ -319,7 +362,7 @@ static esp_err_t nvs_get_pending_txn(nuwax_ota_pending_txn_t *record,
         } else if (err == ESP_OK) {
             err = ESP_ERR_INVALID_SIZE;
         }
-        nvs_close(handle);
+        ota_nvs_close(handle);
         if (err == ESP_OK) {
             if (!*out_legacy && !pending_txn_valid(record)) {
                 return ESP_ERR_INVALID_STATE;
@@ -361,7 +404,7 @@ static esp_err_t nvs_get_pending_txn(nuwax_ota_pending_txn_t *record,
 static esp_err_t nvs_clear_pending_txn(void)
 {
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = ota_nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         return err;
     }
@@ -375,7 +418,7 @@ static esp_err_t nvs_clear_pending_txn(void)
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
-    nvs_close(handle);
+    ota_nvs_close(handle);
     return err;
 }
 
@@ -467,6 +510,60 @@ static esp_err_t partition_sha256_hex(
     return nuwax_ota_sha256_final(&hash, out_hex);
 }
 
+static esp_err_t running_partition_sha256(
+    const esp_partition_t *partition, uint32_t image_size,
+    char out_hex[NUWAX_OTA_MANIFEST_SHA256_LEN], bool allow_compute)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_app_desc_t *app = esp_app_get_description();
+    if (partition == NULL || running == NULL || app == NULL || out_hex == NULL ||
+        partition->address != running->address || partition->size != running->size ||
+        image_size == 0U || image_size > running->size ||
+        image_size > NUWAX_OTA_MANIFEST_MAX_SIZE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    out_hex[0] = '\0';
+    portENTER_CRITICAL(&s_lock);
+    const bool matches = s_running_hash.valid &&
+        s_running_hash.address == running->address && s_running_hash.size == image_size &&
+        memcmp(s_running_hash.version, app->version, sizeof(s_running_hash.version)) == 0 &&
+        memcmp(s_running_hash.elf_sha256, app->app_elf_sha256,
+               sizeof(s_running_hash.elf_sha256)) == 0;
+    if (matches) {
+        memcpy(out_hex, s_running_hash.digest, sizeof(s_running_hash.digest));
+        portEXIT_CRITICAL(&s_lock);
+        return ESP_OK;
+    }
+    if (!allow_compute || s_running_hash.busy) {
+        portEXIT_CRITICAL(&s_lock);
+        return ESP_ERR_NOT_FINISHED;
+    }
+    s_running_hash.busy = true;
+    s_running_hash.valid = false;
+    portEXIT_CRITICAL(&s_lock);
+
+    const int64_t started = esp_timer_get_time();
+    ESP_LOGI(TAG, "running hash begin revision=ota-identity-v1 partition=%s bytes=%lu",
+             running->label, (unsigned long)image_size);
+    char digest[NUWAX_OTA_MANIFEST_SHA256_LEN] = {0};
+    const esp_err_t err = partition_sha256_hex(running, image_size, digest);
+    portENTER_CRITICAL(&s_lock);
+    if (err == ESP_OK) {
+        s_running_hash.address = running->address;
+        s_running_hash.size = image_size;
+        memcpy(s_running_hash.version, app->version, sizeof(s_running_hash.version));
+        memcpy(s_running_hash.elf_sha256, app->app_elf_sha256, sizeof(s_running_hash.elf_sha256));
+        memcpy(s_running_hash.digest, digest, sizeof(digest));
+        memcpy(out_hex, digest, sizeof(digest));
+        s_running_hash.valid = true;
+    }
+    s_running_hash.busy = false;
+    portEXIT_CRITICAL(&s_lock);
+    ESP_LOGI(TAG, "running hash complete revision=ota-identity-v1 err=%s elapsed_ms=%lu",
+             esp_err_to_name(err), (unsigned long)((esp_timer_get_time() - started) / 1000));
+    return err;
+}
+
 static nuwax_ota_identity_condition_t running_identity_condition(esp_err_t err)
 {
     switch (err) {
@@ -529,7 +626,7 @@ esp_err_t nuwax_ota_main_get_running_image_sha256(
         metadata.image_len > running->size) {
         return err == ESP_OK ? ESP_ERR_INVALID_SIZE : err;
     }
-    err = partition_sha256_hex(running, metadata.image_len, out_sha256);
+    err = running_partition_sha256(running, metadata.image_len, out_sha256, true);
     if (err == ESP_OK) {
         ESP_LOGI(TAG,
                  "running image identity recovered label=%s address=0x%08lx image_len=%lu",
@@ -565,9 +662,9 @@ static esp_err_t pending_txn_matches_running(
         return ESP_OK;
     }
     char actual_sha256[NUWAX_OTA_MANIFEST_SHA256_LEN] = {0};
-    esp_err_t err = partition_sha256_hex(running_partition,
+    esp_err_t err = running_partition_sha256(running_partition,
                                          record->image_size,
-                                         actual_sha256);
+                                         actual_sha256, true);
     if (err == ESP_OK) {
         *out_matches = strcmp(record->image_sha256, actual_sha256) == 0;
     }
@@ -617,13 +714,17 @@ static esp_err_t reconcile_pending_txn(bool running_pending,
                      (unsigned long long)NUWAX_OTA_FIRMWARE_RELEASE_SEQUENCE);
             return ESP_ERR_INVALID_VERSION;
         }
-        err = pending_txn_matches_running(&record, running_partition,
-                                          running_app, &matches_running);
-        if (err != ESP_OK || !matches_running) {
+        /* Startup checks only the durable binding. The controller performs
+         * the complete digest check before staged ACK / image confirmation;
+         * audio and rollback interlocks stay closed until then. */
+        matches_running = pending_txn_metadata_matches_running(
+            &record, running_partition, running_app);
+        if (!matches_running) {
             ESP_LOGE(TAG,
                      "pending image does not match OTA transaction identity");
-            return err == ESP_OK ? ESP_ERR_INVALID_CRC : err;
+            return ESP_ERR_INVALID_CRC;
         }
+        ESP_LOGI(TAG, "pending image hash deferred to controller revision=ota-identity-v1");
         return ESP_OK;
     }
 
@@ -1137,8 +1238,8 @@ esp_err_t nuwax_ota_main_get_release_sequence(uint64_t *out_sequence)
     return err;
 }
 
-esp_err_t nuwax_ota_main_get_running_identity(
-    nuwax_ota_running_identity_t *out_identity)
+static esp_err_t get_running_identity(
+    nuwax_ota_running_identity_t *out_identity, bool allow_compute)
 {
     if (out_identity == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -1167,9 +1268,11 @@ esp_err_t nuwax_ota_main_get_running_identity(
         if (err != ESP_OK) {
             return err;
         }
-        err = reconcile_pending_txn(false, accepted_sequence);
-        if (err != ESP_OK) {
-            return err;
+        if (allow_compute) {
+            err = reconcile_pending_txn(false, accepted_sequence);
+            if (err != ESP_OK) {
+                return err;
+            }
         }
         err = nvs_get_accepted_txn(&record);
         if (err != ESP_OK) {
@@ -1189,11 +1292,16 @@ esp_err_t nuwax_ota_main_get_running_identity(
     bool matches_running;
     if (pending) {
         matches_running = false;
-        err = pending_txn_matches_running(&record, running_partition,
-                                          running_app, &matches_running);
+        if (!pending_txn_metadata_matches_running(&record, running_partition, running_app)) {
+            return ESP_ERR_INVALID_CRC;
+        }
+        char digest[NUWAX_OTA_MANIFEST_SHA256_LEN] = {0};
+        err = running_partition_sha256(running_partition, record.image_size,
+                                       digest, allow_compute);
         if (err != ESP_OK) {
             return err;
         }
+        matches_running = strcmp(record.image_sha256, digest) == 0;
     } else {
         /* A valid running image was already verified by esp_ota_end(), the
          * bootloader and the confirmation transaction. Re-hashing the entire
@@ -1212,6 +1320,16 @@ esp_err_t nuwax_ota_main_get_running_identity(
     out_identity->target_partition_address = record.target_partition_address;
     out_identity->pending_verify = pending;
     return ESP_OK;
+}
+
+esp_err_t nuwax_ota_main_get_running_identity(nuwax_ota_running_identity_t *out_identity)
+{
+    return get_running_identity(out_identity, true);
+}
+
+esp_err_t nuwax_ota_main_peek_running_identity(nuwax_ota_running_identity_t *out_identity)
+{
+    return get_running_identity(out_identity, false);
 }
 
 esp_err_t nuwax_ota_main_pending_identity_matches(

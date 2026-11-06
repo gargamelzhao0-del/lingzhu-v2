@@ -1,0 +1,237 @@
+{
+  "audit_date": "2026-09-28",
+  "firmware_version": "7.0.102",
+  "scope": "selected source and evidence, not full build provenance",
+  "files": [
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\CMakeLists.txt",
+      "bytes": 7488,
+      "sha256": "570613bf42864d5e9a54e5df4f7c9eb321b65b16a88efdbe236f108f55949961"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\sdkconfig.defaults",
+      "bytes": 14076,
+      "sha256": "9ae94dd5ea0e085ee6da82759516cf4f20f24968975ef802545e26b142acd3f4"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\board\\shake_detector.c",
+      "bytes": 12857,
+      "sha256": "31dbe2ed2ee9b2dc641a7d778ae151f74ea6ab1de1e082596239f2158c0cfc5d"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\board\\shake_detector.h",
+      "bytes": 957,
+      "sha256": "52eaed9b11fa90ebc8dc8b3131ac95e9ff1d778e6924de0c4b6fcfd0dcd12363"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\board\\shake_motion_policy.h",
+      "bytes": 5999,
+      "sha256": "799f9809aa6b8a67776ee08375e7c2e7c1926c7d5d20c110fb3ed07612b6fcc9"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\board\\qmi8658a_driver.c",
+      "bytes": 11843,
+      "sha256": "6fae8e25f4dfba66db7bff884042215a6e72fd4c0c2aca2cfb6ab3cb656aa6ca"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\board\\i2c_bus_manager.c",
+      "bytes": 16830,
+      "sha256": "84f32c930f02513be2fc502c3877887db6030f6a6ca4919fc1a97fb0943266e7"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\board\\battery_service.c",
+      "bytes": 27703,
+      "sha256": "5e2a36122a5b614343eab9eb237ac56158d1518c3092ed7e789e73ccd29b3105"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\board\\battery_policy.h",
+      "bytes": 5839,
+      "sha256": "ab93e99cab99838fcb0a908b81499001dc89e219934afec25c1e68d136130ee7"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\board\\nuwax_power_ctrl.c",
+      "bytes": 26380,
+      "sha256": "b47e85b6951c88130736687f45975775e23bb3eb7d4d2d44b733472695dc4de9"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\board\\board_gpio_inputs.c",
+      "bytes": 14410,
+      "sha256": "8a791ea238a26a4d242221dde3585b973c63236349331c8e122c03cb82b4434b"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\conversation\\wake_word_detection_policy.h",
+      "bytes": 6085,
+      "sha256": "765430b88c104165c29fb546175a416a5901657d68dc70dcfd83a405bcb3f7ed"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\wake_word_detector.c",
+      "bytes": 135455,
+      "sha256": "6a4a1cb39721a2f01935aba42c1e37e5e8213ff9b53b9e34dbafe56d7c0abb61"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\conversation\\conversation_endpoint_policy.h",
+      "bytes": 8854,
+      "sha256": "ec75996191d354258bc436ce9109058dae1aeeb8f1d12b17bdbe106de072cf73"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\conversation\\head_touch_control.c",
+      "bytes": 13306,
+      "sha256": "be6813a5c40a5f359f06e723eabd81bf412f8afb80d2ed057ba47d63e17e3251"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\conversation\\head_touch_control_policy.c",
+      "bytes": 1042,
+      "sha256": "eefe2277b2dd764aa2e706099d6b42e3b8600f1be27097c991cadcf53c4b8af2"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\conversation\\speaker_jitter_policy.h",
+      "bytes": 9204,
+      "sha256": "e058001769eec44392c6da5ab94dd8b76e61ea7e4e90adf1081d1b970346406a"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\nuwax_ai_partner_main.c",
+      "bytes": 1648431,
+      "sha256": "07b6c9d62a3038690202e1b1dd24600a400565bae3f5ba5f2d6b6054a6450867"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\app_shell.c",
+      "bytes": 67428,
+      "sha256": "5b6569e4924fd4223b557dfb17e7c7a821394afd5c8e9a63f6a29827738cbd84"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\device_error_report.c",
+      "bytes": 43643,
+      "sha256": "7878519fe24a9907fd3d341681c4420a2208c40ffff0f77e3c0f114299d835b9"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\json_resource_budget.h",
+      "bytes": 4217,
+      "sha256": "f291ddc1e2aed9894f5577750bb68f710890315a1008d01c604a167d69b08437"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\wifi_manager.c",
+      "bytes": 81017,
+      "sha256": "5672553f6285bc4a9dfc1c13ca90eb27497585a295f70d45d25d522f7ae4ff49"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\nuwax_provision_new\\nuwax_provision_main.c",
+      "bytes": 135479,
+      "sha256": "de9c1742ed92bec4a0f5e4bb12c3b5ed5c4e6780ae7552bacf26b5dedb73aeb1"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\audio_modes\\meeting\\meeting_mode.c",
+      "bytes": 66389,
+      "sha256": "0ab06ee152e34c49da162173340d736262b78e56296e04c494aaada380af29a9"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\audio_modes\\meeting\\meeting_mode.h",
+      "bytes": 5073,
+      "sha256": "fe2cba5015973ce7b24fe08d896d3c91d62b33e934fd3d51c6e0dfc15fc530e6"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\audio_modes\\monitoring\\monitoring_mode.c",
+      "bytes": 90602,
+      "sha256": "ba87f1958e86c0022d731f990d0e1158c851b83c3a7065450f0ddc98e855ea3f"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\audio_modes\\monitoring\\monitoring_mode.h",
+      "bytes": 5759,
+      "sha256": "d73ea9c19dc9bde9ad4a36fa53d02a8eaab51b0e2ed9018ffa30b105a22729d0"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\audio_modes\\monitoring\\monitoring_speech_policy.h",
+      "bytes": 1235,
+      "sha256": "f710be1a00f6952e074cfa8a401db5030addd103a01e2c2169dd064386d84ca6"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\offline_audio_spool.c",
+      "bytes": 219557,
+      "sha256": "e34db61ba5f9a4a5be2530e8eb883a74712a2c51b879bc2bb62a87dae9d70308"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\nuwax_ota_new\\nuwax_ota_device.c",
+      "bytes": 72104,
+      "sha256": "f230b0ad66aa905ad21a04392a9f038aa8f1f1a51b0b19954d7430089f3aeee8"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\nuwax_ota_new\\nuwax_ota_power_policy.h",
+      "bytes": 2483,
+      "sha256": "ca2ff0c68dcf61caa910f7d8b26b63693b9b1aa85b3aa9bfc79c137330d9f19f"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\main\\nuwax_ota_new\\nuwax_ota_release_policy.h",
+      "bytes": 2199,
+      "sha256": "bdd80e4f3a905c80c103983b1189209a556031e455dd6aa3b2d0930623226e24"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\tools\\test-ota-identity-cache.py",
+      "bytes": 21578,
+      "sha256": "e1d8053378f6f93309849540ad81a37296ab27687aeb7f30affde65a4667b5cc"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\tools\\verify-ota-identity-build.py",
+      "bytes": 1732,
+      "sha256": "23ffa6f973fb561206af801b4bb8b3d01c03d716bf727164e0f640edd5852242"
+    },
+    {
+      "path": "C:\\tmp\\nuwax-7.0.102-formal-20260928\\config\\sdkconfig.h",
+      "bytes": 74280,
+      "sha256": "1f4fec9b11302f8ddf9163193e15d80c763d74615c0f4682b08dc892cc485299"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\artifacts\\release-7.0.102\\ota\\ota-metadata.json",
+      "bytes": 301,
+      "sha256": "d29a884f119167365855a7d132a334821c0c1de19a598daeb3c78a8172830c1b"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\tmp\\host-product-ota-retry-20260928.log",
+      "bytes": 28755,
+      "sha256": "ae3290ff941cbd11c64aa6fea63df8e64bc2d45f1e79158872de980f6cf99c85"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\tmp\\host-ota-retry-targeted-20260928.log",
+      "bytes": 839,
+      "sha256": "69d8c23acd22e7b2d142afa971ffeeb44198566d65790522510b7e762b8f60fa"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\tmp\\build-ota-retry-20260928.log",
+      "bytes": 309762,
+      "sha256": "d69b5e94d3a1248982b7a808112555ed6c923e8cc9b3117376aa1082523cc0f3"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\.codex\\attachments\\e341195c-179c-4cd0-aa29-725a58c4725a\\已粘贴的文本.txt",
+      "bytes": 226209,
+      "sha256": "bce9520a89eccc35a406d4f8cc99f37a0ef633d72b738068c037ab8688a16d35"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\docs\\audits\\2026-09-28-function-gates\\shake-init-result.txt",
+      "bytes": 202,
+      "sha256": "ce6701965b42aa0fd92dae4bb440abbc576a3fce9e44615598833a9ecfed9b1a"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\docs\\audits\\2026-09-28-function-gates\\shake-init.c",
+      "bytes": 5447,
+      "sha256": "5d83b5f9271f2655d4f3bd17f1d41b009bdbd1e898dde618877f5f7b076e2208"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\docs\\audits\\2026-09-28-function-gates\\shake-loss-result.txt",
+      "bytes": 300,
+      "sha256": "4d511014237a68ee6e35aaec69aae0a5a2747b368580afaa35ac404a06f7222d"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\docs\\audits\\2026-09-28-function-gates\\shake-loss.c",
+      "bytes": 798,
+      "sha256": "4dd5b3efaea03c90d9e7283a60491cbf140a81452e94ce258dd912a6baaa9af0"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\docs\\audits\\2026-09-28-function-gates\\shake-rearm-result.txt",
+      "bytes": 170,
+      "sha256": "992aca588ab971edf89169f06e790e23a70c3a13fe162eaa1cff8aabedf9e971"
+    },
+    {
+      "path": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\docs\\audits\\2026-09-28-function-gates\\shake-rearm.c",
+      "bytes": 1266,
+      "sha256": "c9b05a928b4041773deda4781a078d974097830c66a34624bdc4e84c79dd1545"
+    }
+  ]
+}

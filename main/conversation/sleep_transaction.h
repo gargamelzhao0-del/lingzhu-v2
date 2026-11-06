@@ -44,6 +44,7 @@ typedef struct {
     bool speaker_stopped;
     bool protocol_closed;
     bool ack_sent;
+    bool local_request;
 } nuwax_sleep_transaction_t;
 
 typedef struct {
@@ -67,6 +68,16 @@ nuwax_sleep_request_result_t nuwax_sleep_transaction_request(
     const char *request_id,
     const char *command,
     const char *turn_id,
+    bool local_sleeping);
+
+/* Local controls such as the physical power key do not have a cloud request
+ * id or a WebSocket epoch. They still use the same token-bound quiescence
+ * barriers and therefore cannot bypass capture/speaker ownership. */
+nuwax_sleep_request_result_t nuwax_sleep_transaction_request_local(
+    nuwax_sleep_transaction_t *transaction,
+    uint32_t now_ms,
+    uint32_t timeout_ms,
+    uint32_t speaker_generation,
     bool local_sleeping);
 bool nuwax_sleep_transaction_begin_quiescing(
     nuwax_sleep_transaction_t *transaction,

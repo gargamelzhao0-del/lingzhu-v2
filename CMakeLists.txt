@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 if(NOT DEFINED PROJECT_VER)
-    set(PROJECT_VER "7.0.89")
+    set(PROJECT_VER "7.0.223")
 endif()
 
 if(NOT PROJECT_VER MATCHES "^7\\.0\\.([0-9]+)$")
@@ -96,6 +96,18 @@ string(JOIN "," NUWAX_EMOTION_COMPATIBLE_SHA256_CSV
        ${NUWAX_EMOTION_COMPATIBLE_SHA256_LIST})
 
 project(NuwaxAIPartner)
+
+# Reject stale sdkconfig files instead of silently shipping the cJSON default
+# of 1000 recursive levels into the 16 KiB WebSocket RX task.
+if(CONFIG_CJSON_NESTING_LIMIT GREATER 32 OR CONFIG_CJSON_NESTING_LIMIT LESS 1)
+    message(FATAL_ERROR "Set CONFIG_CJSON_NESTING_LIMIT=32 (supported range 1..32); unsafe recursive JSON budget")
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/tools/cmake/protocomm-lifecycle-fix.cmake")
+
+include("${CMAKE_CURRENT_LIST_DIR}/tools/cmake/rnnt-growth-fix.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/tools/cmake/sd-event-profile.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/tools/cmake/sd-status-fix.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/tools/cmake/sd-tcp-writable.cmake")
 
 esptool_py_flash_to_partition(flash "emotion_0" "${NUWAX_EMOTION_PACK}")
 message(STATUS

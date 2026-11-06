@@ -1,0 +1,95 @@
+{
+  "checks": [
+    {
+      "log": "build-host-checks\\w05-fix\\conversation-recheck.log",
+      "exitCode": 0,
+      "sha256": "ca03a26e47ddd81132e2977ad509ff4b80ffb3ba27734a64e2a45a576bc6f68e",
+      "tail": [
+        "conversation source contracts: PASS",
+        "PASS: split header/audio protocol equivalence, length boundaries, short writes, TLS, epoch and overlap rejection; source audio preserved",
+        "PASS: 192 batch encodings; distinct per-frame masks; source preservation; one TCP write; TLS geometry; zero allocation; argument/epoch/overlap checks; partial-batch disconnect and zero-progress retry",
+        "PASS: 320 production legacy/buffered/split/batch interleavings; full mask/decode; short writes/backpressure metrics; partial failure closes; TLS geometry preserved; RX/other-client progress; epoch fencing; 100 reconnects"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05-fix\\run-audio-lifecycle-host-checks.ps1.log",
+      "exitCode": 0,
+      "sha256": "132bd4bac5a54681e0c8ae7743c8325ff0208988a072f540cce31cb9b6eb5ecf",
+      "tail": [
+        "production UI reconciliation: controller precedence, stale mode kind, pending handoff and UI rebuild PASS",
+        "offline storage recovery gate and archive CRC compatibility: PASS",
+        "offline dispatch and MIC transfer: PASS",
+        "archive commit: clean append and torn-tail truncation PASS"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05-fix\\run-meeting-host-checks.ps1.log",
+      "exitCode": 0,
+      "sha256": "a8e49ef9df2fb338ce4d9995a103e3743f014fa6451f7f618cfb77d455ad0b36",
+      "tail": [
+        "meeting_processor_host_check: PASS",
+        "meeting_protocol_host_check: PASS",
+        "meeting_mode_host_check: PASS",
+        "meeting_capture_transaction_host_check: PASS"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05-fix\\run-monitoring-host-checks.ps1.log",
+      "exitCode": 0,
+      "sha256": "c7950b9f6d382eb48cf037c84aab9677de5be5d14ed40d858b63e36251a41de0",
+      "tail": [
+        "monitoring_speech_policy_host_check: PASS",
+        "monitoring_protocol_host_check: PASS",
+        "monitoring_mode_host_check: PASS",
+        "monitoring_capture_host_check: PASS"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05-fix\\run-wake-capture-host-checks.ps1.log",
+      "exitCode": 0,
+      "sha256": "39e8e6a56c3173c2b5d0cc61ae1639c2d0657bcb8cbda2898ba487c8a1cd2b9f",
+      "tail": [
+        "PASS: eviction detected at head before mixed PCM, no false tail gaps, sequence wrap, DMA gap, ownership; consumer pressure, mono/dual capture, inference stalls and stop"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05-fix\\run-wake-supervisor-host-checks.ps1.log",
+      "exitCode": 0,
+      "sha256": "3e0f23d36127ebf999ae8b338ef736b81a1e8086ebab5a6cdb1126e03c2a9888",
+      "tail": [
+        "PASS: production wake supervisor ignores planned Flash pause and times real readiness loss from its onset"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05-fix\\run-mic-dma-reader-host-checks.ps1.log",
+      "exitCode": 0,
+      "sha256": "677b6404a82ca5cdb7bafa93b8de100442c7ded66eef0b49a073adfe4ca3c9b5",
+      "tail": [
+        "mic DMA reader: old-path skip reproduced; buffered continuity, slots, sizes, timeout and error checks passed"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05-fix\\run-provisioning-host-checks.ps1.log",
+      "exitCode": 0,
+      "sha256": "b1ad27fb66b2915d98456caf993d6050bc4a882b71432665f3c7faa3d5b0185e",
+      "tail": [
+        "qr-25 drawer: PASS",
+        "qr-26 appMain: PASS",
+        "qr-27 appMain: PASS",
+        "provisioning transaction invariant check: PASS"
+      ]
+    },
+    {
+      "log": "build-host-checks\\w05-fix\\product-recheck.log",
+      "exitCode": 0,
+      "sha256": "b4888208f307ba71bbdb2fcdf534fb411ce0a670b665d6550eceb1dca2e7241e",
+      "tail": [
+        "[PASS] late transaction cannot overwrite newer overlap",
+        "UI bridge revision policy host check: PASS (0 failures)",
+        "wake word interrupt filter host check: PASS",
+        "V2 product migration host contracts: PASS"
+      ]
+    }
+  ],
+  "note": "Initial conversation/product source contracts required the old cleanup semantics; updated contracts and reruns passed. Hardware not tested."
+}

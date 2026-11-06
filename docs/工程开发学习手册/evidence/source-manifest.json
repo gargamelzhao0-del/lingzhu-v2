@@ -1,0 +1,784 @@
+{
+  "schema": "nuwax.handbook.source-evidence.v1",
+  "recorded_utc": "2026-10-09T06:19:23.461825+00:00",
+  "declared_baseline": "2026-10-09 / default 7.0.113 / current working tree",
+  "git_head_context_only": "6c8376dee47bfebfff16837fc177aba6b02663c2",
+  "warning": "Working-tree fingerprints, not a clean-commit or reproducible-build claim. No firmware tested by this script.",
+  "files": [
+    {
+      "path": "artifacts/release-7.0.113/README.md",
+      "bytes": 1628,
+      "sha256": "7ce63dcd533ebc84e253630d93fcede3def23702521705d241472e72ef64326b"
+    },
+    {
+      "path": "bootloader_components/nuwax_power_hold/nuwax_early_power_hold.c",
+      "bytes": 4927,
+      "sha256": "86919813481dcbe2e40a7873280f3ea948271f4e9a6282f837e46d88b2152fcf"
+    },
+    {
+      "path": "CMakeLists.txt",
+      "bytes": 7488,
+      "sha256": "3363d05b7a6d121718569bdde5cae9816a8dfd53a362e1d242635e4d3e5c6b0e"
+    },
+    {
+      "path": "dependencies.lock",
+      "bytes": 3627,
+      "sha256": "1c860334582159588cffa7495f2b298afcd0943480bcbf5309ce5e4e3c510583"
+    },
+    {
+      "path": "docs/2026-09-14-WebSocket补传串帧修复.md",
+      "bytes": 6028,
+      "sha256": "1d0ff07402b90abf40c2414ed78f72df07519a0b26a9f4bb648786714d218198"
+    },
+    {
+      "path": "docs/2026-09-16-309152补传后Cache重启分析.md",
+      "bytes": 4990,
+      "sha256": "32e5227adc4a20c250b15bea0ab9f4cac7fd19ab19e8f0713e5e9c3561c23d8e"
+    },
+    {
+      "path": "docs/2026-09-16-MultiNet非法释放重启分析.md",
+      "bytes": 14439,
+      "sha256": "0d3f2fefad85b2666a33ec7a64c11f70537097f9a414e350e7337bb378c5a1af"
+    },
+    {
+      "path": "docs/2026-09-27-OTA启动身份校验优化与验证.md",
+      "bytes": 6644,
+      "sha256": "4f935d5149db2d1a5f72feca5516965c6acf2451d7bb464ff3d13b64a09c753c"
+    },
+    {
+      "path": "docs/2026-09-28-充电温度配置诊断.md",
+      "bytes": 3737,
+      "sha256": "d590620980c3eae42f6f545a83b0abc35f658a4a6b3ec74db7444f29b0456077"
+    },
+    {
+      "path": "docs/2026-09-29-LED关灯残余PWM修复.md",
+      "bytes": 3247,
+      "sha256": "cbc8085dcbd2385f0eacc3344a783697304cfa13ee830f08beafa6971e0598bd"
+    },
+    {
+      "path": "docs/2026-09-29-OTA菜单接管修复.md",
+      "bytes": 3099,
+      "sha256": "dc2b666af35f4a45e1c6643de37ca33319056c43487278db9cc37e91c830156a"
+    },
+    {
+      "path": "docs/2026-09-29-充电指示修复与验证.md",
+      "bytes": 3517,
+      "sha256": "232f54055878b306a8ea3ad15d41c6e6a4528593468d9b1ea34a088ba01aba5e"
+    },
+    {
+      "path": "docs/2026-09-29-唤醒音画同步与休眠响应修复.md",
+      "bytes": 3672,
+      "sha256": "9b69ff7c19e5aa787efdf0d816b418b10108122805a30b206b3ac715811414bd"
+    },
+    {
+      "path": "docs/7.0-P3-工作记录-硬件reference-AEC入口收口.md",
+      "bytes": 100336,
+      "sha256": "cb2187a4af568f47c41ac4418d99adb1c89904e49141cba7695d7d243c43fecc"
+    },
+    {
+      "path": "docs/protocol/meeting-monitoring-sd-current-20260910.md",
+      "bytes": 5727,
+      "sha256": "a68e0a78929af3095869d379835d980d4fd7cb6e7eca3499b9aafb711535a20c"
+    },
+    {
+      "path": "docs/sd数据上传协议-云端完整版.md",
+      "bytes": 30562,
+      "sha256": "cf9c5f9a4a0bba0d4c364beb30e2da9e84c6b93998ead582af5ba12837bd8597"
+    },
+    {
+      "path": "docs/SD音频补传协议文档.md",
+      "bytes": 7342,
+      "sha256": "03f7cda9d30430a46a4bf70ab741a56b711a822cc504236b8e892281336b590d"
+    },
+    {
+      "path": "docs/SD音频高速补传v2.md",
+      "bytes": 26408,
+      "sha256": "df73f88103c039204ecf0de3b88bbc649d34e8e9f36e840438e32c0b923c9b91"
+    },
+    {
+      "path": "lib/lvgl/src/core/lv_obj.c",
+      "bytes": 44195,
+      "sha256": "ee3f27867702bd1f8fb64922140683ed18932a6725e24fab2afc731a9e2836bf"
+    },
+    {
+      "path": "lib/lvgl/src/core/lv_refr.c",
+      "bytes": 56673,
+      "sha256": "6c18131a4aacc5d7ef31eab4469b7eb6a15d9072b580b780d6989ad1e1a2a0c7"
+    },
+    {
+      "path": "lib/lvgl/src/display/lv_display.c",
+      "bytes": 48577,
+      "sha256": "25026f7f4378a50936cb31e39d06de2177dd85622f5047875303f26bda4ece09"
+    },
+    {
+      "path": "main/app_shell.c",
+      "bytes": 67574,
+      "sha256": "40c4a925fa546f89c68ac0cbdb5495b0fb58c461ada9c231a75e05022a55038b"
+    },
+    {
+      "path": "main/audio_frame.c",
+      "bytes": 6147,
+      "sha256": "61bfab74059d4a0e24786a39ef128d07f9f57551689b29fcc1f385384508a167"
+    },
+    {
+      "path": "main/audio_frame.h",
+      "bytes": 2459,
+      "sha256": "f220b838e666c930346d86947794811dee20abd8bbde0f691515981ecdb8b7ab"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_mode.c",
+      "bytes": 66389,
+      "sha256": "0ab06ee152e34c49da162173340d736262b78e56296e04c494aaada380af29a9"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_mode.h",
+      "bytes": 5073,
+      "sha256": "fe2cba5015973ce7b24fe08d896d3c91d62b33e934fd3d51c6e0dfc15fc530e6"
+    },
+    {
+      "path": "main/audio_modes/meeting/meeting_processor.c",
+      "bytes": 8414,
+      "sha256": "1f330f0b7857346701196fbb5cca50c27e7f53afd687c1a641850f02b950c9e9"
+    },
+    {
+      "path": "main/audio_modes/monitoring/monitoring_mode.c",
+      "bytes": 90602,
+      "sha256": "ba87f1958e86c0022d731f990d0e1158c851b83c3a7065450f0ddc98e855ea3f"
+    },
+    {
+      "path": "main/audio_runtime_memory_policy.h",
+      "bytes": 1741,
+      "sha256": "38f1a29985d37ffd5e6145261b412f2849407fd0bfd4e2695570c9a33d26de52"
+    },
+    {
+      "path": "main/board/battery_service.c",
+      "bytes": 34304,
+      "sha256": "0fbb81e666a21b5af87f833ac6a7bca1508bb6bd2261545322e27d692dcd9e8f"
+    },
+    {
+      "path": "main/board/battery_service.h",
+      "bytes": 3585,
+      "sha256": "5e2d3ac0440fc00cceb98f4e20205b0f20017acf70a337c4022cbf46d6d82599"
+    },
+    {
+      "path": "main/board/bq27220_driver.c",
+      "bytes": 37750,
+      "sha256": "3b47a8007b561ffa81f3c7e149d573040e5a1e1f73c7d0231c6d13387b24885c"
+    },
+    {
+      "path": "main/board/esp_vocat_v1_0_pins.h",
+      "bytes": 4446,
+      "sha256": "8f76a1d76e28f9c98308983165d2f71e37810f63caeacc6fae4efd3fcfe4a644"
+    },
+    {
+      "path": "main/board/i2c_bus_manager.c",
+      "bytes": 16830,
+      "sha256": "84f32c930f02513be2fc502c3877887db6030f6a6ca4919fc1a97fb0943266e7"
+    },
+    {
+      "path": "main/board/i2c_bus_manager.h",
+      "bytes": 2579,
+      "sha256": "0f0e254e3cd0be6b56f26b1bbc908176b7adf87ea1526c570c5608d98521c16c"
+    },
+    {
+      "path": "main/board/led_driver.c",
+      "bytes": 12140,
+      "sha256": "8e87044145d9859e992a2dafdd3902fea1adc3a82c60eb06579694f70cca7493"
+    },
+    {
+      "path": "main/board/led_status.c",
+      "bytes": 6756,
+      "sha256": "d21ed34b1ca47f577b59e907341b1c83cf6e0754520f763c8b7e2c0f2fac57a9"
+    },
+    {
+      "path": "main/board/nuwax_board.c",
+      "bytes": 3842,
+      "sha256": "aa5e20f75cbb05da1a24e2fb71839a0ea9b4a791ffb8dd8bc8c12fa7aee2bb2d"
+    },
+    {
+      "path": "main/board/nuwax_power_ctrl.c",
+      "bytes": 26380,
+      "sha256": "b47e85b6951c88130736687f45975775e23bb3eb7d4d2d44b733472695dc4de9"
+    },
+    {
+      "path": "main/board/sd_card_driver.c",
+      "bytes": 18240,
+      "sha256": "fad4d1d1e5ab008b4e6f0beb3e0842126c18dff72dcca20cd2d49a4f1b081d3f"
+    },
+    {
+      "path": "main/board/sd_dma_bulk.c",
+      "bytes": 6651,
+      "sha256": "4901e3db6e25c63a64b815f2de196dc40a0d81d69687ee560ba91c3c5ea2c2ab"
+    },
+    {
+      "path": "main/board/shake_detector.c",
+      "bytes": 14129,
+      "sha256": "815b56ed0853d8bb295f2b554e7db667ca0edf2f31625392272faf556d665390"
+    },
+    {
+      "path": "main/board/shake_motion_policy.h",
+      "bytes": 7162,
+      "sha256": "2d2c95d26cbf67d295a80fe5b8c91710b80a40d9fb46b79e41c05ec36d3bf02e"
+    },
+    {
+      "path": "main/board/vocat_audio_board.c",
+      "bytes": 104768,
+      "sha256": "ba29f1bd407380d1810bb6164df79d1759f58bbd749968f4f75f4d85f446eb33"
+    },
+    {
+      "path": "main/CMakeLists.txt",
+      "bytes": 9094,
+      "sha256": "84a72b84e89c41a5a6f921925bb7ff6f0c6a33d3695fc1670993195bd8aea92b"
+    },
+    {
+      "path": "main/conversation/adaptive_endpoint.c",
+      "bytes": 19888,
+      "sha256": "f10b64487165d54ce388d0f132a96aaa327ef6bd533a0a624c8ae79639cc34b6"
+    },
+    {
+      "path": "main/conversation/audio_cleaner.c",
+      "bytes": 55268,
+      "sha256": "62fde8ae85db1c6f6d786a4d175bcb270a1d762584dc5b42084f63e3e859f26b"
+    },
+    {
+      "path": "main/conversation/audio_uplink.c",
+      "bytes": 110688,
+      "sha256": "76a488419b0373f268ab41fae136310001a0ea2fe6678e92d99281645b585096"
+    },
+    {
+      "path": "main/conversation/head_touch_agent_intent.c",
+      "bytes": 14404,
+      "sha256": "4d5010cfbef09e0cfa3a330b3655f0e7823135cc4005a3cf37250fa9db14b387"
+    },
+    {
+      "path": "main/conversation/head_touch_control.c",
+      "bytes": 13306,
+      "sha256": "be6813a5c40a5f359f06e723eabd81bf412f8afb80d2ed057ba47d63e17e3251"
+    },
+    {
+      "path": "main/conversation/head_touch_control_policy.c",
+      "bytes": 1042,
+      "sha256": "eefe2277b2dd764aa2e706099d6b42e3b8600f1be27097c991cadcf53c4b8af2"
+    },
+    {
+      "path": "main/conversation/live_aec.c",
+      "bytes": 154902,
+      "sha256": "d7c60e9488b87422d526c461b591243df6844b1c45281668ec38206b724ebb97"
+    },
+    {
+      "path": "main/conversation/notification_playback.c",
+      "bytes": 19699,
+      "sha256": "420fc7b1c391f2f21276897a49abd0cc8e47527cdb263ddef748b6a3a1ef47a1"
+    },
+    {
+      "path": "main/conversation/notification_playback.h",
+      "bytes": 6033,
+      "sha256": "3cb4c9cb7c8126878ea1367e2c386090898717772f14bf5d0e22aeab93b0ad90"
+    },
+    {
+      "path": "main/conversation/notification_rx_barrier.h",
+      "bytes": 3004,
+      "sha256": "699a89f609b28df4e242c245017702ec3dc503fb9e7228c3846a3ff22ef41527"
+    },
+    {
+      "path": "main/conversation/playback_terminal_guard.c",
+      "bytes": 10529,
+      "sha256": "e08123243d212ae431ac499b2b38cfec846f76a62eb59f2f6c5335a3927329f9"
+    },
+    {
+      "path": "main/conversation/preroll_window.c",
+      "bytes": 6584,
+      "sha256": "3993e3181fcd2bde43da02abf7541c33589ab0b339e03221b79f343a98fbd1de"
+    },
+    {
+      "path": "main/conversation/session_dispatch.h",
+      "bytes": 7240,
+      "sha256": "9ef3098708c041d75ececa63095f3e9721d88ced07003bc139834c9ac475c199"
+    },
+    {
+      "path": "main/conversation/sleep_transaction.c",
+      "bytes": 14601,
+      "sha256": "61047a8fea21d1690d5b5d170cb3e149a9344857ae73df634c275666ecea48bd"
+    },
+    {
+      "path": "main/conversation/sleep_transaction.h",
+      "bytes": 5434,
+      "sha256": "43680610e96bf6000cf6f831f869a7a87585e88b9e1a4777dec5c83da98f9eeb"
+    },
+    {
+      "path": "main/conversation/speaker_generation_policy.h",
+      "bytes": 8898,
+      "sha256": "a6fbaf8cf96cd11c19d98f8004ac0fa06ba2ea896b9b6dea05ca94c6c7c0ebfd"
+    },
+    {
+      "path": "main/conversation/speaker_jitter_policy.h",
+      "bytes": 9204,
+      "sha256": "e058001769eec44392c6da5ab94dd8b76e61ea7e4e90adf1081d1b970346406a"
+    },
+    {
+      "path": "main/conversation/speaker_playback.c",
+      "bytes": 258268,
+      "sha256": "f173e2829a55a46cfb8e7273fc46f22dc6198e7de93701278bcfa6f47fcbe1e4"
+    },
+    {
+      "path": "main/conversation/speaker_playback.h",
+      "bytes": 14205,
+      "sha256": "d6fe013580c02257fe1647fe8052fd39f465b0fc4ef2052062443350578f403b"
+    },
+    {
+      "path": "main/conversation/speech_confirmation.c",
+      "bytes": 5220,
+      "sha256": "9aa94f0b548f6a443e8929caaecd615b69def82af3b0d52f1cd4cce0af926364"
+    },
+    {
+      "path": "main/conversation/touch_gesture.c",
+      "bytes": 34268,
+      "sha256": "5e531ee17a640f5f16b5a2233ebdba59294bcbcaeca86db17de983092e3731de"
+    },
+    {
+      "path": "main/conversation/turn_guard.c",
+      "bytes": 12109,
+      "sha256": "bf5e5a168c8fdbb2ae674bfca04eaee40f3402b4c58aebc5ff6d68a31f1dce75"
+    },
+    {
+      "path": "main/conversation/turn_guard.h",
+      "bytes": 3827,
+      "sha256": "40693c6eef147dc025db65d79d0b1f0eca3c091944932cac346dd51a02682e4b"
+    },
+    {
+      "path": "main/conversation/wake_noise_policy.h",
+      "bytes": 2656,
+      "sha256": "6820c4c83764b1a2fe3d14e7c7ddb329cba2f5ebf107dc275b46b83a57569fc7"
+    },
+    {
+      "path": "main/conversation/wake_word_detection_policy.h",
+      "bytes": 7800,
+      "sha256": "f3bfbdff04dbf53d85fab02aaae5a5a0ecade369042c3909ad83e72f3e203bc6"
+    },
+    {
+      "path": "main/device_error_report.c",
+      "bytes": 43725,
+      "sha256": "85ff8541ac333a87be8f09934d7ee1bcdcf12edf0db00a3296d31b746a2ebc4c"
+    },
+    {
+      "path": "main/diagnostics.c",
+      "bytes": 5811,
+      "sha256": "57fa2a7db230b40956e99fb9c5d3b54698f26e1ecf7d92807726c1e9b3713d3d"
+    },
+    {
+      "path": "main/display.c",
+      "bytes": 60591,
+      "sha256": "16a0e39b029f8086f8ada4dc0ead2397b4896bff75135b8d3660dc1836e41ddd"
+    },
+    {
+      "path": "main/idf_component.yml",
+      "bytes": 224,
+      "sha256": "8bd1b1141ac928ab09e676562c50ae77db0b3469af768e4e5652ee1a4db1a11c"
+    },
+    {
+      "path": "main/json_resource_budget.h",
+      "bytes": 4217,
+      "sha256": "f291ddc1e2aed9894f5577750bb68f710890315a1008d01c604a167d69b08437"
+    },
+    {
+      "path": "main/Kconfig.projbuild",
+      "bytes": 173095,
+      "sha256": "4ce455cb3391b770379f73fab4c0a43d25070ce6d5f87d3373783791bea85c99"
+    },
+    {
+      "path": "main/mcp_server.c",
+      "bytes": 13509,
+      "sha256": "4ec4174be2ba388ac60af15b0328c4a682a611bbd3beb36c671c58359710b10e"
+    },
+    {
+      "path": "main/mcp_server.h",
+      "bytes": 2222,
+      "sha256": "dc77b4dc3eab273c06907d0740d9b039245bc22dd27d46f24286d372dfbf8ea8"
+    },
+    {
+      "path": "main/mic_input.c",
+      "bytes": 46388,
+      "sha256": "8bab566945ca2e673406df2810fe2d395d1392019d2f308038e601498164a6d9"
+    },
+    {
+      "path": "main/mic_input.h",
+      "bytes": 4402,
+      "sha256": "b8046d276e7892772e869cd5cd2b5dcd32a309bb51520e3f4374fa94e187adc8"
+    },
+    {
+      "path": "main/music_playback/music_playback.h",
+      "bytes": 436,
+      "sha256": "4a588bcdf66670fc445015a460f2d3606a77074582114ed77ff277891009425f"
+    },
+    {
+      "path": "main/nuwax_ai_partner_main.c",
+      "bytes": 1650259,
+      "sha256": "0087ce87987ffcc75b0cfbf7d1e4b28767c0bb166873c06f9a0fb9597651162a"
+    },
+    {
+      "path": "main/nuwax_lvgl_port.c",
+      "bytes": 79115,
+      "sha256": "1953bb11febb53d81b4555672cd126e43123511cc97fe377c5b9ff87eac57a3e"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_firmware_report.c",
+      "bytes": 18960,
+      "sha256": "aa0591eb601b811d1f0096383a24d3a26a17c34fb25645d82413439778e5c69c"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_device.c",
+      "bytes": 72104,
+      "sha256": "f230b0ad66aa905ad21a04392a9f038aa8f1f1a51b0b19954d7430089f3aeee8"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_device.h",
+      "bytes": 2990,
+      "sha256": "bc0f2f181bf850ee0a7972ba8f95d3386f277d0e3e48b001a3a2a53b4040b5aa"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_main.c",
+      "bytes": 48932,
+      "sha256": "d86d3301ed1d39ef5ecd9b7f4e2bc3199aea7a32e03486080f4f009b45c45c7d"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_manifest.c",
+      "bytes": 17546,
+      "sha256": "e7749193a3f8f63bb23ab891f28502736e56dd4b41bc5a447d6934b6bbf7078a"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_power_policy.h",
+      "bytes": 2483,
+      "sha256": "ca2ff0c68dcf61caa910f7d8b26b63693b9b1aa85b3aa9bfc79c137330d9f19f"
+    },
+    {
+      "path": "main/nuwax_ota_new/nuwax_ota_transport.c",
+      "bytes": 29075,
+      "sha256": "d83336bfd733f96eb401e1e19318c39930994c289d4a076c82b60f364949e748"
+    },
+    {
+      "path": "main/nuwax_ota_new/README.md",
+      "bytes": 4440,
+      "sha256": "88a449205863fe007c1ea6e244d5a513322f79aad1424e8b0043b7aa2d487a3b"
+    },
+    {
+      "path": "main/nuwax_provision_new/esp32s3-idf6-provisioning-contract.json",
+      "bytes": 18439,
+      "sha256": "e61484d539469f3c16d991f9f189e7dc303be98656cc6310d71fb26a9f8f4e74"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_cloud_config.c",
+      "bytes": 10099,
+      "sha256": "dd4c94335200dda8e9ba9d802926406e714ae56f7e2cfc8c509f764df55745c4"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_cloud_config.h",
+      "bytes": 1271,
+      "sha256": "978cd4efd6d72fdeee4259068251c326011707182d6ba910a148b70419417546"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_provision_main.c",
+      "bytes": 135479,
+      "sha256": "de9c1742ed92bec4a0f5e4bb12c3b5ed5c4e6780ae7552bacf26b5dedb73aeb1"
+    },
+    {
+      "path": "main/nuwax_provision_new/nuwax_provision_usb_control.c",
+      "bytes": 3703,
+      "sha256": "126204d40b483902bf808a257c5496923b4f49cf8a179d70906892060ad199d1"
+    },
+    {
+      "path": "main/nuwax_provision_new/README.md",
+      "bytes": 11899,
+      "sha256": "33e734bb0955798303956b8b0e0e8b14ff65218be47a75d391cc8f5accc8f2dd"
+    },
+    {
+      "path": "main/nuwax_ui_v28/emotion_display_policy.c",
+      "bytes": 16322,
+      "sha256": "4112d847ed00e36d671cf5ddb806aba4154d64d7e74c85699a7bc2898b8456b9"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/emotion_animation_player.c",
+      "bytes": 180208,
+      "sha256": "9a48e755ea00dcccdfbf48a8d0f799f0d0c0dd1ba496b7b3ee7e946abf2ddb4e"
+    },
+    {
+      "path": "main/nuwax_ui_v28/face/emotion_asset_pack.c",
+      "bytes": 46372,
+      "sha256": "a3822c074d0067fa47236b3532630280f3e7b880a6026812ddae86212bf7617c"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_device_state.h",
+      "bytes": 5094,
+      "sha256": "2c4aa2d5c08638c9ef7c44658449f5e2147711fb404dd63201a09eb2b3ee40b4"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_state_bridge.c",
+      "bytes": 43438,
+      "sha256": "091a7ff57354ddf2aa1f0f0cbc62633bf34e63a867efb062013f13aad7cea575"
+    },
+    {
+      "path": "main/nuwax_ui_v28/nuwax_state_bridge.h",
+      "bytes": 2099,
+      "sha256": "0b90435cd3655b2b66b43874c5f75032dd5bc136964af1171e73948b796724e6"
+    },
+    {
+      "path": "main/offline_audio_spool.c",
+      "bytes": 219557,
+      "sha256": "e34db61ba5f9a4a5be2530e8eb883a74712a2c51b879bc2bb62a87dae9d70308"
+    },
+    {
+      "path": "main/offline_audio_spool.h",
+      "bytes": 10852,
+      "sha256": "95ab9bc706863a09e7113d782c0e40af0282a611eae4f3e71fa82e8dd268f968"
+    },
+    {
+      "path": "main/offline_audio_voice.c",
+      "bytes": 4344,
+      "sha256": "9e6e70ab38337e0eee31fc9eff799cf225b22077fb47f2bdffb127678787ed70"
+    },
+    {
+      "path": "main/offline_replay_prefetch.inc",
+      "bytes": 10465,
+      "sha256": "d4a1f3296f28cc5087eb0ac575e97914c8fab6578cf6464ea9eb52a0111e7475"
+    },
+    {
+      "path": "main/offline_replay_pressure.inc",
+      "bytes": 1812,
+      "sha256": "58387662156630b04c4596cf3640eac3d503cfd231e0cc9d1da884943a43972b"
+    },
+    {
+      "path": "main/offline_replay_read.inc",
+      "bytes": 11236,
+      "sha256": "13b663392599fa43b702f9d6b5fb945c4222056985b34c0eaa73d56d14159b88"
+    },
+    {
+      "path": "main/offline_replay_stream.inc",
+      "bytes": 5309,
+      "sha256": "6702415390af9b37220af244a0cba5749aed987fe3ee1f1e36a193644166eec8"
+    },
+    {
+      "path": "main/product_ready.c",
+      "bytes": 3534,
+      "sha256": "600d31c94ba455570a72d317c9eaa1f7d8a856c872f5c3cb139ca27d83f914ad"
+    },
+    {
+      "path": "main/session_protocol.c",
+      "bytes": 111884,
+      "sha256": "5e6c4909740f55ec35b96161ec06d4dd1c692f9b60bd1040191c0a8406befec2"
+    },
+    {
+      "path": "main/time_sync.c",
+      "bytes": 1902,
+      "sha256": "3daaf4bde2d09ae222b52d9382195d5bce1bae80f20d0abd0578eb4339a181e7"
+    },
+    {
+      "path": "main/wake_word_detector.c",
+      "bytes": 136863,
+      "sha256": "4271b00306228658393ddd9cc85a08a277144676c47f0c665e91ef121af9e113"
+    },
+    {
+      "path": "main/wake_word_detector.h",
+      "bytes": 5057,
+      "sha256": "87b72c3dc0363e67339814b8e366cd266b740d94228fd597435ebbd8d430f352"
+    },
+    {
+      "path": "main/wifi_manager.c",
+      "bytes": 81017,
+      "sha256": "5672553f6285bc4a9dfc1c13ca90eb27497585a295f70d45d25d522f7ae4ff49"
+    },
+    {
+      "path": "main/wifi_manager.h",
+      "bytes": 2719,
+      "sha256": "ce04587031fc06f0b34ee878991bec4a27206f2c01a867aaad9d30987e5be533"
+    },
+    {
+      "path": "main/ws_transport.c",
+      "bytes": 135445,
+      "sha256": "35786a0431339b0d77d7e51f14462c017ee2c1ea4a2c84ca3e317835fa82a525"
+    },
+    {
+      "path": "main/ws_transport.h",
+      "bytes": 12165,
+      "sha256": "184522f1e955a99b03aa2656a9cdf6564389f31282e80776ca446b61b080e8b4"
+    },
+    {
+      "path": "partitions.customwake.csv",
+      "bytes": 405,
+      "sha256": "a5e19490f219bd677eb5b6f33cd119d034fd97af25b5ae856c4561ed6ac2a064"
+    },
+    {
+      "path": "sdkconfig.defaults",
+      "bytes": 14078,
+      "sha256": "f3c1d1668baea7a0ce18ae61a11b0fb5f29ee6cb97a5a714356f0c2bfe5dd5e9"
+    },
+    {
+      "path": "sdkconfig.product-ota.defaults",
+      "bytes": 8122,
+      "sha256": "b62e1f69aa0c174310e4c61a47f5547b75724239c4907c568e352e1cc3873242"
+    },
+    {
+      "path": "sdkconfig.sd-replay-formal.defaults",
+      "bytes": 887,
+      "sha256": "3addd92d0ccd0ffdb0fd384445d1187c576ab8f59d262f631876ae05aea8affe"
+    },
+    {
+      "path": "tools/build-sd-replay-formal.ps1",
+      "bytes": 5559,
+      "sha256": "ac42241e6a3190dc893d31eac4731fd940f8b339c309599b6eeacae1f2b0d17c"
+    },
+    {
+      "path": "tools/cmake/rnnt-growth-fix.cmake",
+      "bytes": 1642,
+      "sha256": "47cd6770327857bc74f9cdadcece22bdac650d1743b57a3f20cd6f41c4ba2b70"
+    },
+    {
+      "path": "tools/flash-sd-replay-formal.ps1",
+      "bytes": 360,
+      "sha256": "a6cf6a6be4224e714c5fa93583be3d222520ec0a5dbecb345e62e322d0a9132a"
+    },
+    {
+      "path": "tools/flash-sd-replay-test.ps1",
+      "bytes": 4032,
+      "sha256": "28db83bd25b84a0143bce55d4bd79847a667e261d18de6711bd0c8f14b2b941f"
+    },
+    {
+      "path": "tools/patch-rnnt-growth.py",
+      "bytes": 6067,
+      "sha256": "f716bf7168102ac1f7807038aab6f54419b978e30c93fd2b90047586f0d6db1c"
+    },
+    {
+      "path": "tools/protocol/audit-offline-session.js",
+      "bytes": 2861,
+      "sha256": "fbab1cbea93fcaf24107fbe777954c056a79ec24535337dba55708ac1ca85ec2"
+    },
+    {
+      "path": "tools/protocol/offline-audio-replay-gateway.js",
+      "bytes": 42414,
+      "sha256": "cd83d5be8ffd0db1b4ad092daadf12b273263c24159431c322c059606ccc2490"
+    },
+    {
+      "path": "tools/start-sd-replay-gateway.ps1",
+      "bytes": 2222,
+      "sha256": "876dfc1711235bfc8585e16a1e799294c65d445e4b55a114e327b8d90e8e86db"
+    },
+    {
+      "path": "tools/test-battery-history.py",
+      "bytes": 4770,
+      "sha256": "5a43eace533ec3bebb88ff0b4e2fa2e17bb791b19bf05feed04e4f67ac9b066c"
+    },
+    {
+      "path": "tools/test-board-power-boundaries.py",
+      "bytes": 16742,
+      "sha256": "a16c474303c9d7c20c3d445e56d96cffeb404779be5ca00e6f0de9dbd49a333b"
+    },
+    {
+      "path": "tools/test-charging-led.py",
+      "bytes": 9206,
+      "sha256": "56fb4d89a60a283958522e1a74e25ffc4c7ccd662055f846652805b882f4d3fe"
+    },
+    {
+      "path": "tools/test-display-buffer-lease.py",
+      "bytes": 9704,
+      "sha256": "5481a856ad058f98d9601f639373127561a849f4b28fa22be55d937d63473f0a"
+    },
+    {
+      "path": "tools/test-display-pixels.py",
+      "bytes": 5243,
+      "sha256": "09b6c60eafdbe12bd2556901a715808502f0f623deffbf5c5816233d1360bfd6"
+    },
+    {
+      "path": "tools/test-drawer-composition.py",
+      "bytes": 6767,
+      "sha256": "ec3c49f5cc4783229d4cd15d0d27b50d07f6b871c012374a2fd4659af02af932"
+    },
+    {
+      "path": "tools/test-interaction-boundaries.py",
+      "bytes": 5712,
+      "sha256": "e24a64d7b29acc04eca90202a5f57276d550696353e0b248b1c60e9035e18626"
+    },
+    {
+      "path": "tools/test-jitter-stability.py",
+      "bytes": 2019,
+      "sha256": "f79942a23e6272c33eff008cc4a37c17e100f59b5cd8303352da9c6e1d81056e"
+    },
+    {
+      "path": "tools/test-json-budget.py",
+      "bytes": 3691,
+      "sha256": "15f0af55d00180ce296fe7d71229f6d28b30c540a814f85bdce915265ea28aaa"
+    },
+    {
+      "path": "tools/test-json-resource-budget.py",
+      "bytes": 10159,
+      "sha256": "238909f8bdf78411e6db39291a3ebda1aad7fe04a83d94b536360a34338c2889"
+    },
+    {
+      "path": "tools/test-mic-init-owner.py",
+      "bytes": 3685,
+      "sha256": "16a759c68e78f6696c59e8f89ff837b29c6bb8610cb371b3dd92ea709c17aff1"
+    },
+    {
+      "path": "tools/test-network-join-handoff.py",
+      "bytes": 14342,
+      "sha256": "aca369c6f727d6c2314b50185a68b244400f46725fccfee2fdd233792918b4fe"
+    },
+    {
+      "path": "tools/test-network-recovery-boundaries.py",
+      "bytes": 7615,
+      "sha256": "8f31d0e60b39af44942066f62086aed35a2144fe10a1322c2fe420de18b967fc"
+    },
+    {
+      "path": "tools/test-notification-startup.py",
+      "bytes": 4178,
+      "sha256": "3e4cf104f02004e19f677c720cc9e6f198b4dcf010510da87753ea55b8bb8d1a"
+    },
+    {
+      "path": "tools/test-ota-identity-cache.py",
+      "bytes": 21578,
+      "sha256": "b11cf2fec2fe3424d45bef87855e550b8845bbc504a06142eec1fe5f3f6a84d8"
+    },
+    {
+      "path": "tools/test-playback-startup.py",
+      "bytes": 19707,
+      "sha256": "77ae9befbc600524678f8f96ad91e5b5fe83eedb63df688a2b14014b90031870"
+    },
+    {
+      "path": "tools/test-provision-finish.py",
+      "bytes": 15011,
+      "sha256": "f6e36db307c205f41b52f1986f9e2daec3a84a6ec34694f5090a4cdbf14f55ea"
+    },
+    {
+      "path": "tools/test-provisioning-buffer-lifecycle.py",
+      "bytes": 7613,
+      "sha256": "6efe1daf400ca69c82074e3d940d8c73e6005cc01bcf18311792da956850fce9"
+    },
+    {
+      "path": "tools/test-provisioning-contracts.py",
+      "bytes": 2679,
+      "sha256": "b53a314e023000e180cb889968f8896a46592024672f2cc3d580b6c5644da10b"
+    },
+    {
+      "path": "tools/test-rnnt-growth-fix.py",
+      "bytes": 4541,
+      "sha256": "76ed589e0b65e4248155740ef6c537259d185f5e3473fa399bbb0311a74375a4"
+    },
+    {
+      "path": "tools/test-shake-gap.py",
+      "bytes": 6950,
+      "sha256": "0f73f9b2004cb4578eb2e4649e78675f59797cf3de8f0c289af9db48da4b5600"
+    },
+    {
+      "path": "tools/test-startup-admission-boundaries.py",
+      "bytes": 12665,
+      "sha256": "88142d8cefe7391a9733d849f7a29ad2a6c7e0d56dbda64797028a177dfc1192"
+    },
+    {
+      "path": "tools/test-wake-evidence.py",
+      "bytes": 3147,
+      "sha256": "4a6d05f063bae6ff5d37d86eda45a6cf81f754bfc39aedc024c3f97011adb398"
+    },
+    {
+      "path": "tools/test-wake-response.py",
+      "bytes": 7689,
+      "sha256": "df6774b4e0ca817155a7383052a45fd98e65af1c119d07040b9f4fd8f47b70cd"
+    }
+  ]
+}

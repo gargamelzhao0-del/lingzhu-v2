@@ -1,0 +1,23 @@
+{
+  "version": "7.0.223",
+  "bytes": 4045936,
+  "otaSha256": "0e52039b7e587fb96411370cda46715be221b7fbdef753ddc9e4688d816de8d4",
+  "elfSha256": "b9246c4ba24c1913918021c768fade9c025c29c37bf574b42003f8115127aa96",
+  "partitionUnchanged": true,
+  "effectiveConfigUnchanged": true,
+  "unchangedProtectedFiles": 77,
+  "sleep60SecondsPreserved": true,
+  "wireSerializerUnchanged": true,
+  "physicalAcceptance": false,
+  "sourceSnapshot": "C:\\tmp\\nuwax-dialogue-release-20261106-r223",
+  "buildDirectory": "C:\\tmp\\nuwax-dialogue-build-20261106-r223",
+  "workspaceProductionInputsMatched": 7708,
+  "workspaceSdkconfigPreserved": true,
+  "buildSdkconfig": "tmp/sdkconfig.reliability",
+  "buildSdkconfigSha256": "b218ccecf0a36398e22854cf5f402d750b46f4920ea8645d6c73bbeae4572702",
+  "hostGroupsPassed": 29,
+  "productHostChecksPassed": true,
+  "nativeLvglConfigurationsPassed": 2,
+  "deviceFlashedOrReset": false,
+  "serialCaptureTouched": false
+}

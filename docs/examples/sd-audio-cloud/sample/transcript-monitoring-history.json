@@ -1,0 +1,78 @@
+[
+  {
+    "direction": "device_to_cloud",
+    "json": {
+      "type": "monitoring_audio_history_begin",
+      "request_id": "offline_begin_00000001",
+      "audio_session_id": "monitor_0123456789abcdef",
+      "segment_index": 0,
+      "total_bytes": 32096,
+      "crc32": 3775820668
+    }
+  },
+  {
+    "direction": "cloud_to_device",
+    "json": {
+      "type": "monitoring_audio_history_begin_ack",
+      "request_id": "offline_begin_00000001",
+      "audio_session_id": "monitor_0123456789abcdef",
+      "segment_index": 0,
+      "ok": true,
+      "next_offset": 0
+    }
+  },
+  {
+    "direction": "device_to_cloud",
+    "binary_file": "monitoring-history-chunk-00.bin"
+  },
+  {
+    "direction": "device_to_cloud",
+    "binary_file": "monitoring-history-chunk-01.bin"
+  },
+  {
+    "direction": "device_to_cloud",
+    "binary_file": "monitoring-history-chunk-02.bin"
+  },
+  {
+    "direction": "device_to_cloud",
+    "binary_file": "monitoring-history-chunk-03.bin"
+  },
+  {
+    "direction": "device_to_cloud",
+    "json": {
+      "type": "monitoring_audio_history_commit",
+      "request_id": "offline_commit_00000001",
+      "audio_session_id": "monitor_0123456789abcdef",
+      "segment_index": 0
+    }
+  },
+  {
+    "direction": "cloud_to_device",
+    "json": {
+      "type": "monitoring_audio_history_commit_ack",
+      "request_id": "offline_commit_00000001",
+      "audio_session_id": "monitor_0123456789abcdef",
+      "segment_index": 0,
+      "ok": true
+    }
+  },
+  {
+    "direction": "device_to_cloud",
+    "json": {
+      "type": "monitoring_audio_session_end",
+      "request_id": "sd_end_00000001",
+      "audio_session_id": "monitor_0123456789abcdef",
+      "segment_count": 1,
+      "recording_complete": true
+    }
+  },
+  {
+    "direction": "cloud_to_device",
+    "json": {
+      "type": "monitoring_audio_session_end_ack",
+      "request_id": "sd_end_00000001",
+      "audio_session_id": "monitor_0123456789abcdef",
+      "ok": true
+    }
+  }
+]

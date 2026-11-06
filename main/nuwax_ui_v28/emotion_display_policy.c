@@ -122,6 +122,27 @@ bool nuwax_emotion_display_policy_apply_cloud_leased(
     return true;
 }
 
+bool nuwax_emotion_display_policy_refresh_matching_lease(
+    nuwax_emotion_display_policy_t *policy,
+    nuwax_emotion_t emotion,
+    uint32_t duration_ms,
+    uint32_t now_ms,
+    uint32_t *out_generation)
+{
+    if (out_generation) *out_generation = 0U;
+    if (!policy || emotion >= NUWAX_EMOTION_COUNT || duration_ms == 0U ||
+        !policy->semantic_valid || !policy->semantic_finite_lease ||
+        policy->semantic_emotion != emotion) {
+        return false;
+    }
+    /* A matching sleep lease is a heartbeat, not a new visual transition.
+     * Preserve the generation so the animation player stays on its current
+     * timeline while the device extends the cloud activity window. */
+    set_semantic_deadline(policy, now_ms, duration_ms);
+    if (out_generation) *out_generation = policy->semantic_generation;
+    return true;
+}
+
 bool nuwax_emotion_display_policy_start_waiting_question(
     nuwax_emotion_display_policy_t *policy)
 {
@@ -262,8 +283,12 @@ bool nuwax_emotion_display_policy_enter_lifecycle(
     const bool clears_playback = dialog != NUWAX_DIALOG_SPEAKING;
     const bool clears_waiting = dialog != NUWAX_DIALOG_THINKING;
     const bool clears_pending_sleep = dialog != NUWAX_DIALOG_THINKING;
+    const bool local_touch_remaining = policy->touch_active &&
+        policy->interaction_emotion == NUWAX_EMOTION_TOUCH &&
+        !policy->interaction_pinned && policy->touch_deadline_active &&
+        !deadline_elapsed(true, now_ms, policy->touch_deadline_ms);
     const bool clears_touch =
-        dialog == NUWAX_DIALOG_LISTENING ||
+        (dialog == NUWAX_DIALOG_LISTENING && !local_touch_remaining) ||
         dialog == NUWAX_DIALOG_SLEEP ||
         dialog == NUWAX_DIALOG_ERROR ||
         dialog == NUWAX_DIALOG_RECOGNIZING;

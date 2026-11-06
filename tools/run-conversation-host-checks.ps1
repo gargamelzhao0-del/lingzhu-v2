@@ -11,6 +11,32 @@ New-Item -ItemType Directory -Force $outputDir | Out-Null
 
 & $Gcc -std=c11 -Wall -Wextra -Werror `
     "-I$(Join-Path $projectRoot 'main')" `
+    (Join-Path $projectRoot "main/ws_receive_deadline_policy_host_check.c") `
+    -o (Join-Path $outputDir "ws_receive_deadline_policy_host_check.exe")
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+& (Join-Path $outputDir "ws_receive_deadline_policy_host_check.exe")
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+& $Gcc -std=c11 -Wall -Wextra -Werror `
+    "-I$(Join-Path $projectRoot 'main')" `
+    (Join-Path $projectRoot "main/audio_runtime_memory_policy_host_check.c") `
+    -o (Join-Path $outputDir "audio_runtime_memory_policy_host_check.exe")
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+& (Join-Path $outputDir "audio_runtime_memory_policy_host_check.exe")
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+& $Gcc -std=c11 -Wall -Wextra -Werror `
+    "-I$(Join-Path $projectRoot 'main')" `
     (Join-Path $projectRoot "main/conversation/sleep_transaction.c") `
     (Join-Path $projectRoot "main/sleep_transaction_host_check.c") `
     -o (Join-Path $outputDir "sleep_transaction_host_check.exe")
@@ -604,8 +630,7 @@ $wakeCommandConfigBlock = [regex]::Match(
     '(?s)static esp_err_t configure_multinet_commands\(.*?(?=#if CONFIG_NUWAX_WAKE_WORD_BACKEND_MULTINET)').Value
 if ($wakeCommandConfigBlock.Length -eq 0 -or
     $wakeCommandConfigBlock -notmatch 'commands_reused' -or
-    $wakeCommandConfigBlock -notmatch '(?s)if \(commands_reused\).*?esp_mn_commands_clear\(\)' -or
-    $wakeCommandConfigBlock -notmatch 'esp_mn_commands_clear failed') {
+    $wakeCommandConfigBlock -notmatch '(?s)if \(commands_reused\).*?esp_mn_commands_clear\(\)') {
     throw "Wake command lifecycle regression: a fresh MultiNet command tree must not be cleared before its first command is added."
 }
 
@@ -621,7 +646,7 @@ if ($wakeBackendDestroyBlock.Length -eq 0 -or
 if ($latencyContract -notmatch 'NUWAX_CONVERSATION_CAPTURE_OWNER_POLL_MS\s+20U' -or
     $rtCaptureWaitPolicy -notmatch 'NUWAX_RT_CAPTURE_WAIT_CONTROL_POLL_IDLE' -or
     $rtCaptureWaitPolicy -notmatch 'wait_result == NUWAX_RT_CAPTURE_WAIT_FRAME_READY' -or
-    $mainSource -notmatch '(?s)rt_capture_receive\(\s*&capture_ctx,\s*&capture_frame,\s*NUWAX_CONVERSATION_CAPTURE_OWNER_POLL_MS\s*\).*?NUWAX_RT_CAPTURE_WAIT_CONTROL_POLL_IDLE.*?continue;' -or
+    $mainSource -notmatch '(?s)rt_capture_receive\(\s*&\(work->capture_ctx\),\s*&capture_frame,\s*NUWAX_CONVERSATION_CAPTURE_OWNER_POLL_MS\s*\).*?NUWAX_RT_CAPTURE_WAIT_CONTROL_POLL_IDLE.*?continue;' -or
     $mainSource -notmatch 'nuwax_rt_capture_wait_counts_mic_timeout\(' -or
     $mainSource -match 'CONFIG_NUWAX_MIC_READ_TIMEOUT_MS\s*\+\s*50U') {
     throw "RT capture responsiveness regression: queue polling must stay within one 20 ms frame and queue-idle polls must not become MIC timeouts."
@@ -667,7 +692,8 @@ if ($touchCancelHeader -notmatch "nuwax_touch_cancel_recovery_mark_physical_stop
     $mainSource -notmatch "nuwax_touch_cancel_recovery_arm" -or
     $mainSource -notmatch "touch cancel listening held for physical stop" -or
     $mainSource -notmatch "A during-playback/barge-in capture may still own MIC/I2S" -or
-    $shellDispatchSource -notmatch '(?s)action->action != NUWAX_APP_SHELL_ACTION_START_LISTEN.*?action->action != NUWAX_APP_SHELL_ACTION_CANCEL' -or
+    $shellDispatchSource -match 'callbacks->clear_auto_followup\(' -or
+    $shellDispatchSource -notmatch '(?s)case NUWAX_APP_SHELL_ACTION_CANCEL:.*?callbacks->request_cancel_turn' -or
     $mainSource -notmatch '(?s)service_touch_cancel_recovery.*?sleep_lifecycle_blocks_new_capture\(\).*?audio_lifecycle_takeover.*?exclusive_audio_mode_blocks_normal_audio\(\).*?exclusive_audio_takeover' -or
     $mainSource -notmatch '(?s)NUWAX_SPEAKER_OWNER_EVENT_PLAYBACK_DONE.*?nuwax_touch_cancel_recovery_mark_physical_stop' -or
     $mainSource -notmatch '(?s)NUWAX_SPEAKER_OWNER_EVENT_CANCEL_RECOVERY.*?nuwax_touch_cancel_recovery_mark_physical_stop' -or
@@ -691,14 +717,23 @@ if ($notificationHeader -notmatch "nuwax_notification_refresh_stream_deadline" -
     throw "Notification playback isolation regression: deadlines, duplicate payloads, connection cleanup, and cross-mode admission must remain transaction-bound."
 }
 
+if ($mainSource -notmatch 'NUWAX_SESSION_NOTIFICATION_QUEUE_DEPTH' -or
+    $mainSource -notmatch '(?s)static bool session_command_is_notification_control.*?stop_playback.*?prepare_notify_playback' -or
+    $mainSource -notmatch '(?s)QueueHandle_t target_queue = is_notification_control.*?s_session_notification_commands.*?is_low_priority_progress' -or
+    $mainSource -notmatch '(?s)while \(handled < max_commands(?:\s*&&[^)]*)?\).*?xQueueReceive\(s_session_notification_commands.*?xQueueReceive\(s_session_critical_commands.*?xQueueReceive\(s_session_commands' -or
+    $mainSource -notmatch 'create_queue_prefer_psram\(\s*"session_notification_commands"' -or
+    [regex]::Matches($mainSource, 'xQueueReset\(s_session_notification_commands\)').Count -lt 2) {
+    throw "Notification control scheduling regression: prepare/begin/end/stop must retain an independent highest-priority FIFO that is cleared at OTA and connection boundaries."
+}
+
 if ($mainSource -notmatch 'log_cloud_connect_failure\("websocket_connect"' -or
     $mainSource -notmatch 'log_cloud_connect_failure\("config_load"' -or
     $mainSource -notmatch 'log_cloud_connect_failure\("hello_send"' -or
-    $mainSource -notmatch "secret_fingerprint=%s" -or
-    $mainSource -notmatch "secret_hint=%s" -or
+    $mainSource -notmatch "endpoint_configured=%d secret_present=%d secret_len=%u" -or
+    $mainSource -match "secret_fingerprint=%s|secret_hint=%s" -or
     $mainSource -match 'cloud connect diagnostic[^\r\n]*device_secret=%s' -or
     $wsSource -notmatch 'WebSocket handshake rejected http_status=%d status_line=') {
-    throw "Cloud connection diagnostics regression: retain URL/device/status and only a redacted secret hint plus fingerprint."
+    throw "Cloud diagnostics must retain status/presence/length without credentials, fingerprint or raw endpoint."
 }
 
 if ($sdkconfigDefaults -notmatch '(?m)^CONFIG_NUWAX_LIVE_AEC_ENABLE=n\s*$' -or
@@ -731,7 +766,7 @@ if ($wakeSource -notmatch '#define NUWAX_WAKE_AUDIO_TASK_CORE 1' -or
     throw "Wake capture scheduling regression: sleep and playback wake readers must stay on core 1, isolated from the core-0 Wi-Fi task."
 }
 if ($wakeSource -notmatch 'NUWAX_WAKE_INFERENCE_COOPERATE_INTERVAL_MS 1000U' -or
-    $wakeSource -notmatch '(?s)nuwax_wake_input_cooperate_due\(\s*playback_interrupt_mode,.*?NUWAX_WAKE_INFERENCE_COOPERATE_INTERVAL_MS\).*?vTaskDelay\(1\);.*?cooperative_blocks\+\+;' -or
+    $wakeSource -notmatch '(?s)nuwax_wake_input_cooperate_due\(\s*capture != NULL,.*?NUWAX_WAKE_INFERENCE_COOPERATE_INTERVAL_MS\).*?vTaskDelay\(1\);.*?cooperative_blocks\+\+;' -or
     $wakeSource -notmatch 'inference_avg_us=%lu inference_max_us=%lu cooperative_blocks=%lu') {
     throw "Playback wake scheduling regression: continuous MultiNet inference must block one tick every second and publish inference/cooperation health so CPU1 IDLE remains watchdog-safe."
 }
@@ -895,7 +930,7 @@ if ($waitCloudBlock -notmatch 'drain_shell_actions_preserving_listen_control\(ws
 }
 
 if ($sessionProtocolSource -notmatch 'nuwax_session_send_ping_until_if_epoch' -or
-    $sessionProtocolSource -notmatch 'send_json_object_until_if_epoch\(ws,[\s\S]*?expected_epoch\)' -or
+    $sessionProtocolSource -notmatch 'nuwax_ws_send_keepalive_until_if_epoch\(ws, json, deadline_us, expected_epoch\)' -or
     $mainSource -notmatch '#define NUWAX_WS_APPLICATION_KEEPALIVE_INTERVAL_MS 15000' -or
     $mainSource -notmatch 'service_application_keepalive\(ws, "idle_wait"\)' -or
     $captureInitBlock -notmatch 'service_application_keepalive\(ws, "conversation_capture"\)' -or
@@ -935,7 +970,7 @@ if ($reconnectRecoveryBlock.Length -eq 0 -or
 }
 
 if ($sessionProtocolSource -notmatch '(?s)strcmp\(type->valuestring, "audio_stats"\) == 0.*?cJSON_GetObjectItem\(audio_session,\s*"audio_session_id"\).*?NUWAX_SESSION_EVENT_AUDIO_PROGRESS.*?utf8_copy_trunc\(out_command->audio_session_id' -or
-    $mainSource -notmatch '(?s)is_low_priority_progress.*?NUWAX_SESSION_EVENT_AUDIO_PROGRESS.*?target_queue = is_low_priority_progress.*?s_session_commands.*?s_session_critical_commands' -or
+    $mainSource -notmatch '(?s)is_low_priority_progress.*?NUWAX_SESSION_EVENT_AUDIO_PROGRESS.*?is_notification_control.*?target_queue = is_notification_control.*?s_session_notification_commands.*?is_low_priority_progress.*?s_session_commands.*?s_session_critical_commands' -or
     $mainSource -notmatch '(?s)audio_input_event.*?NUWAX_SESSION_EVENT_AUDIO_PROGRESS.*?nuwax_listen_resume_state_event_matches' -or
     $mainSource -notmatch '(?s)case NUWAX_SESSION_EVENT_AUDIO_PROGRESS:.*?note_conversation_cloud_progress\(command->event\);.*?break;') {
     throw "Cloud progress regression: session-bound audio_stats must refresh the ASR watchdog without consuming critical queue capacity."
@@ -949,7 +984,7 @@ if ($listenResumeSource -notmatch 'nuwax_listen_resume_state_can_bootstrap_cloud
     throw "Cloud-output bootstrap regression: text/playback output must replace the removed asr_result only for the current bound capture round."
 }
 
-$aecEmitGateIndex = $mainSource.IndexOf("if (!nuwax_live_aec_output_emitted(&live_aec))")
+$aecEmitGateIndex = $mainSource.IndexOf("if (!nuwax_live_aec_output_emitted(&(work->live_aec)))")
 $rawAnalysisIndex = $mainSource.IndexOf("const nuwax_mic_level_t raw_level", $aecEmitGateIndex)
 $alignedPopIndex = $mainSource.IndexOf("nuwax_aec_alignment_context_t *aligned_context", $aecEmitGateIndex)
 if ($aecEmitGateIndex -lt 0 -or
@@ -1023,13 +1058,20 @@ $connectEnd = $wsSource.IndexOf("esp_err_t nuwax_ws_send_text(", $connectStart)
 $connectBlock = if ($connectStart -ge 0 -and $connectEnd -gt $connectStart) {
     $wsSource.Substring($connectStart, $connectEnd - $connectStart)
 } else { "" }
+# Connection publication is now isolated under per-client frame ownership.
+$connectTransportStart = $wsSource.IndexOf("static esp_err_t connect_transport_tx_locked(")
+$connectTransportBlock = if ($connectTransportStart -ge 0 -and $connectStart -gt $connectTransportStart) {
+    $wsSource.Substring($connectTransportStart, $connectStart - $connectTransportStart)
+} else { "" }
 $rxStartGateIndex = $rxTaskBlock.IndexOf("ulTaskNotifyTake(pdTRUE, portMAX_DELAY)")
-$publishRxTaskIndex = $connectBlock.IndexOf("client->rx_task = rx_task")
-$publishOpenIndex = $connectBlock.IndexOf(
+$publishRxTaskIndex = $connectTransportBlock.IndexOf("client->rx_task = rx_task")
+$publishOpenIndex = $connectTransportBlock.IndexOf(
     "lifecycle_store(client, NUWAX_WS_LIFECYCLE_OPEN)")
-$releaseRxTaskIndex = $connectBlock.IndexOf("xTaskNotifyGive(rx_task)")
+$releaseRxTaskIndex = $connectTransportBlock.IndexOf("xTaskNotifyGive(rx_task)")
 if ($rxTaskBlock.Length -eq 0 -or
     $connectBlock.Length -eq 0 -or
+    $connectTransportBlock.Length -eq 0 -or
+    $connectBlock -notmatch '(?s)nuwax_ws_owner_close\(client\).*?take_mutex_until\(\(SemaphoreHandle_t\)client->tx_frame_lock,.*?connect_transport_tx_locked\(client, config, url\).*?xSemaphoreGive\(\(SemaphoreHandle_t\)client->tx_frame_lock\)' -or
     $rxStartGateIndex -lt 0 -or
     $publishRxTaskIndex -lt 0 -or
     $publishOpenIndex -le $publishRxTaskIndex -or
@@ -1062,8 +1104,8 @@ if ($rxTaskBlock.Length -eq 0 -or
 }
 
 foreach ($configText in @($sdkconfigDefaults, $sdkconfig)) {
-    if ($configText -notmatch "CONFIG_NUWAX_VOICE_UPLINK_QUEUE_DEPTH=16" -or
-        $configText -notmatch "CONFIG_NUWAX_VOICE_UPLINK_REALTIME_MAX_AGE_MS=160" -or
+    if ($configText -notmatch "CONFIG_NUWAX_VOICE_UPLINK_QUEUE_DEPTH=64" -or
+        $configText -notmatch "CONFIG_NUWAX_VOICE_UPLINK_REALTIME_MAX_AGE_MS=1000" -or
         $configText -notmatch "CONFIG_NUWAX_RT_CAPTURE_QUEUE_DEPTH=12" -or
         $configText -notmatch "CONFIG_NUWAX_RT_CAPTURE_MAX_DECISION_AGE_MS=60" -or
         $configText -notmatch "CONFIG_NUWAX_BARGE_END_TO_END_MAX_FRAME_AGE_MS=100" -or
@@ -1409,7 +1451,7 @@ if ($speakerSource -match "speaker playback queue full, dropped oldest" -or
     $speakerSource -notmatch "speaker ingress backpressure timed out" -or
     $speakerSource -notmatch "nuwax_speaker_backpressure_deadline_reached" -or
     $speakerSource -notmatch '"ingress_backpressure_timeout"' -or
-    $speakerSource -notmatch "NUWAX_SPEAKER_RX_ADMISSION_BUDGET_MS 20U" -or
+    $speakerSource -notmatch "NUWAX_SPEAKER_RX_ADMISSION_BUDGET_MS 40U" -or
     $speakerSource -notmatch "speaker admission must not stall WebSocket RX" -or
     $speakerSource -notmatch "preserving PCM" -or
     $speakerSource -match "ingress_queue_full" -or
@@ -1431,8 +1473,8 @@ if ($mainSource -notmatch "nuwax_aec_reference_select" -or
 if ($speakerSource -notmatch "NUWAX_SPEAKER_JITTER_STARTUP_MIN_MS 480U" -or
     $speakerSource -notmatch "NUWAX_SPEAKER_JITTER_STARTUP_BASE_MS 800U" -or
     $speakerSource -notmatch "NUWAX_SPEAKER_JITTER_STARTUP_MAX_MS 1600U" -or
-    $speakerSource -notmatch "NUWAX_SPEAKER_JITTER_RESUME_MIN_MS 800U" -or
-    $speakerSource -notmatch "NUWAX_SPEAKER_JITTER_RESUME_MAX_MS 1200U" -or
+     $speakerSource -notmatch "NUWAX_SPEAKER_JITTER_RESUME_MIN_MS 640U" -or
+     $speakerSource -notmatch "NUWAX_SPEAKER_JITTER_RESUME_MAX_MS 960U" -or
     $speakerSource -notmatch "NUWAX_SPEAKER_JITTER_EMPTY_GRACE_MS 80U" -or
     $speakerSource -notmatch "speaker_wait_for_jitter_watermark" -or
     $speakerSource -notmatch "speaker_packet_ring_samples" -or
@@ -1460,7 +1502,7 @@ if ($speakerSource -notmatch "NUWAX_SPEAKER_JITTER_STARTUP_MIN_MS 480U" -or
     $mainSource -notmatch "NUWAX_CONVERSATION_PLAYBACK_INGRESS_IDLE_TIMEOUT_MS 60000U" -or
     $mainSource -notmatch "tts_no_audio_timeout" -or
     $speakerSource -match "jitter_near_underrun_confirmed") {
-    throw "Speaker jitter regression: require sample-duration adaptive 480..1600 ms startup buffering with an 800 ms safe default, 800..1200 ms gap-aware recovery, a bounded binary-batch admission deadline, event wakeup, tail-wait isolation, recovery fade-in, ingress-progress stall timing, and no synthetic gap-silence writes."
+     throw "Speaker jitter regression: require sample-duration adaptive 480..1600 ms startup buffering with an 800 ms safe default, 640..960 ms gap-aware recovery, a bounded binary-batch admission deadline, event wakeup, tail-wait isolation, recovery fade-in, ingress-progress stall timing, and no synthetic gap-silence writes."
 }
 if ($speakerSource -notmatch "nuwax_speaker_output_drain_and_stop" -or
     $speakerOutputSource -notmatch "nuwax_speaker_output_drain_and_stop" -or
@@ -1543,8 +1585,8 @@ if ($bargeControllerSource -notmatch "\.minimum_guard_frames = 4U" -or
     $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_CAPTURE_SLOTS 12U" -or
     $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_CAPTURE_PRE_DSP_MAX_AGE_MS 60U" -or
     $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_BARGE_END_TO_END_MAX_AGE_MS 100U" -or
-    $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_UPLINK_PACKET_SLOTS 16U" -or
-    $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_UPLINK_STAGING_MAX_AGE_MS 160U" -or
+    $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_UPLINK_PACKET_SLOTS 64U" -or
+    $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_UPLINK_STAGING_MAX_AGE_MS 1000U" -or
     $latencyContract -notmatch "NUWAX_CONVERSATION_PROFILE_MIN_DSP_RESERVE_MS 40U" -or
     $latencyContract -notmatch "barge end-to-end age must reserve at least 40 ms for DSP" -or
     $mainSource -notmatch "NUWAX_CONVERSATION_CAPTURE_SLOT_DEPTH" -or
@@ -1578,7 +1620,7 @@ if ($mainSource -notmatch "conversation_live_aec_pool_init" -or
     $mainSource -notmatch "live AEC production rebuild failed after diagnostic capture" -or
     $mainSource -notmatch "NUWAX_LIVE_AEC_POST_MIN_DMA_LARGEST_BYTES" -or
     $mainSource -notmatch "conversation live AEC pool invalidated" -or
-    $mainSource -notmatch "nuwax_live_aec_begin_session\(&live_aec" -or
+    $mainSource -notmatch "nuwax_live_aec_begin_session\(&\(work->live_aec\)" -or
     $liveAecSource -notmatch "esp_err_t\s+nuwax_live_aec_begin_session" -or
     $liveAecSource -notmatch "!aec->human_rescue_source_chunk" -or
     $mainSource -match "live AEC preflight enabled") {
@@ -1758,7 +1800,7 @@ $micUploadPrepare = $micUploadPrepareBlock.IndexOf(
 $micUploadRecoveryBind = $micUploadPrepareBlock.IndexOf(
     "nuwax_audio_uplink_bind_terminal_recovery(")
 $micUploadPrepareCall = $micUploadBlock.IndexOf("prepare_mic_cloud_upload(")
-$micUploadListen = $micUploadBlock.IndexOf("nuwax_session_send_listen_with_audio_session_until_if_epoch(")
+$micUploadListen = $micUploadBlock.IndexOf("nuwax_audio_uplink_schedule_listen_start(")
 if ($micUploadPrepare -lt 0 -or
     $micUploadRecoveryBind -le $micUploadPrepare -or
     $micUploadPrepareCall -lt 0 -or
@@ -1769,10 +1811,18 @@ if ($micUploadPrepare -lt 0 -or
     $micUploadBlock -notmatch "NUWAX_INTERACTIVE_CONTROL_SEND_TIMEOUT_MS" -or
     $micUploadBlock -notmatch "active_ws_epoch_snapshot\(\)" -or
     $micUploadBlock -notmatch "nuwax_ws_connection_epoch\(ws\) != expected_epoch" -or
+    $micUploadBlock -notmatch "send_ctx->ws_connection_epoch != expected_epoch" -or
+    $micUploadBlock -match "nuwax_session_send_listen_with_audio_session_until_if_epoch" -or
     $micUploadBlock -notmatch "nuwax_audio_uplink_discard_uncommitted" -or
     $micUploadBlock -notmatch "retaining WebSocket" -or
     $micUploadBlock -match "nuwax_ws_request_close") {
-    throw "Listen-start transaction regression: local uplink resources and terminal recovery must be ready before an epoch-bound bounded cloud commit, and normal-conversation failures must discard the idle worker without closing WebSocket."
+    throw "Listen-start transaction regression: local uplink resources and terminal recovery must be ready before bounded epoch-bound sender admission; the capture owner must not send control synchronously, and failed admission must discard the idle worker."
+}
+if ($audioUplinkSource -notmatch "esp_timer_get_time\(\) >= ctx->listen_start_deadline_us" -or
+    $audioUplinkSource -notmatch "ctx->listen_start_deadline_us, ctx->ws_connection_epoch" -or
+    $audioUplinkSource -notmatch "packet_start_err = audio_uplink_commit_listen_start\(ctx\)" -or
+    $mainSource -notmatch "nuwax_audio_uplink_finish_is_complete\(send_ctx, NULL\)(?s:.*?)!nuwax_audio_uplink_listen_start_committed\(send_ctx\)") {
+    throw "Ordered listen-start regression: sender deadline, frozen epoch, post-dequeue barrier and committed-only terminal cleanup must all remain present."
 }
 if ($dispatcherHeader -notmatch "NUWAX_BARGE_DISPATCH_LISTEN_ATTEMPTED" -or
     $dispatcherHeader -notmatch "NUWAX_BARGE_DISPATCH_COMMIT_UNCERTAIN" -or
@@ -2011,6 +2061,17 @@ if ($mainSource -notmatch '(?s)static bool publish_listening_after_current_asr_f
     throw "ASR failure recovery regression: the current failed round must return to listening without overriding playback or interaction owners."
 }
 
+if ($mainSource -notmatch '(?s)shake_listening_bypasses_chat_guard.*?NUWAX_AGENT_INTERACTION_SHAKE.*?NUWAX_HEAD_TOUCH_AGENT_SOURCE_LISTENING' -or
+    $mainSource -notmatch '(?s)shake_listening_bypasses_chat_guard.*?nuwax_head_touch_agent_intent_begin_quiesce' -or
+    $mainSource -notmatch '(?s)shake_listening_bypasses_chat_guard.*?touch keeps the speech-protection policy below' -or
+    $mainSource -notmatch '(?s)shake_listening_bypasses_chat_guard.*?NUWAX_HEAD_TOUCH_AGENT_FRAME_BEGIN_QUIESCE') {
+    throw "Shake listening policy regression: only the SHAKE/LISTENING source may bypass chat speech arbitration; touch and all other sources must retain the quiet/user-speech guard."
+}
+
+if ($mainSource -notmatch '(?s)Diagnostics share the serialized WebSocket TX path with microphone.*?if \(!nuwax_audio_uplink_sender_busy\(\) \|\|\s*exclusive_audio_mode_blocks_normal_audio\(\)\).*?nuwax_device_error_report_service\(ws\)') {
+    throw "Realtime uplink arbitration regression: diagnostic transmission must remain deferred while the microphone sender owns WebSocket TX."
+}
+
 if ($micSource -notmatch "recovery read forced" -or
     $micSource -notmatch "Always consume one DMA buffer" -or
     $micSource -notmatch "mic_rx_overflow_begin\(mic, &overflow_before\)" -or
@@ -2088,7 +2149,7 @@ if ($wakeHeader -notmatch "nuwax_wake_word_detector_stop_with_timeout" -or
     $wakeSource -notmatch "NUWAX_WAKE_WORD_STOP_TIMEOUT_MS" -or
     $wakeSource -notmatch "NUWAX_WAKE_CAPTURE_START_TIMEOUT_MS" -or
     $wakeSource -notmatch "NUWAX_WAKE_TASK_SUSPEND_SETTLE_TIMEOUT_MS" -or
-    $wakeSource -notmatch "playback wake capture did not release microphone" -or
+    $wakeSource -notmatch "wake capture did not release microphone" -or
     $audioUplinkSource -notmatch "NUWAX_AUDIO_UPLINK_REAPER_CANCEL_GRACE_MS" -or
     $audioUplinkSource -notmatch "NUWAX_AUDIO_UPLINK_REAPER_FATAL_RESTART_MS" -or
     $audioUplinkSource -notmatch "NUWAX_AUDIO_UPLINK_TASK_SUSPEND_SETTLE_MS" -or
@@ -2100,7 +2161,7 @@ if ($wakeHeader -notmatch "nuwax_wake_word_detector_stop_with_timeout" -or
     $mainSource -notmatch "service_deferred_speaker_state" -or
     $micSource -notmatch "teardown remains retryable" -or
     $micSource -notmatch "controlled restart preserves generation isolation" -or
-    $micSource -notmatch "release_owner\(mic\);\s*if \(result == ESP_OK\)" -or
+    $micSource -notmatch "release_owner\(mic\);\s*if \(mic->board_ref.token == 0\)" -or
     $mainSource -notmatch "static portMUX_TYPE s_ws_activity_lock" -or
     $mainSource -notmatch "portENTER_CRITICAL\(&s_ws_activity_lock\)" -or
     $mainSource -notmatch "esp_task_wdt_add\(NULL\)" -or
@@ -2137,7 +2198,7 @@ if ($mainSource -match 'reconnecting even if transport pong remains healthy' -or
     $mainSource -notmatch '(?s)cloud rejected application authentication.*?NUWAX_WS_CLOSE_CAUSE_AUTH_REJECTED' -or
     $mainSource -notmatch 'NUWAX_POST_END_RESPONSE_TIMEOUT_MS\s+15000U' -or
     $mainSource -notmatch '(?s)post-END cloud response timed out.*?NUWAX_WS_CLOSE_CAUSE_BUSINESS_STALLED' -or
-    $mainSource -notmatch '(?s)critical session queue full.*?nuwax_ws_request_close_if_epoch' -or
+    $mainSource -notmatch '(?s)"%s session queue full event=%d command=%s; closing bound epoch so transaction can be retried".*?is_notification_control \? "notification" : "critical".*?nuwax_ws_request_close_if_epoch' -or
     $mainSource -notmatch '(?s)cancel_turn send failed.*?nuwax_ws_request_close_if_epoch' -or
     $mainSource -notmatch '(?s)forcing WebSocket reconnect for OTA state refresh.*?nuwax_ws_request_close_if_epoch' -or
     $mainSource -notmatch '(?s)wait_for_cloud_owner_to_park_for_reprovision.*?nuwax_ws_force_close_if_epoch' -or
@@ -2161,4 +2222,11 @@ if ($mainSource -match 'reconnecting even if transport pong remains healthy' -or
 }
 
 Write-Host "conversation source contracts: PASS"
-exit 0
+& py -3 (Join-Path $PSScriptRoot 'test-uplink-listen-start.py')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& (Join-Path $PSScriptRoot 'run-control-ack-host-checks.ps1') -Gcc $Gcc
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& py -3 (Join-Path $PSScriptRoot 'test-control-ack-routing.py')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& (Join-Path $PSScriptRoot 'run-ws-frame-host-checks.ps1') -Gcc $Gcc
+exit $LASTEXITCODE

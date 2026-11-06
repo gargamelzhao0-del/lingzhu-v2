@@ -11,6 +11,7 @@
 #include "meeting_mode.h"
 #include "mic_input.h"
 #include "session_protocol.h"
+#include "audio_uplink_producer_host.h"
 
 struct nuwax_host_queue {
     uint8_t *storage;
@@ -21,6 +22,7 @@ struct nuwax_host_queue {
 };
 
 static int64_t s_now_us;
+static int64_t s_mic_start_delay_us;
 static uint32_t s_random_value = 0x40506070U;
 static uint32_t s_order;
 static uint32_t s_uplink_start_order;
@@ -35,6 +37,8 @@ static size_t s_uplink_discard_count;
 static size_t s_close_request_count;
 static size_t s_enqueue_count;
 static uint8_t s_last_enqueue_flags;
+static bool s_test_resume;
+static uint32_t s_last_enqueue_sequence;
 static bool s_fail_listen_start;
 static bool s_fail_finish;
 static bool s_fail_mic_deinit;
@@ -81,6 +85,13 @@ BaseType_t xQueueOverwrite(QueueHandle_t queue, const void *item) {
     memcpy(queue->storage, item, queue->item_size);
     queue->head = 0U;
     queue->count = 1U;
+    return pdTRUE;
+}
+
+BaseType_t xQueuePeek(QueueHandle_t queue, void *item, TickType_t wait_ticks) {
+    (void)wait_ticks;
+    if (!queue || !item || queue->count == 0U) return pdFALSE;
+    memcpy(item, queue->storage + (size_t)queue->head * queue->item_size, queue->item_size);
     return pdTRUE;
 }
 
@@ -166,6 +177,7 @@ esp_err_t nuwax_session_send_listen_with_audio_session_until_if_epoch(
     assert(deadline_us > s_now_us);
     assert(strcmp(mode, "meeting") == 0);
     assert(audio_session_id && audio_session_id[0] != '\0');
+    if (s_test_resume) assert(strcmp(audio_session_id, "meeting_original") == 0);
     if (strcmp(state, "start") == 0) {
         assert(request_id && strcmp(request_id, "meeting_capture_open") == 0);
         s_listen_start_attempts++;
@@ -204,9 +216,16 @@ esp_err_t nuwax_session_send_listen_stop_retry_if_epoch(
 esp_err_t nuwax_mic_input_init_with_owner(nuwax_mic_input_t *mic,
                                           nuwax_mic_owner_t owner) {
     assert(mic != NULL && owner == NUWAX_MIC_OWNER_MEETING_CAPTURE);
+    assert(s_listen_start_order != 0U);
     mic->initialized = true;
     mic->owner = owner;
     return ESP_OK;
+}
+
+static esp_err_t acquire_mic_for_resume(void *ctx, nuwax_mic_input_t *mic, nuwax_mic_owner_t owner) {
+    (void)ctx;
+    s_now_us += s_mic_start_delay_us;
+    return nuwax_mic_input_init_with_owner(mic, owner);
 }
 
 esp_err_t nuwax_mic_input_read_pcm16(nuwax_mic_input_t *mic,
@@ -323,9 +342,14 @@ esp_err_t nuwax_audio_uplink_enqueue_frame(nuwax_audio_uplink_t *ctx,
     (void)encoder;
     assert(ctx && ctx->ws == s_ws && samples && sample_count > 0U);
     assert(sequence == s_enqueue_count);
+    assert(s_mode->identity.next_capture_sequence ==
+           (s_test_resume ? 2391U : 0U) + s_mode->capture_frames);
     assert(final_frame == ((flags & NUWAX_AUDIO_FLAG_END) != 0U));
+    assert(host_production_enqueue_frame(ctx, encoder, samples, sample_count,
+                                        sequence, flags, final_frame) == ESP_OK);
     s_enqueue_count++;
     s_last_enqueue_flags = flags;
+    s_last_enqueue_sequence = sequence;
     return ESP_OK;
 }
 
@@ -408,19 +432,27 @@ static esp_err_t run_capture(bool fail_start,
     };
     s_mode = &mode;
     s_ws = &ws;
-    assert(nuwax_meeting_mode_init(&mode, NULL) == ESP_OK);
+    const nuwax_meeting_mode_callbacks_t callbacks = {.acquire_mic = acquire_mic_for_resume};
+    assert(nuwax_meeting_mode_init(&mode, &callbacks) == ESP_OK);
+    if (s_test_resume) {
+        strcpy(mode.identity.session_id, "meeting_original");
+        mode.identity.resuming = true;
+        mode.identity.next_capture_sequence = 2391U;
+    }
     static const char enable_command[] =
         "{\"type\":\"device_command\",\"command\":\"set_audio_mode\"," 
         "\"request_id\":\"meeting_capture_open\",\"mode\":\"meeting\"," 
-        "\"state\":\"enabled\"}";
+        "\"state\":\"enabled\",\"audio_session_id\":\"cloud_new_session\"}";
     assert(nuwax_meeting_mode_handle_protocol_text(
         &mode, &ws, enable_command, (int)strlen(enable_command)));
     const esp_err_t result = nuwax_meeting_mode_run(&mode, &ws);
+    if (s_test_resume && result == ESP_OK) assert(mode.identity.session_id[0] == '\0');
     nuwax_meeting_mode_deinit(&mode);
     return result;
 }
 
 int main(void) {
+    host_check_reject_nonzero_stream_start();
     assert(run_capture(false, false, false, false, 0U) == ESP_OK);
     assert(s_uplink_start_order < s_listen_start_order);
     assert(s_listen_start_order < s_finish_order);
@@ -469,6 +501,54 @@ int main(void) {
     assert(s_enqueue_count == 30U);
     assert(s_close_request_count == 0U);
 
+    s_test_resume = true;
+    assert(run_capture(false, false, false, false, 0U) == ESP_OK);
+    assert(s_last_enqueue_sequence == 0U);
+    assert((s_last_enqueue_flags & (NUWAX_AUDIO_FLAG_START | NUWAX_AUDIO_FLAG_END)) ==
+           (NUWAX_AUDIO_FLAG_START | NUWAX_AUDIO_FLAG_END));
+    /* A resumed stream must keep producing valid batches beyond its first frame. */
+    assert(run_capture(false, false, false, false, 1U) == ESP_OK);
+    assert(s_enqueue_count == 30U && s_last_enqueue_sequence == 29U);
+    assert(s_close_request_count == 0U);
+    /* A MIC initialization returning after the command deadline must not
+     * publish ACTIVE, send PCM, or revive the request after cleanup. */
+    reset_fakes();
+    s_test_resume = false;
+    s_mic_start_delay_us = 23000000LL;
+    nuwax_meeting_mode_t late_mode = {0};
+    nuwax_ws_client_t late_ws = {.connected=true, .connection_epoch=900};
+    const nuwax_meeting_mode_callbacks_t late_callbacks = {.acquire_mic=acquire_mic_for_resume};
+    s_mode = &late_mode; s_ws = &late_ws;
+    assert(nuwax_meeting_mode_init(&late_mode, &late_callbacks) == ESP_OK);
+    const char late_command[] = "{\"type\":\"device_command\",\"command\":\"set_audio_mode\","
+        "\"request_id\":\"meeting_capture_open\",\"mode\":\"meeting\",\"state\":\"enabled\"}";
+    assert(nuwax_meeting_mode_handle_protocol_text(&late_mode, &late_ws, late_command, strlen(late_command)));
+    assert(nuwax_meeting_mode_run(&late_mode, &late_ws) == ESP_ERR_TIMEOUT);
+    assert(s_successful_reads == 0 && s_active_ack_attempts == 0);
+    assert(late_mode.state == NUWAX_MEETING_STATE_DISABLED && !late_mode.capture_running);
+    assert(late_mode.command_deadline.decided && !late_mode.command_deadline.ok);
+    assert(!late_mode.offline_resume_required && !late_mode.identity.resuming);
+    nuwax_meeting_mode_deinit(&late_mode);
+    s_mic_start_delay_us = 0;
+    puts("PASS: late meeting MIC readiness cancels without ACTIVE or PCM");
     puts("meeting_capture_transaction_host_check: PASS");
     return 0;
+}
+
+/* Bounded transport fake: protocol JSON remains the same. */
+esp_err_t nuwax_ws_send_text_until_if_epoch(nuwax_ws_client_t *ws, const char *payload,
+    int64_t deadline_us, uint32_t epoch)
+{
+    if (deadline_us <= 0 || !ws || ws->connection_epoch != epoch) return ESP_ERR_INVALID_STATE;
+    #ifdef nuwax_ws_send_text
+    #undef nuwax_ws_send_text
+    #define SD_RESTORE_SEND_TEXT
+    #endif
+    extern esp_err_t nuwax_ws_send_text(nuwax_ws_client_t *, const char *);
+    esp_err_t result = nuwax_ws_send_text(ws, payload);
+    #ifdef SD_RESTORE_SEND_TEXT
+    #define nuwax_ws_send_text sd_base_send_text
+    #undef SD_RESTORE_SEND_TEXT
+    #endif
+    return result;
 }

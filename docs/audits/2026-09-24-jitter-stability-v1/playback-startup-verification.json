@@ -1,0 +1,17 @@
+{
+  "revision": "20260923-startup-v1",
+  "elfSha256": "b11134269160d3ee89e3560a19ac3ec6ef7bf6f880214b479877a5c31419064f",
+  "binSha256": "2da4017e221d79c41b9ee77ada9acb664a5439797b50f07d9ec1241915c51a50",
+  "bytes": 3827280,
+  "stackFrames": {
+    "nuwax_speaker_playback_task": 336
+  },
+  "hardwareValidated": false,
+  "sourceHashes": {
+    "main/conversation/speaker_playback.c": "f173e2829a55a46cfb8e7273fc46f22dc6198e7de93701278bcfa6f47fcbe1e4",
+    "main/conversation/speaker_playback.h": "d6fe013580c02257fe1647fe8052fd39f465b0fc4ef2052062443350578f403b",
+    "main/conversation/speaker_jitter_policy.h": "e058001769eec44392c6da5ab94dd8b76e61ea7e4e90adf1081d1b970346406a",
+    "main/nuwax_ai_partner_main.c": "4a2c814d76fe15de7720c6cd7a1b970bdc51ce09d037e5d301a3461fb7e1c339",
+    "tools/test-playback-startup.py": "77ae9befbc600524678f8f96ad91e5b5fe83eedb63df688a2b14014b90031870"
+  }
+}

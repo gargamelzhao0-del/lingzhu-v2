@@ -30,27 +30,30 @@ static int expect_bool(const char *name, bool actual, bool expected)
 int main(void)
 {
     int failures = 0;
+    const uint64_t firmware_sequence = NUWAX_OTA_FIRMWARE_RELEASE_SEQUENCE;
     failures += expect_u64("protocol_floor", NUWAX_OTA_BASE_RELEASE_SEQUENCE,
                            7000000ULL);
     failures += expect_u64("firmware_sequence",
-                           NUWAX_OTA_FIRMWARE_RELEASE_SEQUENCE, 7000088ULL);
+                           firmware_sequence, 7000103ULL);
     failures += expect_u64("clean_nvs_floor",
-                           nuwax_ota_release_floor(7000000ULL), 7000088ULL);
+                           nuwax_ota_release_floor(7000000ULL), firmware_sequence);
     failures += expect_u64("old_nvs_floor",
-                           nuwax_ota_release_floor(7000009ULL), 7000088ULL);
+                           nuwax_ota_release_floor(7000009ULL), firmware_sequence);
     failures += expect_u64("newer_nvs_floor",
-                           nuwax_ota_release_floor(7000089ULL), 7000089ULL);
+                           nuwax_ota_release_floor(firmware_sequence + 1ULL),
+                           firmware_sequence + 1ULL);
     failures += expect_bool("clean_nvs_can_update",
-                            nuwax_ota_release_can_start(7000000ULL, 7000088ULL),
+                            nuwax_ota_release_can_start(7000000ULL, firmware_sequence),
                             true);
     failures += expect_bool("old_nvs_can_update",
-                            nuwax_ota_release_can_start(7000009ULL, 7000088ULL),
+                            nuwax_ota_release_can_start(7000009ULL, firmware_sequence),
                             true);
     failures += expect_bool("uncommitted_higher_floor_blocks",
-                            nuwax_ota_release_can_start(7000009ULL, 7000089ULL),
+                            nuwax_ota_release_can_start(7000009ULL,
+                                                         firmware_sequence + 1ULL),
                             false);
     failures += expect_bool("matching_pending",
-                            nuwax_ota_release_pending_matches_firmware(7000088ULL),
+                            nuwax_ota_release_pending_matches_firmware(firmware_sequence),
                             true);
     failures += expect_bool("lower_pending_mismatch",
                             nuwax_ota_release_pending_matches_firmware(7000012ULL),
@@ -67,16 +70,16 @@ int main(void)
                                                                7000013ULL),
                             false);
     failures += expect_bool("same_release_reinstall_allowed",
-                            nuwax_ota_release_running_meets_floor(7000088ULL,
-                                                                 7000088ULL),
+                            nuwax_ota_release_running_meets_floor(firmware_sequence,
+                                                                 firmware_sequence),
                             true);
     failures += expect_bool("newer_release_allowed",
-                            nuwax_ota_release_running_meets_floor(7000089ULL,
-                                                                 7000088ULL),
+                            nuwax_ota_release_running_meets_floor(firmware_sequence + 1ULL,
+                                                                 firmware_sequence),
                             true);
     failures += expect_bool("lower_release_rejected",
-                            nuwax_ota_release_running_meets_floor(7000087ULL,
-                                                                 7000088ULL),
+                            nuwax_ota_release_running_meets_floor(firmware_sequence - 1ULL,
+                                                                 firmware_sequence),
                             false);
     failures += expect_bool("recover_missing_sequence",
                             nuwax_ota_release_pending_may_recover(7000013ULL,
@@ -91,11 +94,11 @@ int main(void)
                                                                   7000015ULL),
                             false);
     failures += expect_u64("transport_does_not_decrease",
-                           nuwax_ota_release_advance(7000088ULL, 7000013ULL),
-                           7000088ULL);
+                           nuwax_ota_release_advance(firmware_sequence, 7000013ULL),
+                           firmware_sequence);
     failures += expect_u64("transport_advances",
-                           nuwax_ota_release_advance(7000013ULL, 7000088ULL),
-                           7000088ULL);
+                           nuwax_ota_release_advance(7000013ULL, firmware_sequence),
+                           firmware_sequence);
     failures += expect_bool(
         "result_ack_success_strict",
         nuwax_ota_result_ack_policy_decide(true, true) ==

@@ -315,5 +315,88 @@ int main(void) {
         200U,
         60U));
 
+    /* Contact noise can trip local VAD. Keep capture intact and require an
+     * explicit, bound no-speech result before submitting the physical touch. */
+    nuwax_head_touch_agent_intent_clear(&intent);
+    assert(nuwax_head_touch_agent_intent_arm(&intent,
+        NUWAX_HEAD_TOUCH_AGENT_SOURCE_LISTENING, 10U, 6U, 0U,
+        true, false, NULL, 100U, 60U));
+    assert(!nuwax_head_touch_agent_intent_defer_asr(&intent, "", 100U));
+    assert(!nuwax_head_touch_agent_intent_defer_asr(&intent,
+        "01234567890123456789012345678901234567890123456789", 100U));
+    assert(nuwax_head_touch_agent_intent_defer_asr(&intent, "noise", 100U));
+    assert(intent.asr_deferred && !intent.asr_no_speech);
+    assert(!nuwax_head_touch_agent_intent_defer_asr(&intent, "other", 200U));
+    assert(intent.asr_deadline_ms == 4100U); /* no unbounded refresh */
+    assert(nuwax_head_touch_agent_intent_observe_frame(&intent, 300U, true, true)
+        == NUWAX_HEAD_TOUCH_AGENT_FRAME_WAIT);
+    assert(!nuwax_head_touch_agent_intent_begin_quiesce(&intent));
+    assert(!nuwax_head_touch_agent_intent_accept_no_speech(
+        &intent, 10U, 6U, "noise", 300U)); /* before END */
+    assert(!nuwax_head_touch_agent_intent_mark_terminal_released(
+        &intent, 9U, "noise"));
+    assert(!nuwax_head_touch_agent_intent_mark_terminal_released(
+        &intent, 10U, "old"));
+    assert(nuwax_head_touch_agent_intent_mark_terminal_released(
+        &intent, 10U, "noise"));
+    assert(!nuwax_head_touch_agent_intent_accept_no_speech(
+        &intent, 9U, 6U, "noise", 300U));
+    assert(!nuwax_head_touch_agent_intent_accept_no_speech(
+        &intent, 10U, 5U, "noise", 300U));
+    assert(!nuwax_head_touch_agent_intent_accept_no_speech(
+        &intent, 10U, 6U, "old", 300U));
+    assert(nuwax_head_touch_agent_intent_accept_no_speech(
+        &intent, 10U, 6U, "noise", 300U));
+    assert(!nuwax_head_touch_agent_intent_begin_quiesce(&intent)); /* mic live */
+    assert(!nuwax_head_touch_agent_intent_mark_capture_released(
+        &intent, 10U, 5U, "noise"));
+    assert(nuwax_head_touch_agent_intent_mark_capture_released(
+        &intent, 10U, 6U, "noise"));
+    assert(nuwax_head_touch_agent_intent_begin_quiesce(&intent));
+    assert(nuwax_head_touch_agent_intent_advance_release_barrier(&intent));
+    assert(nuwax_head_touch_agent_intent_advance_drain_barrier(&intent));
+    assert(nuwax_head_touch_agent_intent_mark_sent(&intent, "touch_recovered"));
+    assert(!nuwax_head_touch_agent_intent_asr_expired(&intent, 9000U));
+
+    /* Long speech or missing ASR cannot produce a delayed phantom touch.
+     * A terminal/capture completion alone also cannot authorize one. */
+    nuwax_head_touch_agent_intent_clear(&intent);
+    assert(nuwax_head_touch_agent_intent_arm(&intent,
+        NUWAX_HEAD_TOUCH_AGENT_SOURCE_LISTENING, 10U, 6U, 0U,
+        true, false, NULL, UINT32_MAX - 1999U, 60U));
+    assert(nuwax_head_touch_agent_intent_defer_asr(
+        &intent, "speech", UINT32_MAX - 1999U));
+    assert(intent.asr_deadline_ms == 2000U);
+    assert(nuwax_head_touch_agent_intent_mark_terminal_released(
+        &intent, 10U, "speech"));
+    assert(nuwax_head_touch_agent_intent_mark_capture_released(
+        &intent, 10U, 6U, "speech"));
+    assert(!nuwax_head_touch_agent_intent_begin_quiesce(&intent));
+    assert(!nuwax_head_touch_agent_intent_asr_expired(&intent, 1999U));
+    assert(nuwax_head_touch_agent_intent_asr_expired(&intent, 2000U));
+    assert(!nuwax_head_touch_agent_intent_accept_no_speech(
+        &intent, 10U, 6U, "speech", 2000U));
+    nuwax_head_touch_agent_intent_cancel(&intent);
+    assert(!nuwax_head_touch_agent_intent_accept_no_speech(
+        &intent, 10U, 6U, "speech", 1999U));
+
+    /* Touch arriving after END follows the same explicit-ASR rule. */
+    nuwax_head_touch_agent_intent_clear(&intent);
+    assert(nuwax_head_touch_agent_intent_arm(&intent,
+        NUWAX_HEAD_TOUCH_AGENT_SOURCE_POST_END_ASR, 10U, 6U, 0U,
+        false, false, "post_end", 100U, 60U));
+    assert(!nuwax_head_touch_agent_intent_begin_quiesce(&intent));
+    assert(nuwax_head_touch_agent_intent_accept_no_speech(
+        &intent, 10U, 6U, "post_end", 1000U));
+    assert(nuwax_head_touch_agent_intent_begin_quiesce(&intent));
+
+    /* Shake remains an explicit interrupt, not a deferred touch. */
+    nuwax_head_touch_agent_intent_clear(&intent);
+    assert(nuwax_head_touch_agent_intent_arm_kind(&intent,
+        NUWAX_AGENT_INTERACTION_SHAKE,
+        NUWAX_HEAD_TOUCH_AGENT_SOURCE_LISTENING, 10U, 6U, 0U,
+        true, false, NULL, 100U, 60U));
+    assert(!nuwax_head_touch_agent_intent_defer_asr(&intent, "noise", 100U));
+    assert(nuwax_head_touch_agent_intent_begin_quiesce(&intent));
     return 0;
 }

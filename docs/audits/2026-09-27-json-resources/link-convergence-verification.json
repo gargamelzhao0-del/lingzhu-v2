@@ -1,0 +1,15 @@
+{
+  "revision": "20260923-link-convergence-v1",
+  "elfSha256": "fee56b4caffc46d9eacc0251e23a2e249a96511b43bc3b6257a4a675fcc1a8ff",
+  "binSha256": "5718f2a361242f85562db1ff13e49b8d0a66e9d8e3eee7ddbd740089e81bc61e",
+  "bytes": 3835312,
+  "sourceHashes": {
+    "main/nuwax_ai_partner_main.c": "07b6c9d62a3038690202e1b1dd24600a400565bae3f5ba5f2d6b6054a6450867",
+    "main/app_shell.c": "5b6569e4924fd4223b557dfb17e7c7a821394afd5c8e9a63f6a29827738cbd84",
+    "main/offline_audio_spool.c": "e34db61ba5f9a4a5be2530e8eb883a74712a2c51b879bc2bb62a87dae9d70308",
+    "main/device_error_report.c": "7878519fe24a9907fd3d341681c4420a2208c40ffff0f77e3c0f114299d835b9",
+    "tools/test-link-convergence.py": "c9842518bdd52c4e03fafdccd8106e2999831c965b9de736728ed13776548b28",
+    "main/wifi_background_recovery_host_check.c": "d0b1fdc8ddf42d376c088ed475152aca55cb64d8fdde2b7629bd58f02ca54870"
+  },
+  "hardwareValidated": false
+}

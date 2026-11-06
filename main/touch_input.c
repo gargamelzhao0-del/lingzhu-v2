@@ -1,4 +1,5 @@
 #include "touch_input.h"
+#include "touch_read_policy.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -14,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
+#include "device_error_report.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -44,6 +46,9 @@ static const char *TAG = "nuwax_touch";
 #define NUWAX_TOUCH_IO_LOCK_TIMEOUT_MS 1000U
 #define NUWAX_TOUCH_STATUS_LOCK_TIMEOUT_MS 100U
 #define NUWAX_TOUCH_BUS_LOCK_TIMEOUT_MS 50U
+/* A short, interrupt-driven read must finish above UI rasterization (7),
+ * below microphone/audio tasks (10+). The loop blocks between samples. */
+#define NUWAX_TOUCH_TASK_PRIORITY 8U
 #define NUWAX_TOUCH_PANEL_WIDTH 360u
 #define NUWAX_TOUCH_PANEL_HEIGHT 360u
 
@@ -147,6 +152,7 @@ static esp_err_t touch_read_reg_locked(uint8_t reg, uint8_t *data, size_t len) {
     err = i2c_master_transmit_receive(
         s_touch_dev, s_touch_i2c_tx_scratch, 1, s_touch_i2c_rx_scratch, len,
         CONFIG_NUWAX_TOUCH_I2C_TIMEOUT_MS);
+    nuwax_i2c_bus_transfer_done(NUWAX_I2C_CLIENT_TOUCH, err);
     nuwax_i2c_bus_transaction_end();
     if (err == ESP_OK) {
         memcpy(data, s_touch_i2c_rx_scratch, len);
@@ -166,6 +172,7 @@ static esp_err_t touch_write_reg_locked(uint8_t reg, uint8_t value) {
     err = i2c_master_transmit(s_touch_dev, s_touch_i2c_tx_scratch,
                               sizeof(s_touch_i2c_tx_scratch),
                               CONFIG_NUWAX_TOUCH_I2C_TIMEOUT_MS);
+    nuwax_i2c_bus_transfer_done(NUWAX_I2C_CLIENT_TOUCH, err);
     nuwax_i2c_bus_transaction_end();
     return err;
 }
@@ -463,6 +470,8 @@ static esp_err_t touch_read_with_recovery_locked(uint8_t reg, uint8_t *data, siz
              esp_err_to_name(err),
              (unsigned long)retry_ms,
              (unsigned long)s_init_failure_streak);
+    (void)nuwax_device_warning_report_enqueue(
+        "touch", "i2c_recovery_failed", err, "touch", 0U, NULL);
     return err;
 }
 
@@ -605,6 +614,9 @@ static void touch_log_task(void *arg) {
     (void)arg;
     nuwax_touch_point_t point = {0};
     bool was_touched = false;
+    nuwax_touch_point_t last_valid_point = {0};
+    uint32_t last_valid_ms = 0U;
+    uint32_t contact_id = 0U;
 
     while (true) {
         const uint32_t wait_ms = was_touched
@@ -613,7 +625,15 @@ static void touch_log_task(void *arg) {
         (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
 
         const esp_err_t read_err = nuwax_touch_read(&point);
+        const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
         if (read_err == ESP_OK) {
+            if (point.touched && !was_touched && ++contact_id == 0U) {
+                contact_id = 1U;
+            }
+            point.contact_id = contact_id;
+            point.sample_ms = now_ms;
+            last_valid_point = point;
+            last_valid_ms = now_ms;
             if (point.touched) {
                 if (!was_touched) {
                     ESP_LOGD(TAG,
@@ -648,8 +668,10 @@ static void touch_log_task(void *arg) {
                 }
                 was_touched = false;
             }
-        } else if (was_touched) {
-            nuwax_touch_point_t cancelled = point;
+        } else if (nuwax_touch_read_should_cancel(
+                       was_touched, read_err == ESP_ERR_NOT_FINISHED,
+                       now_ms, last_valid_ms)) {
+            nuwax_touch_point_t cancelled = last_valid_point;
             cancelled.touched = false;
             cancelled.cancelled = true;
             cancelled.event = 3;
@@ -758,6 +780,8 @@ fail_locked: {
                  (unsigned long)retry_ms,
                  (unsigned long)s_init_failure_streak,
                  esp_err_to_name(err));
+        (void)nuwax_device_warning_report_enqueue(
+            "touch", "initialization_deferred", err, "touch", 0U, NULL);
         return err;
     }
 }
@@ -860,7 +884,7 @@ esp_err_t nuwax_touch_start_log_task(void) {
                                         "nuwax_touch",
                                         CONFIG_NUWAX_TOUCH_TASK_STACK_SIZE,
                                         NULL,
-                                        5,
+                                        NUWAX_TOUCH_TASK_PRIORITY,
                                         &s_touch_log_task,
                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (ok != pdPASS) {

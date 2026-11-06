@@ -21,6 +21,7 @@ void nuwax_device_state_init(void) {
     s_state.meeting = NUWAX_MEETING_UI_DISABLED;
     s_state.monitoring = NUWAX_MONITORING_UI_DISABLED;
     s_state.volume = 80;
+    s_state.brightness_percent = 100;
     s_state.wifi_rssi_dbm = -127;
     s_state.wifi_signal = NUWAX_WIFI_SIGNAL_UNKNOWN;
     s_listener_count = 0;

@@ -83,9 +83,19 @@ int main(void)
                     NUWAX_EMOTION_ASSET_HAPPY,
                     NUWAX_EMOTION_ASSET_PLAYFUL,
                     140U, 70U, 230U)) == 250U);
-    expect_true("sleep transition preserves authored timing",
+    expect_true("wake transition preserves natural authored timing",
                 timing_duration_ms(nuwax_emotion_component_bridge_timing(
                     NUWAX_EMOTION_ASSET_SLEEPING,
+                    NUWAX_EMOTION_ASSET_LISTENING,
+                    170U, 70U, 230U)) == 470U);
+    expect_true("entering sleep preserves authored timing",
+                timing_duration_ms(nuwax_emotion_component_bridge_timing(
+                    NUWAX_EMOTION_ASSET_LISTENING,
+                    NUWAX_EMOTION_ASSET_SLEEPING,
+                    170U, 70U, 230U)) == 470U);
+    expect_true("provisioning still preserves authored timing",
+                timing_duration_ms(nuwax_emotion_component_bridge_timing(
+                    NUWAX_EMOTION_ASSET_PROVISIONING,
                     NUWAX_EMOTION_ASSET_LISTENING,
                     170U, 70U, 230U)) == 470U);
     expect_true("interrupted bridge stays on source before visual midpoint",
@@ -105,6 +115,15 @@ int main(void)
     expect_true("bridge starts after both frames are ready",
                 nuwax_emotion_component_bridge_ready_to_animate(true,
                                                                  true));
+    expect_true("settled target pixel needs no final damage",
+                !nuwax_emotion_component_bridge_pixel_needs_final_damage(
+                    0x1234U, 0x1234U, 0x1234U));
+    expect_true("latest generated pose is included in final damage",
+                nuwax_emotion_component_bridge_pixel_needs_final_damage(
+                    0x4321U, 0x1234U, 0x1234U));
+    expect_true("transition-start residue is included in final damage",
+                nuwax_emotion_component_bridge_pixel_needs_final_damage(
+                    0x1234U, 0x4321U, 0x1234U));
     expect_true("stable current asset request is coalesced",
                 nuwax_emotion_component_asset_request_is_satisfied(
                     NUWAX_EMOTION_ASSET_LISTENING,
@@ -126,12 +145,15 @@ int main(void)
                     NUWAX_EMOTION_ASSET_LISTENING,
                     true,
                     NUWAX_EMOTION_ASSET_LISTENING));
-    expect_true("late render advances one visual pose",
+    expect_true("ordinary jitter advances one visual pose",
                 nuwax_emotion_component_bridge_next_elapsed_us(
-                    50000U, 500000U, 25000U) == 75000U);
+                    50000U, 500000U, 25000U, 90000U) == 75000U);
+    expect_true("late render catches up to wall time",
+                nuwax_emotion_component_bridge_next_elapsed_us(
+                    50000U, 500000U, 25000U, 200000U) == 200000U);
     expect_true("visual pose saturates at duration",
                 nuwax_emotion_component_bridge_next_elapsed_us(
-                    490000U, 500000U, 25000U) == 500000U);
+                    490000U, 500000U, 25000U, 700000U) == 500000U);
     expect_true("ordinary emotion hands off at loop key",
                 nuwax_emotion_component_handoff_frame(
                     NUWAX_EMOTION_ASSET_HAPPY) == 0U);

@@ -25,6 +25,11 @@ void nuwax_listen_resume_state_clear(nuwax_listen_resume_state_t *state) {
     state->idle_expiry_pending = false;
     state->post_end_asr_deadline_ms = 0;
     state->ws_connection_epoch = 0;
+    state->post_end_total_deadline_ms = 0U;
+    state->post_end_total_bounded = false;
+    state->progress_frames = 0U;
+    state->progress_text_hash = 0U;
+    state->progress_asr_phase = 0U;
 }
 
 void nuwax_listen_resume_state_arm_no_speech(nuwax_listen_resume_state_t *state,
@@ -58,6 +63,11 @@ void nuwax_listen_resume_state_bind_round(nuwax_listen_resume_state_t *state,
     state->idle_expiry_pending = false;
     state->post_end_asr_deadline_ms = 0U;
     state->ws_connection_epoch = 0U;
+    state->post_end_total_deadline_ms = 0U;
+    state->post_end_total_bounded = false;
+    state->progress_frames = 0U;
+    state->progress_text_hash = 0U;
+    state->progress_asr_phase = 0U;
     copy_truncated(state->audio_session_id,
                    sizeof(state->audio_session_id),
                    audio_session_id ? audio_session_id : "");
@@ -140,6 +150,44 @@ void nuwax_listen_resume_state_refresh_post_end_asr(
     state->post_end_asr_deadline_ms = deadline_ms;
 }
 
+bool nuwax_listen_resume_state_arm_post_end_asr_bounded(
+    nuwax_listen_resume_state_t *state, uint32_t ws_connection_epoch,
+    uint32_t now_ms, uint32_t idle_timeout_ms, uint32_t total_timeout_ms) {
+    uint32_t deadline_ms = now_ms + idle_timeout_ms;
+    /* The legacy idle deadline uses zero as "not armed". Preserve a valid
+     * watchdog when uptime wraps exactly onto that sentinel (at most +1 ms). */
+    if (deadline_ms == 0U) deadline_ms = 1U;
+    if (idle_timeout_ms == 0U || total_timeout_ms == 0U ||
+        !nuwax_listen_resume_state_arm_post_end_asr(
+            state, ws_connection_epoch, deadline_ms)) return false;
+    if (!state->post_end_total_bounded) {
+        state->post_end_total_bounded = true;
+        state->post_end_total_deadline_ms = now_ms + total_timeout_ms;
+    }
+    return true;
+}
+
+bool nuwax_listen_resume_state_note_progress(
+    nuwax_listen_resume_state_t *state, int frames,
+    const char *text, uint8_t phase) {
+    if (!state) return false;
+    if (phase == 0U) {
+        if (frames <= 0 || (uint32_t)frames <= state->progress_frames) return false;
+        state->progress_frames = (uint32_t)frames;
+        return true;
+    }
+    if (!text || !text[0] || phase < state->progress_asr_phase) return false;
+    uint32_t hash = 2166136261U;
+    for (const unsigned char *p = (const unsigned char *)text; *p; ++p) {
+        hash = (hash ^ *p) * 16777619U;
+    }
+    if (hash == state->progress_text_hash &&
+        phase == state->progress_asr_phase) return false;
+    state->progress_text_hash = hash;
+    state->progress_asr_phase = phase;
+    return true;
+}
+
 void nuwax_listen_resume_state_disarm_post_end_asr(
     nuwax_listen_resume_state_t *state) {
     if (!state) {
@@ -149,6 +197,8 @@ void nuwax_listen_resume_state_disarm_post_end_asr(
     state->post_end_terminal_committed = false;
     state->post_end_asr_deadline_ms = 0U;
     state->ws_connection_epoch = 0U;
+    state->post_end_total_deadline_ms = 0U;
+    state->post_end_total_bounded = false;
 }
 
 void nuwax_listen_resume_state_set_idle_expiry_pending(
@@ -182,7 +232,9 @@ bool nuwax_listen_resume_state_post_end_asr_expired(
     const nuwax_listen_resume_state_t *state,
     uint32_t now_ms) {
     return nuwax_listen_resume_state_is_waiting_post_end_asr(state) &&
-           (int32_t)(now_ms - state->post_end_asr_deadline_ms) >= 0;
+           ((int32_t)(now_ms - state->post_end_asr_deadline_ms) >= 0 ||
+            (state->post_end_total_bounded &&
+             (int32_t)(now_ms - state->post_end_total_deadline_ms) >= 0));
 }
 
 uint32_t nuwax_listen_resume_state_ws_epoch(

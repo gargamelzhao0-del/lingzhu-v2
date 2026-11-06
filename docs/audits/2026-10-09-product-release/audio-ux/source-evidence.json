@@ -1,0 +1,30 @@
+{
+  "sourceHashes": {
+    "main/nuwax_ai_partner_main.c": "0087ce87987ffcc75b0cfbf7d1e4b28767c0bb166873c06f9a0fb9597651162a",
+    "main/app_shell.c": "40c4a925fa546f89c68ac0cbdb5495b0fb58c461ada9c231a75e05022a55038b",
+    "main/conversation/awake_session_state.c": "a9f7d0bec9e69b457fd97933762ad206c8f1fbc3c57df4e281c7d61e0ec53c54",
+    "main/conversation/turn_guard.c": "bf5e5a168c8fdbb2ae674bfca04eaee40f3402b4c58aebc5ff6d68a31f1dce75",
+    "main/conversation/playback_terminal_guard.c": "e08123243d212ae431ac499b2b38cfec846f76a62eb59f2f6c5335a3927329f9"
+  },
+  "extractedFunctionSha256Utf8LF": {
+    "recover_normal_conversation_after_playback_abort": "f17caf62681753699f20abe2b51268174d6b83e54fb6b89c2d5d76c174cb821f",
+    "awake_idle_sleep_admitted": "3d0060179e67f7637a1a3df7c76566d59083ba92900fca91f0ad8bb8b6c5a668",
+    "maybe_enter_idle_sleep": "a3d8b3fe2633990c3dc67efa644da7657c20f6b3280b3c014688667386042bdb",
+    "ensure_sleep_wake_word_detector": "e5765adea8cb936fe896056a678c133ad101e5b681c193a470a8883dcea7000c",
+    "check_conversation_turn_timeout": "fe90484c521b23c7b2857fe19c7febe574fc4d2973c51ed5b2a6d575f27def39",
+    "app_shell_hold_action": "6f354fdd04909671730468bcdf0fde7130e41889da415d67bc3c9674425fab9f"
+  },
+  "firmwareImageSha256": "69233b6aad50e7688525b1b43b6b3ee2cd10715eb7e206f88759e70ccf88ecae",
+  "buildConfig": "C:\\tmp\\nuwax-sd-formal-build-20260921\\config\\sdkconfig.h",
+  "buildConfigSha256": "ef4e8b2c2bbb460769fc91bbf526ab2aef7cba7b0503b933fec34133fe64c2d6",
+  "enabledProductFlags": {
+    "NUWAX_BARGE_IN_ENABLE": false,
+    "NUWAX_WAKE_WORD_INTERRUPT_ENABLE": false,
+    "NUWAX_LIVE_AEC_ENABLE": false,
+    "NUWAX_TOUCH_INTERRUPT_ACTION_ENABLE": true,
+    "NUWAX_TOUCH_WAKE_ACTION_ENABLE": false
+  },
+  "generatedC": "C:\\Users\\Administrator\\Documents\\work\\Nuwax AI Partner\\Nuwax AI Partner 7.0\\NuwaxAIPartner-v2\\docs\\audits\\2026-10-09-product-release\\audio-ux\\wake_timeout_recovery.c",
+  "command": "python tmp/product-launch-review-20261009/audio-ux/reproduce.py",
+  "scope": "Real extracted production recovery, timeout and idle/wake supervision functions; mocked transport/speaker hardware; actual awake/turn/terminal state modules. Cloud/WebSocket assumed remains healthy while greeting output is missing. No hardware result claimed."
+}

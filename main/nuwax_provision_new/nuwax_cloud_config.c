@@ -97,7 +97,7 @@ static bool valid_cloud_url(const char *url) {
     return true;
 }
 
-static esp_err_t validate_config(const nuwax_cloud_config_t *config) {
+esp_err_t nuwax_cloud_config_validate(const nuwax_cloud_config_t *config) {
     if (!config || config->version != 1 ||
         !valid_token(config->device_id, sizeof(config->device_id)) ||
         strcmp(config->device_id, nuwax_device_uid_string()) != 0 ||
@@ -126,7 +126,7 @@ esp_err_t nuwax_cloud_config_init(void) {
     memset(&s_config, 0, sizeof(s_config));
     esp_err_t read_err = nvs_get_blob(nvs, NVS_ACTIVE_KEY, &s_config, &length);
     if (read_err == ESP_OK &&
-        (length != sizeof(s_config) || validate_config(&s_config) != ESP_OK)) {
+        (length != sizeof(s_config) || nuwax_cloud_config_validate(&s_config) != ESP_OK)) {
         read_err = ESP_ERR_INVALID_STATE;
     }
 
@@ -151,7 +151,7 @@ esp_err_t nuwax_cloud_config_init(void) {
                                          &s_pending, &pending_length);
     if (pending_err == ESP_OK &&
         (pending_length != sizeof(s_pending) ||
-         validate_config(&s_pending) != ESP_OK)) {
+          nuwax_cloud_config_validate(&s_pending) != ESP_OK)) {
         ESP_LOGW(TAG, "erasing invalid pending cloud configuration");
         pending_err = nvs_erase_key(nvs, NVS_PENDING_KEY);
         if (pending_err == ESP_ERR_NVS_NOT_FOUND) {
@@ -166,7 +166,7 @@ esp_err_t nuwax_cloud_config_init(void) {
         nvs_close(nvs);
         return pending_err;
     }
-    if (changed) {
+    if (changed && read_err == ESP_OK) {
         read_err = nvs_commit(nvs);
     }
     nvs_close(nvs);
@@ -182,7 +182,7 @@ esp_err_t nuwax_cloud_config_init(void) {
 
 esp_err_t nuwax_cloud_config_set(const nuwax_cloud_config_t *config) {
     ESP_RETURN_ON_ERROR(nuwax_cloud_config_init(), TAG, "cloud config init failed");
-    ESP_RETURN_ON_ERROR(validate_config(config), TAG, "cloud config validation failed");
+    ESP_RETURN_ON_ERROR(nuwax_cloud_config_validate(config), TAG, "cloud config validation failed");
 
     nvs_handle_t nvs;
     ESP_RETURN_ON_ERROR(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs), TAG,
@@ -202,19 +202,24 @@ esp_err_t nuwax_cloud_config_set(const nuwax_cloud_config_t *config) {
         return err;
     }
 
+    const bool device_changed = s_has_config && strcmp(s_config.device_id, config->device_id) != 0;
+    const bool secret_changed = s_has_config && strcmp(s_config.device_secret, config->device_secret) != 0;
+    const bool endpoint_changed = s_has_config && strcmp(s_config.cloud_url, config->cloud_url) != 0;
+    ESP_LOGI(TAG, "cloud config committed previous=%d device_changed=%d secret_changed=%d endpoint_changed=%d",
+             s_has_config ? 1 : 0, device_changed ? 1 : 0,
+             secret_changed ? 1 : 0, endpoint_changed ? 1 : 0);
     s_config = *config;
     s_has_config = true;
     memset(&s_pending, 0, sizeof(s_pending));
     s_has_pending = false;
-    ESP_LOGI(TAG, "dynamic cloud config updated device=%s url=%s",
-             config->device_id, config->cloud_url);
+    ESP_LOGI(TAG, "cloud config updated; credentials and endpoint redacted");
     return ESP_OK;
 }
 
 esp_err_t nuwax_cloud_config_stage(const nuwax_cloud_config_t *config) {
     ESP_RETURN_ON_ERROR(nuwax_cloud_config_init(), TAG,
                         "cloud config init failed");
-    ESP_RETURN_ON_ERROR(validate_config(config), TAG,
+    ESP_RETURN_ON_ERROR(nuwax_cloud_config_validate(config), TAG,
                         "pending cloud config validation failed");
 
     nvs_handle_t nvs;
@@ -230,8 +235,7 @@ esp_err_t nuwax_cloud_config_stage(const nuwax_cloud_config_t *config) {
     }
     s_pending = *config;
     s_has_pending = true;
-    ESP_LOGI(TAG, "dynamic cloud config staged device=%s url=%s",
-             config->device_id, config->cloud_url);
+    ESP_LOGI(TAG, "cloud config staged; credentials and endpoint redacted");
     return ESP_OK;
 }
 
@@ -249,6 +253,7 @@ esp_err_t nuwax_cloud_config_commit_pending(void) {
                                  sizeof(s_pending));
     if (err == ESP_OK) {
         err = nvs_erase_key(nvs, NVS_PENDING_KEY);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
     }
     if (err == ESP_OK) {
         err = nvs_commit(nvs);
@@ -262,8 +267,7 @@ esp_err_t nuwax_cloud_config_commit_pending(void) {
     s_has_config = true;
     memset(&s_pending, 0, sizeof(s_pending));
     s_has_pending = false;
-    ESP_LOGI(TAG, "pending cloud config committed device=%s url=%s",
-             s_config.device_id, s_config.cloud_url);
+    ESP_LOGI(TAG, "cloud config committed; credentials and endpoint redacted");
     return ESP_OK;
 }
 
@@ -290,6 +294,37 @@ esp_err_t nuwax_cloud_config_discard_pending(void) {
 
 bool nuwax_cloud_config_has_pending(void) {
     return nuwax_cloud_config_init() == ESP_OK && s_has_pending;
+}
+
+esp_err_t nuwax_cloud_config_get_pending(nuwax_cloud_config_t *config) {
+    if (!config) return ESP_ERR_INVALID_ARG;
+    ESP_RETURN_ON_ERROR(nuwax_cloud_config_init(), TAG, "cloud config init failed");
+    if (!s_has_pending) return ESP_ERR_NOT_FOUND;
+    *config = s_pending;
+    return ESP_OK;
+}
+
+esp_err_t nuwax_cloud_config_verify_persisted(const nuwax_cloud_config_t *config) {
+    ESP_RETURN_ON_ERROR(nuwax_cloud_config_validate(config), TAG, "invalid target pair");
+    nvs_handle_t nvs;
+    ESP_RETURN_ON_ERROR(nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs), TAG,
+                        "read committed cloud config failed");
+    nuwax_cloud_config_t actual = {0};
+    size_t length = sizeof(actual);
+    esp_err_t err = nvs_get_blob(nvs, NVS_ACTIVE_KEY, &actual, &length);
+    if (err == ESP_OK && (length != sizeof(actual) ||
+                         memcmp(&actual, config, sizeof(actual)) != 0)) {
+        err = ESP_ERR_INVALID_STATE;
+    }
+    if (err == ESP_OK) {
+        length = 0;
+        const esp_err_t pending_err = nvs_get_blob(nvs, NVS_PENDING_KEY, NULL, &length);
+        err = pending_err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK :
+              (pending_err == ESP_OK ? ESP_ERR_INVALID_STATE : pending_err);
+    }
+    nvs_close(nvs);
+    memset(&actual, 0, sizeof(actual));
+    return err;
 }
 
 esp_err_t nuwax_cloud_config_get(nuwax_cloud_config_t *config) {

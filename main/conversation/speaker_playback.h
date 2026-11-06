@@ -7,10 +7,24 @@
 #include "app_state.h"
 #include "esp_err.h"
 
+#if (defined(CONFIG_NUWAX_MUSIC_URL_TEST_ENABLE) && \
+     CONFIG_NUWAX_MUSIC_URL_TEST_ENABLE) || \
+    (defined(CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE) && \
+     CONFIG_NUWAX_MUSIC_PLAYBACK_ENABLE)
+#define NUWAX_SPEAKER_URL_STREAM_ENABLED 1
+#else
+#define NUWAX_SPEAKER_URL_STREAM_ENABLED 0
+#endif
+
 typedef enum {
     NUWAX_SPEAKER_PLAYBACK_OWNER_NONE = 0,
     NUWAX_SPEAKER_PLAYBACK_OWNER_CONVERSATION,
     NUWAX_SPEAKER_PLAYBACK_OWNER_NOTIFICATION,
+#if NUWAX_SPEAKER_URL_STREAM_ENABLED
+    /* Development-only local PCM stream. It uses the shared output manager
+     * but never publishes conversation state or follow-up callbacks. */
+    NUWAX_SPEAKER_PLAYBACK_OWNER_URL_TEST,
+#endif
 } nuwax_speaker_playback_owner_t;
 
 typedef struct {
@@ -200,6 +214,10 @@ bool nuwax_speaker_playback_abort_metadata_only_session(
     const char *turn_id,
     const char *playback_id,
     const char *reason);
+/* Atomically retire an expired metadata-only owner and fence late RX. A
+ * concurrent START, real output claim or different IDs cause a no-op. */
+bool nuwax_speaker_playback_expire_metadata_only_session(
+    const char *turn_id, const char *playback_id, uint32_t timeout_ms);
 void nuwax_speaker_playback_note_playback_end(const char *turn_id,
                                               const char *playback_id,
                                               const char *reason);
@@ -216,9 +234,28 @@ void nuwax_speaker_playback_note_notification_end(const char *notify_id,
                                                   const char *reason);
 
 void nuwax_speaker_playback_apply_volume_percent(int volume_percent, bool persist);
+/* A queued local release keeps the sequence returned by its final preview.
+ * Returns false for superseded/duplicate tokens with no report or persistence.
+ * Zero is the compatibility path: apply as a new authoritative command. */
+bool nuwax_speaker_playback_apply_volume_commit_percent(int volume_percent,
+                                                       bool persist,
+                                                       uint32_t preview_sequence);
+/* Nonblocking registration AFTER the local action entered its owner queue.
+ * Captures the accepted rollback target even before the owner processes it. */
+void nuwax_speaker_playback_note_volume_commit_queued(int volume_percent,
+                                                     uint32_t preview_sequence);
+/* Publish only. PCM output consumes the latest preview under its owner lock. */
+uint32_t nuwax_speaker_playback_preview_volume_percent_ordered(int volume_percent);
+/* Roll back only this gesture to the newest admitted value. */
+void nuwax_speaker_playback_cancel_volume_preview(uint32_t preview_sequence);
+/* Application owner only, after audio/OTA and UI idle admission. Force bypasses
+ * debounce for an already quiesced orderly shutdown, never the Flash fence. */
+bool nuwax_speaker_playback_service_volume_persistence(bool force);
 void nuwax_speaker_playback_preview_volume_percent(int volume_percent);
 void nuwax_speaker_playback_apply_current_volume(void);
 uint8_t nuwax_speaker_playback_get_volume_percent(void);
+/* Read the newest admitted setting and its order without consuming a preview. */
+uint8_t nuwax_speaker_playback_get_confirmed_volume_percent(uint32_t *sequence);
 
 // v15-v2: 设备声纹 mask 模块需要 TTS ID 过滤字典子集
 // TTS ID 映射 (与 tools/device_voiceprint_trainer/train.py TTS_ID_MAP 严格一致)
@@ -256,6 +293,29 @@ esp_err_t nuwax_speaker_playback_handle_audio_frame_admitted_with_timeout(
     uint32_t admission_timeout_ms);
 void nuwax_speaker_playback_set_downlink_admission(uint32_t epoch,
                                                   bool allowed);
+
+#if NUWAX_SPEAKER_URL_STREAM_ENABLED
+/* Development URL-test ingress. The caller supplies exact PCM16/16 kHz/mono
+ * totals and sequential chunks. This path is intentionally separate from the
+ * cloud protocol: it never creates a turn, changes app state, or schedules a
+ * listen follow-up. A formal cloud START preempts it. */
+esp_err_t nuwax_speaker_playback_url_test_begin(
+    uint32_t total_bytes,
+    bool end,
+    const int16_t *samples,
+    size_t sample_count,
+    uint32_t *generation_out);
+esp_err_t nuwax_speaker_playback_url_test_write(
+    uint32_t generation,
+    uint32_t sequence,
+    bool end,
+    const int16_t *samples,
+    size_t sample_count,
+    uint32_t timeout_ms);
+bool nuwax_speaker_playback_url_test_stop(uint32_t generation,
+                                          const char *reason);
+bool nuwax_speaker_playback_url_test_active(uint32_t generation);
+#endif
 
 /* A binary START is not physically playable until the conversation owner has
  * validated the matching JSON turn/playback metadata. */

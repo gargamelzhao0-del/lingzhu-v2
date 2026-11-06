@@ -1,0 +1,4 @@
+# Product-compatible one-shot SD card validation profile. Do not use for OTA
+# releases after the card test; the option is intentionally disabled by the
+# normal product defaults.
+CONFIG_NUWAX_SD_CARD_BOOT_SELFTEST_ENABLE=y

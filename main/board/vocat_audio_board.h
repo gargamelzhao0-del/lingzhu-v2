@@ -56,6 +56,8 @@ typedef struct {
 } nuwax_vocat_audio_smoke_stats_t;
 
 esp_err_t nuwax_vocat_audio_board_init(void);
+/* Called only through audio_board while both channel leases are held. */
+esp_err_t nuwax_vocat_audio_board_set_music_rate(uint32_t sample_rate);
 esp_err_t nuwax_vocat_audio_board_smoke_test(uint32_t duration_ms, nuwax_vocat_audio_smoke_stats_t *out_stats);
 esp_err_t nuwax_vocat_audio_board_deinit(void);
 
@@ -65,12 +67,14 @@ void *nuwax_vocat_audio_board_get_rx_handle(void);
 void *nuwax_vocat_audio_board_get_tx_handle(void);
 uint32_t nuwax_vocat_audio_board_get_rx_overflow_count(void);
 
-/* PA safety control. Validation reads the SoC output latch, not the input pad. */
+/* PA safety control. Init leaves PA off; the TX owner must establish silent
+ * DMA output before prepare, and submit speech only after prepare returns.
+ * Validation reads the SoC output latch, not the input pad. */
 esp_err_t nuwax_vocat_audio_board_force_speaker_mute(void);
 esp_err_t nuwax_vocat_audio_board_prepare_speaker_playback(void);
 
-/* P2-3 ES8311 playback start/stop stress. Each cycle toggles the codec
- * (PA managed by the es8311 driver) and writes a 1kHz burst. */
+/* P2-3 ES8311 playback start/stop stress. Each cycle toggles the codec,
+ * explicitly controls the board-owned PA, and writes a 1kHz burst. */
 typedef struct {
     int cycles_done;
     uint32_t enable_errors;

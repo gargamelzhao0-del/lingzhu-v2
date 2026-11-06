@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+typedef struct _lv_display_t lv_display_t;
+
 typedef struct lv_obj_t {
     int unused;
 } lv_obj_t;

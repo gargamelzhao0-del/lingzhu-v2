@@ -23,8 +23,12 @@ typedef struct {
 /* Initializes the dynamic cloud configuration store. Safe to call repeatedly. */
 esp_err_t nuwax_cloud_config_init(void);
 
-/* Validates and atomically replaces the active URL/device-secret pair. */
+/* Replaces the active cloud blob; cross-store atomicity is owned by pair_commit. */
 esp_err_t nuwax_cloud_config_set(const nuwax_cloud_config_t *config);
+esp_err_t nuwax_cloud_config_validate(const nuwax_cloud_config_t *config);
+esp_err_t nuwax_cloud_config_get_pending(nuwax_cloud_config_t *config);
+/* Reads flash, not the RAM cache, before a provisioning journal is retired. */
+esp_err_t nuwax_cloud_config_verify_persisted(const nuwax_cloud_config_t *config);
 
 /* Provisioning transaction. A staged record is durable across a reset but is
  * invisible to the WebSocket client until Wi-Fi reaches GOT_IP and commits it. */

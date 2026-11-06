@@ -6,74 +6,26 @@
 #include "nuwax_gesture.h"
 #include "nuwax_theme.h"
 #include "nuwax_ui_config.h"
+#include "ota_progress.h"
+#include "low_battery_warning.h"
 #include "esp_log.h"
 #include "nuwax_lvgl_port.h"
 
 static const char *TAG = "nuwax_app";
 
 #define EMOTION_PLAYER_TICK_MS 5
-#define OTA_PROGRESS_LABEL_W 208
-#define OTA_PROGRESS_LABEL_H 36
-#define OTA_PROGRESS_LABEL_Y 8
-
 static lv_obj_t *s_screen;
-static lv_obj_t *s_ota_progress_label;
 static lv_timer_t *s_emotion_timer;
 static bool s_listener_registered;
 static bool s_gesture_initialized;
 static bool s_created;
 static bool s_cleanup_pending;
 
-static void ota_progress_update(const nuwax_device_state_t *state) {
-    if (!s_ota_progress_label || !state) {
-        return;
-    }
-    if (!state->ota_update_active) {
-        lv_obj_add_flag(s_ota_progress_label, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-    const unsigned percent = state->ota_update_percent > 100U
-                                 ? 100U
-                                 : state->ota_update_percent;
-    lv_label_set_text_fmt(s_ota_progress_label, "update: %u%%", percent);
-    lv_obj_remove_flag(s_ota_progress_label, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(s_ota_progress_label);
-}
-
-static esp_err_t ota_progress_create(lv_obj_t *screen) {
-    s_ota_progress_label = lv_label_create(screen);
-    if (!s_ota_progress_label) {
-        return ESP_ERR_NO_MEM;
-    }
-    lv_obj_set_size(s_ota_progress_label,
-                    OTA_PROGRESS_LABEL_W, OTA_PROGRESS_LABEL_H);
-    lv_obj_align(s_ota_progress_label, LV_ALIGN_TOP_MID,
-                 0, OTA_PROGRESS_LABEL_Y);
-    lv_label_set_long_mode(s_ota_progress_label, LV_LABEL_LONG_CLIP);
-    lv_obj_set_style_text_align(s_ota_progress_label,
-                                LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(s_ota_progress_label,
-                               &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(s_ota_progress_label,
-                                lv_color_hex(0xEAF6FF), 0);
-    lv_obj_set_style_bg_color(s_ota_progress_label,
-                              NUWAX_COLOR_BG_DARK, 0);
-    lv_obj_set_style_bg_opa(s_ota_progress_label, LV_OPA_70, 0);
-    lv_obj_set_style_radius(s_ota_progress_label, 8, 0);
-    lv_obj_set_style_pad_top(s_ota_progress_label, 4, 0);
-    lv_obj_set_style_pad_left(s_ota_progress_label, 4, 0);
-    lv_obj_set_style_pad_right(s_ota_progress_label, 4, 0);
-    lv_obj_remove_flag(s_ota_progress_label,
-                       LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(s_ota_progress_label, LV_OBJ_FLAG_HIDDEN);
-    return ESP_OK;
-}
-
 static void state_listener(const nuwax_device_state_t *state, void *user_data) {
     (void)user_data;
     nuwax_face_update(state);
     nuwax_drawer_update(state);
-    ota_progress_update(state);
+    nuwax_ota_progress_update(state);
 }
 
 static void emotion_tick_cb(lv_timer_t *timer) {
@@ -82,6 +34,11 @@ static void emotion_tick_cb(lv_timer_t *timer) {
 }
 
 esp_err_t nuwax_app_create(lv_obj_t *screen) {
+    return nuwax_app_create_with_provisioning_face(screen, false);
+}
+
+esp_err_t nuwax_app_create_with_provisioning_face(lv_obj_t *screen,
+                                                  bool provisioning_face) {
     if (!screen) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -111,11 +68,16 @@ esp_err_t nuwax_app_create(lv_obj_t *screen) {
     lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Create layers bottom-to-top */
-    esp_err_t err = nuwax_face_create(screen);
+    esp_err_t err = provisioning_face
+        ? nuwax_face_create_with_initial_asset(
+              screen, NUWAX_EMOTION_ASSET_PROVISIONING)
+        : nuwax_face_create(screen);
     if (err != ESP_OK) goto fail;
     err = nuwax_drawer_create(screen);
     if (err != ESP_OK) goto fail;
-    err = ota_progress_create(screen);
+    err = nuwax_ota_progress_create(screen);
+    if (err != ESP_OK) goto fail;
+    err = nuwax_low_battery_warning_create(screen);
     if (err != ESP_OK) goto fail;
     err = nuwax_gesture_init(screen);
     if (err != ESP_OK) goto fail;
@@ -181,10 +143,8 @@ esp_err_t nuwax_app_deinit(void) {
         nuwax_gesture_deinit(s_screen);
         s_gesture_initialized = false;
     }
-    if (s_ota_progress_label) {
-        lv_obj_delete(s_ota_progress_label);
-        s_ota_progress_label = NULL;
-    }
+    nuwax_low_battery_warning_delete();
+    nuwax_ota_progress_delete();
     nuwax_drawer_deinit();
     esp_err_t face_err = nuwax_face_deinit();
     if (face_err != ESP_OK) {

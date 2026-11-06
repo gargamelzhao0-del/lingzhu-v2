@@ -1,0 +1,90 @@
+--- before/audio_uplink.c
++++ after/audio_uplink.c
+@@ -41,6 +41,8 @@
+ #define NUWAX_AUDIO_UPLINK_REAPER_STACK_BYTES 4096
+ #define NUWAX_AUDIO_UPLINK_REAPER_PRIORITY 4
+ #define NUWAX_AUDIO_UPLINK_REAPER_CANCEL_GRACE_MS 250U
++#define NUWAX_AUDIO_UPLINK_REAPER_NO_PROGRESS_MS 2000U
++#define NUWAX_AUDIO_UPLINK_REAPER_CANCEL_LIMIT_MS 5000U
+ #define NUWAX_AUDIO_UPLINK_REAPER_DIAGNOSTIC_INTERVAL_MS 2000U
+ #define NUWAX_AUDIO_UPLINK_REAPER_FATAL_RESTART_MS 90000U
+ #define NUWAX_AUDIO_UPLINK_TASK_SUSPEND_SETTLE_MS 100
+@@ -1120,6 +1122,9 @@
+             cleanup_started_ms +
+             NUWAX_AUDIO_UPLINK_REAPER_DIAGNOSTIC_INTERVAL_MS;
+         bool integrity_close_requested = false;
++        uint32_t last_sender_marker = (uint32_t)atomic_load_explicit(
++            &ctx->sender_stage_since_ms, memory_order_acquire);
++        uint32_t last_sender_progress_ms = cleanup_started_ms;
+         ESP_LOGW(TAG,
+                  "uplink detached cleanup stage=cancel_requested epoch=%lu",
+                  (unsigned long)ctx->ws_connection_epoch);
+@@ -1130,14 +1135,28 @@
+             const uint32_t now_ms = audio_uplink_now_ms();
+             const uint32_t cleanup_elapsed_ms =
+                 (uint32_t)(now_ms - cleanup_started_ms);
++            const uint32_t sender_marker = (uint32_t)atomic_load_explicit(
++                &ctx->sender_stage_since_ms, memory_order_acquire);
++            if (sender_marker != last_sender_marker) {
++                last_sender_marker = sender_marker;
++                last_sender_progress_ms = now_ms;
++            }
++            /* Only a detached, explicitly cancelled sender reaches here.
++             * Heartbeat traffic is not evidence of sender exit progress.
++             * Stage changes grant a short grace, never an unbounded lease. */
++            const bool cancel_stalled =
++                (uint32_t)(now_ms - last_sender_progress_ms) >=
++                    NUWAX_AUDIO_UPLINK_REAPER_NO_PROGRESS_MS ||
++                cleanup_elapsed_ms >= NUWAX_AUDIO_UPLINK_REAPER_CANCEL_LIMIT_MS;
+             const bool heartbeat_healthy =
+                 ctx->ws &&
+                 nuwax_ws_heartbeat_healthy_if_epoch(
+                     ctx->ws, ctx->ws_connection_epoch);
+             if (!integrity_close_requested &&
+-                !heartbeat_healthy &&
++                (!heartbeat_healthy || cancel_stalled) &&
+                 cleanup_elapsed_ms >=
+-                    NUWAX_AUDIO_UPLINK_REAPER_CANCEL_GRACE_MS) {
++                    NUWAX_AUDIO_UPLINK_REAPER_CANCEL_GRACE_MS &&
++                !audio_uplink_flag_load(&ctx->finished)) {
+                 integrity_close_requested =
+                     audio_uplink_request_integrity_close(
+                         ctx, "detached_sender_not_exited");
+@@ -1157,18 +1176,24 @@
+                     now_ms +
+                     NUWAX_AUDIO_UPLINK_REAPER_DIAGNOSTIC_INTERVAL_MS;
+             }
+-            if (!heartbeat_healthy && integrity_close_requested &&
+-                cleanup_elapsed_ms >=
+-                NUWAX_AUDIO_UPLINK_REAPER_FATAL_RESTART_MS) {
++            /* Stale epochs, absent transports or failed close admission must
++             * not retain the singleton forever. Never free a live sender. */
++            if (cleanup_elapsed_ms >=
++                    NUWAX_AUDIO_UPLINK_REAPER_FATAL_RESTART_MS &&
++                !audio_uplink_flag_load(&ctx->finished)) {
+                 audio_uplink_log_stalled_sender(
+                     ctx, "fatal_fallback", cleanup_elapsed_ms);
+                 ESP_LOGE(TAG,
+-                         "uplink sender did not release singleton after cancellation and transport-integrity close elapsed_ms=%lu epoch=%lu; controlled restart is the final ownership-safety fallback",
++                         "uplink sender did not release singleton after cancellation and transport-integrity close attempts elapsed_ms=%lu epoch=%lu; controlled restart is the final ownership-safety fallback",
+                          (unsigned long)cleanup_elapsed_ms,
+                          (unsigned long)ctx->ws_connection_epoch);
+                 nuwax_diagnostics_log_heap_label(
+                     TAG, "uplink_reaper_forced_restart");
+                 vTaskDelay(pdMS_TO_TICKS(100));
++                /* Diagnostics/yield may have allowed the sender to finish. */
++                if (audio_uplink_flag_load(&ctx->finished)) {
++                    break;
++                }
+                 esp_restart();
+                 vTaskDelay(portMAX_DELAY);
+             }
+@@ -1264,7 +1289,7 @@
+                           2,
+                           memory_order_release);
+     ESP_LOGI(TAG,
+-             "audio uplink detached cleanup ready ownership=intrusive-v1 stack=psram bytes=%u",
++             "audio uplink detached cleanup ready ownership=intrusive-v1 recovery=bounded-cancel-v1 stack=psram bytes=%u",
+              (unsigned)NUWAX_AUDIO_UPLINK_REAPER_STACK_BYTES);
+     return ESP_OK;
+ }

@@ -1,0 +1,18 @@
+{
+  "revision": "20260924-wake-evidence-v1",
+  "elfSha256": "1b54bd5377b18da26bc03b3996535f7dbf0b46c34276359f5e007acc011d0e7c",
+  "binSha256": "7b782e8840e1ee12effc26dcf9e0cdda03e5966029977c17774e8cdfc7de28d3",
+  "bytes": 3827104,
+  "workerStackFrame": 1952,
+  "workerStackBytes": 8192,
+  "modelThreshold": 0.08,
+  "acousticEvidenceRequired": true,
+  "hardwareValidated": false,
+  "sourceHashes": {
+    "main/wake_word_detector.c": "7ed6fae1ce274011dce799f37a03412c1f7224bfea53fc6dc1fb0f96f000acd4",
+    "main/conversation/wake_word_detection_policy.h": "0bc0a14ff7d5269cb3eeb8ff09feb7855a137eb1fd7d279d0054af1dc61a0620",
+    "main/wake_word_detection_policy_host_check.c": "f737733fe58f18733c2e463fe2f3d8ad791391fccdf9a54a7c10dc9d47a38c2f",
+    "tools/test-wake-evidence.py": "b78ecf322586ce691e506e2a8b686095855f0d74010ad95603048354829af63d",
+    "tools/verify-wake-evidence-build.py": "6480430558724a155f1b81bc056e24f234250ae59a317493e43aa1387f2a4415"
+  }
+}

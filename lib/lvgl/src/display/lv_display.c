@@ -572,6 +572,12 @@ void lv_display_set_flush_cb(lv_display_t * disp, lv_display_flush_cb_t flush_cb
     disp->flush_cb = flush_cb;
 }
 
+void lv_display_set_scene_render_cb(lv_display_t * disp, lv_display_scene_render_cb_t cb)
+{
+    if(disp == NULL) disp = lv_display_get_default();
+    if(disp) disp->scene_render_cb = cb;
+}
+
 void lv_display_set_flush_wait_cb(lv_display_t * disp, lv_display_flush_wait_cb_t wait_cb)
 {
     if(disp == NULL) disp = lv_display_get_default();

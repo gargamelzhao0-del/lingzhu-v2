@@ -1,0 +1,22 @@
+{
+  "decision": "NO-GO",
+  "source_files_unchanged": 636,
+  "new_production_changes": false,
+  "hardware_validated": false,
+  "live_cloud_or_device_actions": false,
+  "credential_redaction": "PASS",
+  "archived_entrypoints_rerun": {
+    "audio_baseline": 0,
+    "audio_candidate": 0,
+    "persistent_storage_failure": 0,
+    "cloud_config": 0
+  },
+  "evidence_scope": "Extracted production functions and state modules with host stubs; production cloud config with in-memory NVS. No full firmware or physical timing test.",
+  "candidate_limits": [
+    "speaker_generation=0 WAIT_TEXT/WAIT_TTS only",
+    "new close cause not implemented in production transport",
+    "reconnect success and epoch change injected",
+    "nonzero generation has an existing terminal recovery path confirmed statically; not covered by candidate host test"
+  ],
+  "report_sha256": "92cc789cfdb3a86fd95b31003547bcc40011f24c5b660143d87a1e0da86674a3"
+}

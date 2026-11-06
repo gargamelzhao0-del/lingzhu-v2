@@ -101,6 +101,7 @@ static float s_es8311_volume_db = VOCAT_ES8311_DEFAULT_VOLUME_DB;
 typedef struct {
     audio_codec_ctrl_if_t base;
     const audio_codec_ctrl_if_t *delegate;
+    atomic_uint io_failures;
 } vocat_codec_ctrl_guard_t;
 
 static vocat_codec_ctrl_guard_t s_es7210_ctrl_guard;
@@ -135,6 +136,16 @@ static bool codec_ctrl_guard_is_open(const audio_codec_ctrl_if_t *ctrl)
            guard->delegate->is_open(guard->delegate);
 }
 
+/* Some codec methods discard register-operation errors. Keep an independent
+ * counter so a failed clock transaction cannot be reported as restored. */
+static int codec_ctrl_guard_result(const audio_codec_ctrl_if_t *ctrl, int result)
+{
+    vocat_codec_ctrl_guard_t *guard = (vocat_codec_ctrl_guard_t *)ctrl;
+    if (guard && result != ESP_CODEC_DEV_OK)
+        atomic_fetch_add_explicit(&guard->io_failures, 1U, memory_order_relaxed);
+    return result;
+}
+
 static int codec_ctrl_guard_read(const audio_codec_ctrl_if_t *ctrl,
                                  int reg,
                                  int reg_len,
@@ -144,16 +155,16 @@ static int codec_ctrl_guard_read(const audio_codec_ctrl_if_t *ctrl,
     const vocat_codec_ctrl_guard_t *guard =
         (const vocat_codec_ctrl_guard_t *)ctrl;
     if (!guard || !guard->delegate || !guard->delegate->read_reg) {
-        return ESP_CODEC_DEV_INVALID_ARG;
+        return codec_ctrl_guard_result(ctrl, ESP_CODEC_DEV_INVALID_ARG);
     }
     if (nuwax_i2c_bus_transaction_begin(
             VOCAT_CODEC_I2C_GUARD_TIMEOUT_MS) != ESP_OK) {
-        return ESP_CODEC_DEV_DRV_ERR;
+        return codec_ctrl_guard_result(ctrl, ESP_CODEC_DEV_DRV_ERR);
     }
     const int result = guard->delegate->read_reg(
         guard->delegate, reg, reg_len, data, data_len);
     nuwax_i2c_bus_transaction_end();
-    return result;
+    return codec_ctrl_guard_result(ctrl, result);
 }
 
 static int codec_ctrl_guard_write(const audio_codec_ctrl_if_t *ctrl,
@@ -165,16 +176,16 @@ static int codec_ctrl_guard_write(const audio_codec_ctrl_if_t *ctrl,
     const vocat_codec_ctrl_guard_t *guard =
         (const vocat_codec_ctrl_guard_t *)ctrl;
     if (!guard || !guard->delegate || !guard->delegate->write_reg) {
-        return ESP_CODEC_DEV_INVALID_ARG;
+        return codec_ctrl_guard_result(ctrl, ESP_CODEC_DEV_INVALID_ARG);
     }
     if (nuwax_i2c_bus_transaction_begin(
             VOCAT_CODEC_I2C_GUARD_TIMEOUT_MS) != ESP_OK) {
-        return ESP_CODEC_DEV_DRV_ERR;
+        return codec_ctrl_guard_result(ctrl, ESP_CODEC_DEV_DRV_ERR);
     }
     const int result = guard->delegate->write_reg(
         guard->delegate, reg, reg_len, data, data_len);
     nuwax_i2c_bus_transaction_end();
-    return result;
+    return codec_ctrl_guard_result(ctrl, result);
 }
 
 static int codec_ctrl_guard_close(const audio_codec_ctrl_if_t *ctrl)
@@ -193,6 +204,7 @@ static const audio_codec_ctrl_if_t *codec_ctrl_guard_bind(
         return NULL;
     }
     memset(guard, 0, sizeof(*guard));
+    atomic_init(&guard->io_failures, 0U);
     guard->base.open = codec_ctrl_guard_open;
     guard->base.is_open = codec_ctrl_guard_is_open;
     guard->base.read_reg = codec_ctrl_guard_read;
@@ -269,6 +281,7 @@ struct nuwax_vocat_test_tone_handle {
     uint64_t frames;
     i2s_chan_handle_t tx_handle;
     nuwax_audio_board_lease_t board_lease;
+    nuwax_audio_board_ref_t board_ref;
     SemaphoreHandle_t done;
     bool task_stopped;
 };
@@ -521,6 +534,18 @@ static esp_err_t codec_dev_ret_to_err(int rc, const char *label)
     }
     ESP_LOGE(TAG, "%s failed rc=%d", label, rc);
     return ESP_FAIL;
+}
+
+static esp_err_t set_es8311_sample_info(esp_codec_dev_sample_info_t *fs,
+                                       const char *label)
+{
+    if (!s_es8311_if || !s_es8311_if->set_fs) return ESP_ERR_INVALID_STATE;
+    const unsigned failures = atomic_load_explicit(&s_es8311_ctrl_guard.io_failures,
+                                                   memory_order_relaxed);
+    int rc = s_es8311_if->set_fs(s_es8311_if, fs);
+    if (atomic_load_explicit(&s_es8311_ctrl_guard.io_failures, memory_order_relaxed) != failures)
+        rc = ESP_CODEC_DEV_DRV_ERR;
+    return codec_dev_ret_to_err(rc, label);
 }
 
 static esp_err_t set_es8311_volume_db(float volume_db, const char *label)
@@ -884,7 +909,9 @@ static esp_err_t init_es8311(void)
         .ctrl_if = guarded_ctrl,
         .gpio_if = s_gpio_if,
         .codec_mode = ESP_CODEC_DEV_WORK_MODE_DAC,
-        .pa_pin = NUWAX_VOCAT_PA_CTRL_GPIO,
+        /* The board owns PA sequencing. Codec enable() otherwise raises PA
+         * and unmutes the DAC before the shared I2S clocks are running. */
+        .pa_pin = -1,
         .use_mclk = true,
     };
     es8311_cfg.hw_gain.pa_voltage = 5.0f;
@@ -905,7 +932,7 @@ static esp_err_t init_es8311(void)
              (unsigned)fs.channel_mask,
              (unsigned long)fs.sample_rate,
              (double)VOCAT_ES8311_DEFAULT_VOLUME_DB);
-    ESP_RETURN_ON_ERROR(codec_dev_ret_to_err(s_es8311_if->set_fs(s_es8311_if, &fs), "ES8311 set_fs"),
+    ESP_RETURN_ON_ERROR(set_es8311_sample_info(&fs, "ES8311 set_fs"),
                         TAG,
                         "ES8311 set_fs failed");
     ESP_RETURN_ON_ERROR(set_es8311_volume_db(VOCAT_ES8311_DEFAULT_VOLUME_DB, "ES8311 volume"),
@@ -919,10 +946,7 @@ static esp_err_t init_es8311(void)
                             TAG,
                             "ES8311 unmute failed");
     }
-    ESP_RETURN_ON_ERROR(set_external_pa_enabled(true, "ES8311 init PA settle"),
-                        TAG,
-                        "ES8311 PA startup failed");
-    ESP_LOGI(TAG, "ES8311 init ok addr8=0x%02x volume=55 pa=GPIO%d",
+    ESP_LOGI(TAG, "ES8311 init ok addr8=0x%02x volume=55 pa=GPIO%d held_off=1",
              NUWAX_VOCAT_CODEC_DEV_ADDR_ES8311,
              NUWAX_VOCAT_PA_CTRL_GPIO);
     return ESP_OK;
@@ -940,6 +964,11 @@ esp_err_t nuwax_vocat_audio_board_init(void)
                             TAG,
                             "partial audio-board cleanup retry failed");
     }
+
+    /* Mute before codec power/register changes and clock startup, including
+     * the first boot and the restore after BLE provisioning. */
+    ESP_RETURN_ON_ERROR(nuwax_vocat_audio_board_force_speaker_mute(),
+                        TAG, "audio init PA mute failed");
 
     ESP_LOGI(TAG,
              "P2 audio board init begin mclk=%d bclk=%d ws=%d dout=%d din=%d pa=%d",
@@ -1023,6 +1052,51 @@ uint32_t nuwax_vocat_audio_board_get_rx_overflow_count(void)
     return s_rx_overflow_count;
 }
 
+esp_err_t nuwax_vocat_audio_board_set_music_rate(uint32_t rate)
+{
+    if (!s_initialized || !s_tx || !s_rx || !s_es8311_if ||
+        (rate != 8000U && rate != 11025U && rate != 12000U && rate != 16000U &&
+         rate != 22050U && rate != 24000U && rate != 32000U &&
+         rate != 44100U && rate != 48000U)) return ESP_ERR_INVALID_ARG;
+    ESP_RETURN_ON_ERROR(nuwax_vocat_audio_board_force_speaker_mute(), TAG, "music mute");
+    esp_err_t err = i2s_channel_disable(s_tx);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+    err = i2s_channel_disable(s_rx);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+    i2s_std_clk_config_t tx = I2S_STD_CLK_DEFAULT_CONFIG(rate);
+    i2s_tdm_clk_config_t rx = I2S_TDM_CLK_DEFAULT_CONFIG(rate);
+    tx.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+    rx.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+#if CONFIG_NUWAX_P3_REF_TDM_REFERENCE_STYLE
+    rx.bclk_div = 8;
+#endif
+    ESP_RETURN_ON_ERROR(i2s_channel_reconfig_std_clock(s_tx, &tx), TAG, "music TX clock");
+    ESP_RETURN_ON_ERROR(i2s_channel_reconfig_tdm_clock(s_rx, &rx), TAG, "music RX clock");
+    esp_codec_dev_sample_info_t fs = {
+        .bits_per_sample = 16, .channel = 2, .sample_rate = rate,
+    };
+    ESP_RETURN_ON_ERROR(set_es8311_sample_info(&fs, "music DAC rate"), TAG, "music DAC rate");
+    /* Clear the complete DMA ring before either music or voice can unmute. */
+    int16_t silence[256 * 2] = {0};
+    size_t total = 0;
+    const size_t capacity = CONFIG_NUWAX_VOCAT_AUDIO_DMA_DESC_NUM *
+                            CONFIG_NUWAX_VOCAT_AUDIO_DMA_FRAME_NUM * 4U;
+    while (total < capacity) {
+        size_t written = 0;
+        size_t bytes = capacity - total;
+        if (bytes > sizeof(silence)) bytes = sizeof(silence);
+        ESP_RETURN_ON_ERROR(i2s_channel_preload_data(s_tx, silence, bytes, &written),
+                            TAG, "music silence preload");
+        if (written == 0U) break;
+        total += written;
+    }
+    ESP_RETURN_ON_ERROR(enable_i2s_channel("music RX", s_rx), TAG, "music RX enable");
+    ESP_RETURN_ON_ERROR(enable_i2s_channel("music TX", s_tx), TAG, "music TX enable");
+    ESP_LOGI(TAG, "exclusive music clock rate=%lu voice=%d DMA_silence=%u",
+             (unsigned long)rate, rate == VOCAT_AUDIO_SAMPLE_RATE_HZ, (unsigned)total);
+    return ESP_OK;
+}
+
 esp_err_t nuwax_vocat_audio_board_playback_stress(int cycles, nuwax_vocat_playback_stress_stats_t *out)
 {
     ESP_RETURN_ON_FALSE(nuwax_audio_board_diagnostic_lease_is_held(),
@@ -1039,7 +1113,12 @@ esp_err_t nuwax_vocat_audio_board_playback_stress(int cycles, nuwax_vocat_playba
     const float playback_volume_db = s_es8311_volume_db;
 
     for (int i = 0; i < cycles; i++) {
-        /* start: codec enable() drives PA on (codec-managed, auto_clear guards pop) */
+        /* Diagnostics explicitly opt into audible output; codec enable no
+         * longer owns PA. Keep it off during each codec restart. */
+        if (nuwax_vocat_audio_board_force_speaker_mute() != ESP_OK) {
+            st.disable_errors++;
+            break;
+        }
         if (codec_dev_ret_to_err(s_es8311_if->enable(s_es8311_if, true), "stress enable") != ESP_OK) {
             st.enable_errors++;
             continue;
@@ -1056,6 +1135,10 @@ esp_err_t nuwax_vocat_audio_board_playback_stress(int cycles, nuwax_vocat_playba
             st.cycles_done++;
             continue;
         }
+        if (nuwax_vocat_audio_board_prepare_speaker_playback() != ESP_OK) {
+            st.enable_errors++;
+            break;
+        }
         fill_tx_frame((uint32_t)i); /* ~20ms 1kHz burst */
         size_t bytes_done = 0;
         esp_err_t werr = i2s_channel_write(s_tx, s_tx_frame, sizeof(s_tx_frame), &bytes_done, 200);
@@ -1064,7 +1147,10 @@ esp_err_t nuwax_vocat_audio_board_playback_stress(int cycles, nuwax_vocat_playba
         } else {
             st.frames += bytes_done / (sizeof(int16_t) * 2U);
         }
-        /* stop: codec disable() drives PA off */
+        if (nuwax_vocat_audio_board_force_speaker_mute() != ESP_OK) {
+            st.disable_errors++;
+            break;
+        }
         if (codec_dev_ret_to_err(s_es8311_if->enable(s_es8311_if, false), "stress disable") != ESP_OK) {
             st.disable_errors++;
         }
@@ -1081,7 +1167,8 @@ esp_err_t nuwax_vocat_audio_board_playback_stress(int cycles, nuwax_vocat_playba
         }
     }
     /* Leave the codec enabled at the same real DAC level for the smoke test. */
-    if (codec_dev_ret_to_err(s_es8311_if->enable(s_es8311_if, true),
+    if (nuwax_vocat_audio_board_force_speaker_mute() != ESP_OK ||
+        codec_dev_ret_to_err(s_es8311_if->enable(s_es8311_if, true),
                              "stress final enable") != ESP_OK ||
         set_es8311_volume_db(playback_volume_db, "stress final volume restore") != ESP_OK) {
         st.enable_errors++;
@@ -1105,20 +1192,21 @@ esp_err_t nuwax_vocat_audio_board_test_tone_start(nuwax_vocat_test_tone_handle_t
     ESP_RETURN_ON_FALSE(out_handle, ESP_ERR_INVALID_ARG, TAG, "active-tone out_handle is NULL");
     *out_handle = NULL;
 
+    nuwax_audio_board_ref_t ref = {0};
     /* Keep TX alive while the concurrent hard-reference A/B run owns RX. */
-    ESP_RETURN_ON_ERROR(nuwax_audio_board_init(), TAG, "active-tone board init failed");
+    ESP_RETURN_ON_ERROR(nuwax_audio_board_init(&ref), TAG, "active-tone board init failed");
     void *tx_handle = NULL;
     nuwax_audio_board_lease_t lease = {0};
     esp_err_t err = nuwax_audio_board_acquire_tx(&tx_handle, &lease);
     if (err != ESP_OK) {
-        (void)nuwax_audio_board_deinit();
+        (void)nuwax_audio_board_deinit(&ref);
         return err;
     }
 
     nuwax_vocat_test_tone_handle_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) {
         (void)nuwax_audio_board_release(&lease);
-        (void)nuwax_audio_board_deinit();
+        (void)nuwax_audio_board_deinit(&ref);
         return ESP_ERR_NO_MEM;
     }
     ctx->tx_handle = (i2s_chan_handle_t)tx_handle;
@@ -1126,10 +1214,18 @@ esp_err_t nuwax_vocat_audio_board_test_tone_start(nuwax_vocat_test_tone_handle_t
     if (!ctx->done) {
         free(ctx);
         (void)nuwax_audio_board_release(&lease);
-        (void)nuwax_audio_board_deinit();
+        (void)nuwax_audio_board_deinit(&ref);
         return ESP_ERR_NO_MEM;
     }
 
+    err = nuwax_vocat_audio_board_prepare_speaker_playback();
+    if (err != ESP_OK) {
+        vSemaphoreDelete(ctx->done);
+        free(ctx);
+        (void)nuwax_audio_board_release(&lease);
+        (void)nuwax_audio_board_deinit(&ref);
+        return err;
+    }
     BaseType_t task_ok = xTaskCreate(test_tone_task,
                                      "p3_active_tone",
                                      4096,
@@ -1137,14 +1233,16 @@ esp_err_t nuwax_vocat_audio_board_test_tone_start(nuwax_vocat_test_tone_handle_t
                                      6,
                                      NULL);
     if (task_ok != pdPASS) {
+        (void)nuwax_vocat_audio_board_force_speaker_mute();
         vSemaphoreDelete(ctx->done);
         free(ctx);
         (void)nuwax_audio_board_release(&lease);
-        (void)nuwax_audio_board_deinit();
+        (void)nuwax_audio_board_deinit(&ref);
         return ESP_ERR_NO_MEM;
     }
     *out_handle = ctx;
     ctx->board_lease = lease;
+    ctx->board_ref = ref;
     ESP_LOGW(TAG, "P3 active-tone started amplitude=%.0f tone_hz=1000 board_tx_lease=held",
              (double)VOCAT_AEC_TEST_TONE_AMPLITUDE);
     return ESP_OK;
@@ -1164,12 +1262,14 @@ esp_err_t nuwax_vocat_audio_board_test_tone_stop(nuwax_vocat_test_tone_handle_t 
     ESP_LOGW(TAG, "P3 active-tone stopped tx_frames=%llu tx_errors=%lu",
              (unsigned long long)handle->frames,
              (unsigned long)handle->errors);
+    ESP_RETURN_ON_ERROR(nuwax_vocat_audio_board_force_speaker_mute(),
+                        TAG, "active-tone PA mute failed");
     if (handle->board_lease.token != 0) {
         ESP_RETURN_ON_ERROR(nuwax_audio_board_release(&handle->board_lease),
                             TAG,
                             "active-tone TX lease release failed");
     }
-    ESP_RETURN_ON_ERROR(nuwax_audio_board_deinit(),
+    ESP_RETURN_ON_ERROR(nuwax_audio_board_deinit(&handle->board_ref),
                         TAG,
                         "active-tone board deinit failed");
     vSemaphoreDelete(handle->done);
@@ -1265,6 +1365,23 @@ static esp_err_t set_es7210_channel_gain_db(int channel, float gain_db)
                                 "ES7210 channel gain");
 }
 
+static void wait_pa_settle_ms(uint32_t settle_ms)
+{
+    /* vTaskDelay(N) can return nearly one tick earlier than N tick periods
+     * when called just before a tick. Measure elapsed time before declaring
+     * the amplifier ready, especially for the 5 ms PA-off interval. */
+    const int64_t deadline_us =
+        esp_timer_get_time() + (int64_t)settle_ms * 1000LL;
+    for (;;) {
+        const int64_t remaining_us = deadline_us - esp_timer_get_time();
+        if (remaining_us <= 0) {
+            return;
+        }
+        const uint32_t remaining_ms = (uint32_t)((remaining_us + 999LL) / 1000LL);
+        vTaskDelay((remaining_ms + portTICK_PERIOD_MS - 1U) / portTICK_PERIOD_MS);
+    }
+}
+
 static esp_err_t set_external_pa_enabled(bool enabled, const char *label)
 {
     ESP_RETURN_ON_FALSE(s_gpio_if && s_gpio_if->set,
@@ -1285,9 +1402,7 @@ static esp_err_t set_external_pa_enabled(bool enabled, const char *label)
     }
     const uint32_t settle_ms = enabled ? CONFIG_NUWAX_VOCAT_PA_ENABLE_SETTLE_MS
                                        : CONFIG_NUWAX_VOCAT_PA_DISABLE_SETTLE_MS;
-    if (settle_ms > 0) {
-        vTaskDelay(pdMS_TO_TICKS(settle_ms));
-    }
+    wait_pa_settle_ms(settle_ms);
     const uint32_t elapsed_ms =
         (uint32_t)((esp_timer_get_time() - started_us + 999LL) / 1000LL);
     if (elapsed_ms > CONFIG_NUWAX_VOCAT_PA_TRANSITION_MAX_MS) {
@@ -1313,19 +1428,19 @@ esp_err_t nuwax_vocat_audio_board_force_speaker_mute(void)
     /* Use the SoC GPIO driver directly so this last-resort path remains
      * available even when the codec GPIO wrapper is damaged or half-torn-down. */
     const int64_t started_us = esp_timer_get_time();
-    ESP_RETURN_ON_ERROR(gpio_set_direction(NUWAX_VOCAT_PA_CTRL_GPIO, GPIO_MODE_OUTPUT),
-                        TAG,
-                        "force PA-off direction failed");
+    /* Load the low latch before enabling output, so a stale high latch cannot
+     * briefly turn PA on when recovering a pin previously configured as input. */
     ESP_RETURN_ON_ERROR(gpio_set_level(NUWAX_VOCAT_PA_CTRL_GPIO, 0),
                         TAG,
                         "force PA-off level failed");
+    ESP_RETURN_ON_ERROR(gpio_set_direction(NUWAX_VOCAT_PA_CTRL_GPIO, GPIO_MODE_OUTPUT),
+                        TAG,
+                        "force PA-off direction failed");
     if (pa_output_latch_enabled()) {
         ESP_LOGE(TAG, "force PA-off GPIO latch mismatch");
         return ESP_ERR_INVALID_RESPONSE;
     }
-    if (CONFIG_NUWAX_VOCAT_PA_DISABLE_SETTLE_MS > 0) {
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_NUWAX_VOCAT_PA_DISABLE_SETTLE_MS));
-    }
+    wait_pa_settle_ms(CONFIG_NUWAX_VOCAT_PA_DISABLE_SETTLE_MS);
     const uint32_t elapsed_ms =
         (uint32_t)((esp_timer_get_time() - started_us + 999LL) / 1000LL);
     if (elapsed_ms > CONFIG_NUWAX_VOCAT_PA_TRANSITION_MAX_MS) {
@@ -1352,7 +1467,16 @@ esp_err_t nuwax_vocat_audio_board_prepare_speaker_playback(void)
     if (!s_pa_forced_off && pa_output_latch_enabled()) {
         return ESP_OK;
     }
-    return set_external_pa_enabled(true, "speaker playback PA prepare");
+    const esp_err_t err =
+        set_external_pa_enabled(true, "speaker playback PA prepare");
+    if (err != ESP_OK) {
+        /* An enable may have reached GPIO before verification/settling fails. */
+        const esp_err_t mute_err = nuwax_vocat_audio_board_force_speaker_mute();
+        if (mute_err != ESP_OK) {
+            ESP_LOGE(TAG, "PA prepare rollback failed: %s", esp_err_to_name(mute_err));
+        }
+    }
+    return err;
 }
 
 static esp_err_t capture_slots_with_sync_tone(
@@ -1679,6 +1803,8 @@ esp_err_t nuwax_vocat_audio_board_channel_map_probe(void)
                         TAG,
                         "channel-map probe requires exclusive diagnostic lease");
     ESP_RETURN_ON_ERROR(nuwax_vocat_audio_board_init(), TAG, "audio board init failed");
+    ESP_RETURN_ON_ERROR(nuwax_vocat_audio_board_prepare_speaker_playback(),
+                        TAG, "diagnostic PA prepare failed");
 
     const float previous_volume_db = s_es8311_volume_db;
     esp_err_t result = set_es8311_volume_db(0.0f, "channel-map probe volume");
@@ -1877,6 +2003,8 @@ esp_err_t nuwax_vocat_audio_board_ref_probe(nuwax_vocat_ref_probe_stats_t *out)
                         TAG,
                         "REF probe requires exclusive diagnostic lease");
     ESP_RETURN_ON_ERROR(nuwax_vocat_audio_board_init(), TAG, "audio board init failed");
+    ESP_RETURN_ON_ERROR(nuwax_vocat_audio_board_prepare_speaker_playback(),
+                        TAG, "diagnostic PA prepare failed");
     nuwax_vocat_ref_probe_stats_t st = {0};
 
     /* P2-6 / P3-0 REF identification and health. HW model: slot0/1=mics,
@@ -2016,6 +2144,8 @@ esp_err_t nuwax_vocat_aec_ref_health_check(float volume_db, uint32_t duration_ms
     out->status = NUWAX_AEC_REF_HEALTH_NO_SIGNAL;
 
     ESP_RETURN_ON_ERROR(nuwax_vocat_audio_board_init(), TAG, "audio board init failed");
+    ESP_RETURN_ON_ERROR(nuwax_vocat_audio_board_prepare_speaker_playback(),
+                        TAG, "diagnostic PA prepare failed");
 
     if (duration_ms < 500) duration_ms = 500;
     if (duration_ms > 10000) duration_ms = 10000;
@@ -2296,6 +2426,8 @@ esp_err_t nuwax_vocat_audio_board_smoke_test(uint32_t duration_ms, nuwax_vocat_a
                         TAG,
                         "audio smoke requires exclusive diagnostic lease");
     ESP_RETURN_ON_ERROR(nuwax_vocat_audio_board_init(), TAG, "audio board init failed");
+    ESP_RETURN_ON_ERROR(nuwax_vocat_audio_board_prepare_speaker_playback(),
+                        TAG, "diagnostic PA prepare failed");
     if (out_stats) {
         memset(out_stats, 0, sizeof(*out_stats));
     }

@@ -8,6 +8,29 @@
 #define NUWAX_SPEAKER_JITTER_STABLE_DECAY_PLAYBACKS 2U
 #define NUWAX_SPEAKER_JITTER_BASE_TO_MIN_PLAYBACKS 5U
 #define NUWAX_SPEAKER_JITTER_STABLE_DECAY_MS 160U
+#define NUWAX_SPEAKER_JITTER_ADAPT_REBUFFER_MIN_MS 800U
+/* Never let the sole playback consumer wait indefinitely for a full
+ * watermark: with some PCM available, a bounded fallback keeps ingress from
+ * filling the ring and stalling the WebSocket RX path. */
+#define NUWAX_SPEAKER_JITTER_FORCE_RESUME_WAIT_MS 2000U
+/* Separate from the 60 s ingress-idle limit: trickle input must not hold an
+ * unstarted response forever. Normal adaptive watermarks remain unchanged. */
+#define NUWAX_SPEAKER_JITTER_STARTUP_TIMEOUT_MS 5000U
+#define NUWAX_SPEAKER_NOTIFICATION_STARTUP_TIMEOUT_MS 10000U
+
+/* Notifications have their own cancellation transaction and a longer startup
+ * budget. Ingress may renew idle liveness, never this absolute startup age. */
+static inline bool nuwax_speaker_notification_startup_expired(
+    bool playback_started, bool ready, uint32_t startup_age_ms) {
+    return !playback_started && !ready &&
+           startup_age_ms >= NUWAX_SPEAKER_NOTIFICATION_STARTUP_TIMEOUT_MS;
+}
+
+static inline bool nuwax_speaker_jitter_startup_expired(
+    bool playback_started, bool ready, uint32_t startup_age_ms) {
+    return !playback_started && !ready &&
+           startup_age_ms >= NUWAX_SPEAKER_JITTER_STARTUP_TIMEOUT_MS;
+}
 
 typedef enum {
     NUWAX_SPEAKER_STALL_WAIT = 0,
@@ -61,6 +84,17 @@ static inline bool nuwax_speaker_jitter_ready_ms(bool playback_started,
     return required_ms == 0U ||
            nuwax_speaker_jitter_audio_ms(queued_samples, sample_rate) >=
                required_ms;
+}
+
+static inline bool nuwax_speaker_jitter_force_resume(
+    bool playback_started,
+    bool rebuffering,
+    uint32_t waited_ms,
+    uint32_t queued_records,
+    uint32_t queued_samples,
+    uint32_t max_wait_ms) {
+    return playback_started && rebuffering && waited_ms >= max_wait_ms &&
+           queued_records > 0U && queued_samples > 0U;
 }
 
 static inline bool nuwax_speaker_jitter_should_enter_rebuffer(
@@ -149,12 +183,17 @@ static inline uint32_t nuwax_speaker_jitter_adapt_startup_ms(
         return current_ms;
     }
     /* A long ingress outage cannot be hidden without imposing the same delay
-     * on every later response. Keep these arguments for API compatibility and
-     * diagnostics, but never convert outage duration into startup buffering. */
-    (void)rebuffer_max_wait_ms;
+     * on every later response. The measured wait is used only to decide
+     * whether the startup tier deserves promotion. */
     uint8_t history =
         (uint8_t)((*recent_instability_history << 1U) & 0x07U);
-    const bool playback_unstable = playback_rebuffered;
+    /* A short, already-recovered outage must not penalize every subsequent
+     * response with a larger startup buffer. Only promote the startup tier
+     * after a material rebuffer; longer outages still use the existing
+     * adaptive growth and stable-playback decay. */
+    const bool playback_unstable =
+        playback_rebuffered &&
+        rebuffer_max_wait_ms >= NUWAX_SPEAKER_JITTER_ADAPT_REBUFFER_MIN_MS;
     if (playback_unstable) {
         history |= 1U;
     }
@@ -178,6 +217,13 @@ static inline uint32_t nuwax_speaker_jitter_adapt_startup_ms(
                                                 : current_ms + increase;
     }
 
+    /* A recovered short midstream outage is neutral for buffer growth, but
+     * breaks the consecutive clean-playback streak. END-only tail waits are
+     * excluded by the caller's confirmed midstream event count. */
+    if (playback_rebuffered) {
+        *stable_playbacks = 0U;
+        return current_ms;
+    }
     if (*stable_playbacks < UINT8_MAX) {
         (*stable_playbacks)++;
     }

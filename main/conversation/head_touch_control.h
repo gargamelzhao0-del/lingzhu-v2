@@ -7,10 +7,12 @@
 
 typedef nuwax_app_state_t (*nuwax_head_touch_state_cb_t)(void *user_ctx);
 typedef bool (*nuwax_head_touch_allowed_cb_t)(void *user_ctx);
+typedef bool (*nuwax_head_touch_media_interrupt_cb_t)(void *user_ctx);
 
 /* Connects the independent active-high head touch input to the product
  * conversation action queue. The GPIO polling callback remains non-blocking;
  * all conversation state changes are owned by the normal application loop. */
 esp_err_t nuwax_head_touch_control_init(nuwax_head_touch_state_cb_t get_state,
                                         nuwax_head_touch_allowed_cb_t interaction_allowed,
+                                        nuwax_head_touch_media_interrupt_cb_t interrupt_media,
                                         void *user_ctx);

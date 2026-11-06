@@ -1,0 +1,6 @@
+PASS no panic/brownout
+PASS no audio drops
+PASS internal minimum: min=20000
+PASS DMA largest: min=10000
+PASS wake input
+LONG-RUN GATE: PASS

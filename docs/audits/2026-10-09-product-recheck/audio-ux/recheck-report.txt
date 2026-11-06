@@ -1,0 +1,125 @@
+音频／交互反证审查 2026-10-09
+仅分析与隔离验证；未修改生产代码；候选 WG-EPOCH-RECOVERY-v1 未编入固件、未上真机。
+
+结论
+R1仍成立，且不依赖上一轮直接设置初始状态的简化桩。R2仍成立。
+本轮扩大为原wait_for_mic_start_action真实循环，并执行原begin_awake_session、send_wake_word_greeting、
+begin_active_turn_guard、视觉回合建立/清除、clear_active_turn_guard、timeout、恢复、idle与wake准入函数。
+链接真实awake_session、turn_guard、playback_terminal_guard、prelisten与listen_resume模块。
+无回应用例6002次循环、模拟10分钟后无capture/wake；TTS-pending相同。
+真实send-failure分支作为对照，模拟700ms后成功进入收音。
+本轮明确：RTOS时间/队列、网络、speaker硬件及无活动的其他服务仍为桩；
+TTS-pending用例注入与生产handler相同的turn状态转换，未运行整套云消息解码器。
+模拟时间不是实机时长，不能据此宣布硬件长稳已验证。
+这里的“真实循环”专指从当前源码抽取的wait_for_mic_start_action函数体；不是整个固件app_main或所有并发任务。
+baseline从唤醒事件开始执行该函数体，RTOS等待桩每轮推进虚拟时间，并在600000ms人为断开以结束测试。
+6002轮证明的是该受控事件序列中原分支无法自行退出；TLS/真实socket、ISR/调度竞态、云解码及其他业务
+任务的完整副作用未执行。外层主循环和其他解除路径另以当前源码逐一审查，不能统称全链路整机复现。
+
+R1严格触发条件与反证结果
+1. 初始是逻辑SLEEPING，正常唤醒事件被接受；awake session创建为active/paused，wake detector被停。
+2. text_request发送返回ESP_OK（不是发送失败）。正常首PCM之前沿用SLEEPING是既定产品要求。
+3. 在15秒内没有有效文本；或收到ok/tts_pending后30秒内没有可播放响应；没有首PCM。
+4. WebSocket继续有传输心跳，且未发生主动睡眠、OTA/配网/模式接管、通知、摇晃、断网等外部生命周期事件。
+5. timeout清guard后调用main/nuwax_ai_partner_main.c:9104恢复函数；9112因SLEEPING早退。
+6. 9539只为paused+IDLE启动prelisten；5489的wake监督因active awake拒绝重启。
+
+排除的“自动解锁”假设：
+- 外层local_audio_error恢复(main:34851)不可达：run_audio_source(:29687)仍卡在原wait循环，未返回错误。
+- 超时末尾set_conversation_status_guarded仅修改UI；app_shell_post_dialog(:554–567)还把SLEEPING的非sleep
+  dialog钳回SLEEP，不会反向更改conversation state。因此“屏幕仍睡、叫不醒”比“显示聆听”更准确。
+- clear_active_turn_guard(:2172)会清visual/downlink，但不清awake、不转逻辑状态；已用原函数验证。
+- 无pending的speaker request_fade_cancel(:3352–3375)直接返回，不会制造后续PLAYBACK_DONE。
+- 第一条正常PCM、正常PLAYBACK_DONE、显式云错误、无TTS文本、send失败都有其他恢复路径，不属于本例。
+- 超时后迟到text/playback_begin没有有效listen_resume绑定，原can_bootstrap_cloud_turn返回false；
+  孤立cancel ACK没有已绑定的touch/terminal transaction，原terminal处理返回UNMATCHED。
+- 普通set_emotion不转换逻辑状态；remote set_state非sleep被session_dispatch.c:327–344拒绝。
+- 主机100ms等待会持续喂watchdog；wake supervisor在desired=false时也直接continue，不触发其“启动失败”自恢复。
+- ws_check_activity_timeout(:12401)的业务无回应只告警；传输心跳仍活跃时不关闭连接。
+
+外部解除条件（不是自动保证）：
+- 真实传输断开触发外层清理/重连；30秒awake恢复宽限内重连可恢复收音，超期改回wake-ready sleep。
+- 头摸在SLEEPING且touch-wake关闭时不能解锁；屏幕长按也不能。电源短按不把SLEEPING算对话状态。
+- 合格摇晃能从SLEEPING建立互动并转THINKING，可解除；仍依赖对应云响应/后续恢复。
+- 远程主动sleep、合规通知/模式接管结束、OTA生命周期、配网或重启可能重建状态。
+- 这不是永久变砖。重新说话或反复叫唤醒词本身无效，是正常用户入口失去活性。
+
+推荐最小可靠修复（异常路径专用）
+A. 保留原recover_normal_conversation_after_playback_abort的通用SLEEPING保护。
+B. 在超时清理之前捕获专用greeting recovery ticket，要求：visual.kind=WAKE_GREETING、first_pcm=false、
+   speaker_generation=0、request_id非空且与turn相同；绑定ws epoch、awake generation、turn epoch、
+   typed failure reason(TEXT_TIMEOUT/TTS_TIMEOUT/FIRST_PCM_TIMEOUT)。不能只靠字符串reason或当前画面。
+C. 原清理先关闭旧downlink并退休旧turn；只有ticket仍匹配且无新owner才请求关闭这个连接epoch。
+   新增窄范围WAKE_GREETING_UNRESOLVED close cause，更新enum边界与名字；不要把它伪称transport corruption。
+   当前nuwax_ws_request_close_if_epoch=BUSINESS_RECOVERY，健康心跳时实际会被拒绝，不能直接使用而忽略返回值。
+   若关闭因epoch改变而被拒绝，交给新owner；其他失败保留ticket作有界重试/明确回退，不能静默丢票。
+D. 清理后和wait循环内service ticket：主动睡眠/关机、更新awake/turn/连接、配网、通知和独占模式优先，
+   老票据失效；OTA暂缓，若无新owner可在OTA释放后继续。禁止旧失败恢复把主动睡眠设备叫醒。
+E. 复用当前断开→preserve_awake_session_for_ws_reconnect→新epoch认证→arm/recover_awake的链路；
+   菜单打开时原恢复函数转IDLE并保留菜单，关闭后现有idle逻辑开始收音。
+F. 旧epoch的回包、队列、close和音频包必须仍按原epoch fence隔离；完成真实物理资源释放后再复用ws。
+
+为什么不直接同连接改成LISTENING：
+原ensure_active_turn_guard_for_cloud_output(:2371)在新capture已绑定时允许云输出bootstrap新turn。
+此处只校验有当前capture/epoch，不校验incoming old greeting request/audio identity。
+所以“timeout后立即start_prelisten”可让迟到旧问候侵入下一轮。若坚持同连接优化，必须实现retired
+greeting request/turn隔离，并解决无request_id兼容消息的归因，不能只加一个状态赋值。
+
+候选验证结果及边界
+- candidate.py只改生成的审计C文件，candidate_policy.h为候选；candidate-vs-baseline.patch不是可发布补丁。
+- 原真实wait在约15.1秒或31.1秒（本用例1秒时注入tts_pending）请求一次epoch轮换。
+- 随后调用原preserve、arm、recover函数，新epoch成功时正确创建LISTENING/prelisten。
+- 原菜单分支返回MENU_BLOCKED并保持IDLE；关闭菜单后原maybe_enter_idle_sleep恢复。
+- 验证票据epoch/awake/turn、首PCM、主动sleep、关机、OTA、配网、通知、模式、断开等policy fences。
+- 验证普通业务close在健康心跳下仍被拒绝，新专用cause才放行；旧epoch close不影响新epoch。
+- 验证原30秒grace条件会清awake并请求wake-ready sleep；真实wake模型/硬件启动没有在主机模拟。
+- 新连接在1000ms后成功是测试注入，不是耗时承诺；未执行TLS、认证、物理speaker/SD teardown或真实OTA。
+- 新close cause只存在于候选policy和测试断言；测试用transport_closed布尔桩代表“关闭请求已被接受”，
+  然后人为递增epoch并调用原preserve/arm/recover。没有修改或执行真实ws_transport的新增cause实现，
+  没有验证mailbox请求在真实并发下必被接受。实际落地必须补齐transport枚举/校验/策略/名字、返回值与
+  失败回退，再验证真实socket关闭→补传取消→资源销毁→连接认证→恢复。此候选是设计可行性证据，
+  不是修复已完成、端到端通过或可直接发布的证据。
+
+重连链路与SD副作用
+main:34950后的断开路径会对active/paused awake执行preserve，不要求逻辑状态非SLEEPING。
+main:34584–34636在30秒宽限内恢复；main:34314–34320超期明确进入sleep并恢复离线wake监督。
+ws_transport.c:466的transport_is_open会因close_requested_epoch立刻返回false，因而wait能退出外层。
+同连接formal SD补传可能同时运行。main:35072–35089要求其cancel在6秒内结束，失败走既有受控重启。
+offline_audio_spool.c:4356取消只是置cancel flag并唤醒等待；replay_wait_ack(:3044)见取消/断开返回错误。
+文件只在commit ACK成功后(:3849–3859)删除；未ACK的.ready保留，下次幂等begin/commit可重试。
+因此异常恢复会暂停补传，可能重发/重复提交；依赖既有云端幂等。不能承诺“完全无感”或“绝不重启”。
+
+R2屏幕取消复核与修复
+原app_shell_hold_action(:1656)仅THINKING/SPEAKING返回CANCEL；问候首PCM(:10950)设LISTENING，
+正式touch-wake=false，故返回NONE。原实际触摸入口(:1693)直接走此函数，180ms qualification在touch_gesture.c:557。
+普通head-touch和屏幕并非同一路：头摸可走agent interaction，不能用它证明屏幕取消正确。
+保留focused/聆听表情和播放后收音；由conversation/speaker owner向UI mailbox发布可取消的owner快照
+(ws epoch/awake generation/turn epoch/speaker generation)。屏幕长按按该快照决定CANCEL，动作带身份，
+消费时复核仍是同一个活动回合，防止动作排队后取消了下一轮。不要在UI锁内跨锁读speaker全局，也不要
+无条件把所有LISTENING长按改为CANCEL；正常收音无播放时仍沿用现有策略。
+
+修复前后用户体验（设计预期，不冒充实机结果）
+正常问候：保持原表现，首PCM时focused表情、播完开始收音；无新增确认或等待。
+云端问候业务无回包：当前可一直保持睡眠样式并失去正常语音入口；修复后到既定业务deadline触发一次
+受控连接更新，网络恢复后进入收音；网络未恢复则回到可再唤醒的休眠/离线状态。耗时取决真实网络。
+问候中长按屏幕：当前无动作；修复后取消当时绑定的问候，等物理停止后收音，不取消后来新回合。
+补传并发：当前异常可能同样失去语音入口；修复会暂停补传、保留未ACK资料，连接恢复后重试。
+
+验收至少覆盖以下10组（最终构建真实设备、正式云端）
+1. 成功发送问候后无文本，保持心跳：15秒边界后请求一次恢复；新epoch收音或可重试sleep。
+2. 文本tts_pending但无TTS、metadata但无PCM：各自期限触发，无firstPCM的旧owner不能复活。
+3. 超时之后旧text/TTS/binary/END/cancel ACK同时到达；在新capture已开始时仍不能抢占或污染。
+4. 超时前后主动sleep/关机：不重开麦克风、不重启wake、不关闭更新的epoch。
+5. 超时前后OTA、配网、会议/监听、通知接管：新owner优先；结束后明确收敛，无双MIC/双speaker。
+6. 打开菜单期间超时并重连：菜单保持；关闭菜单后无需再重启即可收音。
+7. 连接快速恢复、认证失败、持续断网、30秒grace耗尽：分别验证收音或wake-ready，绝无active/paused死等。
+8. 同连接SD补传在begin/chunk/commit ACK前后遇超时恢复；未ACK不删除、ACK后可删、重复提交幂等；
+   加入cancel超时故障注入，验证受控重启后的.ready与恢复，不宣称绝不重启。
+9. 普通问候成功100轮：新增逻辑没有额外等待、重复问候、额外连接或首字丢失。
+10. 问候/普通回答/通知播放中屏幕长按；自然播完与动作入队竞态，旧动作不可误取消下一轮。
+
+文件与复现
+python tmp/product-launch-recheck-20261009/audio-ux/recheck.py
+python tmp/product-launch-recheck-20261009/audio-ux/candidate.py
+见real-wait-output.txt、candidate-output.txt、source-evidence.json、candidate-evidence.json。
+当前main源码SHA256=0087ce87987ffcc75b0cfbf7d1e4b28767c0bb166873c06f9a0fb9597651162a，与上轮及7.0.113一致。

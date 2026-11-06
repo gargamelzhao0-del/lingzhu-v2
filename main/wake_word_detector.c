@@ -12,11 +12,19 @@
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mic_input.h"
 #include "conversation/wake_word_input_policy.h"
 #include "conversation/wake_word_detection_policy.h"
+#include "conversation/wake_noise_policy.h"
+
+#if CONFIG_NUWAX_WAKE_WORD_BACKEND_MULTINET
+_Static_assert(CONFIG_NUWAX_CUSTOM_WAKE_WORD_THRESHOLD_PERCENT * 10U ==
+               NUWAX_WAKE_WEAK_THRESHOLD_Q1000,
+               "MultiNet and final wake thresholds must agree");
+#endif
 #include "conversation/wake_word_interrupt_filter.h"
 #include "conversation/wake_word_probe_policy.h"
 #include "p3_software_ref.h"
@@ -31,6 +39,22 @@
 #endif
 
 static const char *TAG = "nuwax_wake";
+
+/* Diagnostic boundaries only: inference is stopped at every call site.
+ * Do not put a heap walk in the 32 ms inference or replay hot path. */
+static inline void wake_heap_checkpoint(const char *stage) {
+#if CONFIG_NUWAX_WAKE_WORD_HEAP_CHECKS
+    const int64_t started = esp_timer_get_time();
+    if (!heap_caps_check_integrity_all(true)) {
+        ESP_LOGE(TAG, "wake heap corruption stage=%s; stopping before decoder reuse", stage);
+        abort();
+    }
+    ESP_LOGI(TAG, "wake heap checkpoint stage=%s result=ok elapsed_us=%llu",
+             stage, (unsigned long long)(esp_timer_get_time() - started));
+#else
+    (void)stage;
+#endif
+}
 
 #define NUWAX_WAKE_CAPTURE_STOP_TIMEOUT_MS 5000U
 
@@ -104,7 +128,7 @@ static const char *TAG = "nuwax_wake";
 #endif
 
 #ifndef CONFIG_NUWAX_CUSTOM_WAKE_WORD_THRESHOLD_PERCENT
-#define CONFIG_NUWAX_CUSTOM_WAKE_WORD_THRESHOLD_PERCENT 7
+#define CONFIG_NUWAX_CUSTOM_WAKE_WORD_THRESHOLD_PERCENT 9
 #endif
 
 #ifndef CONFIG_NUWAX_WAKE_WORD_INTERRUPT_ENABLE
@@ -152,6 +176,17 @@ typedef struct {
     nuwax_wake_task_state_t task_state;
     atomic_bool stop_requested;
     atomic_bool ready;
+    atomic_uint_fast32_t last_feed_ms;
+    /* Set before a Flash/NVS transaction. The owner clears it only after the
+     * transaction is complete; start_with_context() rejects re-arm attempts
+     * while this fence is active. */
+    bool flash_operation_guarded;
+    bool config_persisted;
+    /* A plain boolean is not enough when a caller returns early or a second
+     * task attempts a transaction. Keep the task identity so a late end call
+     * cannot release another task's Flash fence. */
+    TaskHandle_t flash_operation_owner;
+    uint16_t flash_operation_depth;
     nuwax_wake_word_callback_t callback;
     void *user_ctx;
     srmodel_list_t *models;
@@ -188,12 +223,22 @@ typedef struct {
 } nuwax_wake_detector_t;
 
 static nuwax_wake_detector_t s_detector;
+static atomic_uint s_wake_capture_backlog_ms;
+static portMUX_TYPE s_wake_capture_pressure_lock = portMUX_INITIALIZER_UNLOCKED;
+
+uint32_t nuwax_wake_word_capture_backlog_ms(void)
+{
+    return atomic_load_explicit(&s_wake_capture_backlog_ms, memory_order_acquire);
+}
+
+#include "wake_capture_pressure_signal.inc"
 
 typedef struct {
     int16_t mic1[NUWAX_WAKE_CAPTURE_CHUNK_SAMPLES];
     int16_t mic2[NUWAX_WAKE_CAPTURE_CHUNK_SAMPLES];
     uint32_t generation;
     uint16_t sample_count;
+    uint32_t sequence;
 } nuwax_wake_capture_chunk_t;
 
 typedef struct {
@@ -215,9 +260,13 @@ typedef struct {
     esp_err_t init_result;
     uint32_t producer_generation;
     uint32_t consumer_generation;
+    uint32_t producer_sequence;
+    uint32_t consumer_sequence;
+    bool consumer_sequence_valid;
     uint8_t consumer_chunk;
     uint16_t consumer_offset;
     bool consumer_holds_chunk;
+    bool dual_input;
     nuwax_wake_capture_chunk_t chunks[CONFIG_NUWAX_WAKE_CAPTURE_QUEUE_DEPTH];
 } nuwax_wake_capture_context_t;
 
@@ -440,16 +489,31 @@ static esp_err_t load_persisted_config(nuwax_wake_word_config_t *output,
                                             : ESP_ERR_INVALID_ARG;
 }
 
+static void detector_lock(void);
+static void detector_unlock(void);
+
 static esp_err_t persist_config(const nuwax_wake_word_config_t *config)
 {
     if (!config || config->count == 0U) {
         return ESP_ERR_INVALID_ARG;
+    }
+    detector_lock();
+    s_detector.config_persisted = false;
+    detector_unlock();
+    const esp_err_t guard_err =
+        nuwax_wake_word_detector_begin_flash_operation(500U);
+    if (guard_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "wake word persistence deferred while detector is active: %s",
+                 esp_err_to_name(guard_err));
+        return guard_err;
     }
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(NUWAX_WAKE_WORD_NVS_NAMESPACE,
                              NVS_READWRITE,
                              &nvs);
     if (err != ESP_OK) {
+        nuwax_wake_word_detector_end_flash_operation();
         return err;
     }
     nuwax_wake_word_persisted_v2_t persisted = {0};
@@ -467,19 +531,37 @@ static esp_err_t persist_config(const nuwax_wake_word_config_t *config)
         err = nvs_commit(nvs);
     }
     nvs_close(nvs);
+    detector_lock();
+    s_detector.config_persisted = err == ESP_OK &&
+        nuwax_wake_word_configs_equal(&s_detector.config, config);
+    detector_unlock();
+    nuwax_wake_word_detector_end_flash_operation();
     return err;
 }
 
 static esp_err_t erase_persisted_config(void)
 {
+    detector_lock();
+    s_detector.config_persisted = false;
+    detector_unlock();
+    const esp_err_t guard_err =
+        nuwax_wake_word_detector_begin_flash_operation(500U);
+    if (guard_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "wake word erase deferred while detector is active: %s",
+                 esp_err_to_name(guard_err));
+        return guard_err;
+    }
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(NUWAX_WAKE_WORD_NVS_NAMESPACE,
                              NVS_READWRITE,
                              &nvs);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
+        nuwax_wake_word_detector_end_flash_operation();
         return ESP_OK;
     }
     if (err != ESP_OK) {
+        nuwax_wake_word_detector_end_flash_operation();
         return err;
     }
     esp_err_t erase_err = nvs_erase_key(nvs,
@@ -496,6 +578,7 @@ static esp_err_t erase_persisted_config(void)
         err = nvs_commit(nvs);
     }
     nvs_close(nvs);
+    nuwax_wake_word_detector_end_flash_operation();
     return err;
 }
 
@@ -506,7 +589,20 @@ static esp_err_t capture_persisted_snapshot(
         return ESP_ERR_INVALID_ARG;
     }
     memset(snapshot, 0, sizeof(*snapshot));
+
+    /* NVS reads use the same Flash/cache path as commits.  A configuration
+     * update can arrive while MultiNet is feeding audio, so quiesce the
+     * detector before taking the rollback snapshot as well. */
+    const esp_err_t guard_err =
+        nuwax_wake_word_detector_begin_flash_operation(500U);
+    if (guard_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "wake word snapshot deferred while detector is active: %s",
+                 esp_err_to_name(guard_err));
+        return guard_err;
+    }
     const esp_err_t err = load_persisted_config(&snapshot->config, NULL);
+    nuwax_wake_word_detector_end_flash_operation();
     if (err == ESP_OK) {
         snapshot->present = true;
         return ESP_OK;
@@ -761,13 +857,8 @@ static esp_err_t configure_multinet_commands(
         s_detector.mn_commands_allocated = true;
     }
     if (commands_reused) {
-        err = esp_mn_commands_clear();
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG,
-                     "esp_mn_commands_clear failed err=%s",
-                     esp_err_to_name(err));
-            return err;
-        }
+        /* ESP-SR exposes command clear as a void API. */
+        esp_mn_commands_clear();
     }
     for (uint8_t i = 0U; i < config->count; ++i) {
         const char *variant = config->variants[i];
@@ -802,6 +893,7 @@ static esp_err_t configure_multinet_commands(
  * reconstruct. Refresh it only while the detector task is fully stopped so a
  * corrupt or stale beam-search generation cannot survive indefinitely. */
 static void destroy_multinet_backend_locked(void) {
+    wake_heap_checkpoint("before_destroy");
     if (s_detector.mn_iface && s_detector.mn_data) {
         /* model_destroy() owns esp_mn_commands_free(). Keep the application
          * flag in sync without releasing the process-global tree twice. */
@@ -815,6 +907,7 @@ static void destroy_multinet_backend_locked(void) {
     s_detector.command_configured = false;
     s_detector.feed_chunksize = 0;
     s_detector.sample_rate = 0;
+    wake_heap_checkpoint("after_destroy");
 }
 
 static esp_err_t rebuild_multinet_backend_locked(
@@ -844,6 +937,7 @@ static esp_err_t rebuild_multinet_backend_locked(
     destroy_multinet_backend_locked();
     s_detector.mn_data = s_detector.mn_iface->create(
         s_detector.active_model, CONFIG_NUWAX_CUSTOM_WAKE_WORD_DURATION_MS);
+    wake_heap_checkpoint("after_rebuild_create");
     if (!s_detector.mn_data) {
         s_detector.mn_rebuild_pending = true;
         s_detector.mn_rebuild_failures++;
@@ -925,9 +1019,23 @@ static void wake_capture_return_chunk(nuwax_wake_capture_context_t *ctx,
     if (!ctx || !ctx->free_chunks ||
         xQueueSend(ctx->free_chunks, &index, 0) != pdTRUE) {
         ESP_LOGE(TAG,
-                 "playback wake capture chunk ownership lost index=%u",
+                 "wake capture chunk ownership lost index=%u",
                  (unsigned)index);
     }
+}
+
+/* Serialize snapshots, not audio processing. Both queue endpoints publish so
+ * replay resumes immediately when the consumer drains the backlog, including
+ * while the producer is blocked in I2S. No queue pointer escapes this owner. */
+static uint32_t wake_capture_publish_pressure(nuwax_wake_capture_context_t *ctx)
+{
+    portENTER_CRITICAL(&s_wake_capture_pressure_lock);
+    const uint32_t depth = atomic_load_explicit(&ctx->ready, memory_order_acquire)
+        ? (uint32_t)uxQueueMessagesWaiting(ctx->ready_chunks) : 0U;
+    const uint32_t previous = atomic_exchange_explicit(&s_wake_capture_backlog_ms, depth * 15U, memory_order_acq_rel);
+    portEXIT_CRITICAL(&s_wake_capture_pressure_lock);
+    if (previous > 30U && depth <= 2U) wake_capture_signal_drained();
+    return depth;
 }
 
 static void wake_capture_task(void *arg) {
@@ -944,7 +1052,7 @@ static void wake_capture_task(void *arg) {
         &mic, NUWAX_MIC_OWNER_WAKE_DETECTOR);
     if (ctx->init_result != ESP_OK) {
         ESP_LOGE(TAG,
-                 "playback wake capture mic init failed: %s",
+                 "wake capture mic init failed: %s",
                  esp_err_to_name(ctx->init_result));
         goto done;
     }
@@ -954,7 +1062,8 @@ static void wake_capture_task(void *arg) {
         xTaskNotifyGive(ctx->owner_task);
     }
     ESP_LOGI(TAG,
-             "playback wake capture ready chunk_samples=%u queue_depth=%u stack=%u priority=%u core=%u",
+             "wake capture ready dual=%d chunk_samples=%u queue_depth=%u stack=%u priority=%u core=%u",
+             (int)ctx->dual_input,
              (unsigned)NUWAX_WAKE_CAPTURE_CHUNK_SAMPLES,
              (unsigned)CONFIG_NUWAX_WAKE_CAPTURE_QUEUE_DEPTH,
              (unsigned)CONFIG_NUWAX_WAKE_CAPTURE_TASK_STACK_BYTES,
@@ -979,7 +1088,7 @@ static void wake_capture_task(void *arg) {
                         1U;
                     if (queue_empty_streak == 1U) {
                         ESP_LOGW(TAG,
-                                 "playback wake capture has no owned chunk; bounded recovery started free=%lu ready=%lu",
+                                 "wake capture has no owned chunk; bounded recovery started free=%lu ready=%lu",
                                  (unsigned long)uxQueueMessagesWaiting(
                                      ctx->free_chunks),
                                  (unsigned long)uxQueueMessagesWaiting(
@@ -993,7 +1102,7 @@ static void wake_capture_task(void *arg) {
                             memory_order_relaxed);
                         ctx->init_result = ESP_ERR_INVALID_STATE;
                         ESP_LOGE(TAG,
-                                 "playback wake capture queue ownership invariant failed streak=%lu waits=%lu depth=%u; exiting child for supervisor recovery",
+                                 "wake capture queue ownership invariant failed streak=%lu waits=%lu depth=%u; exiting child for supervisor recovery",
                                  (unsigned long)queue_empty_streak,
                                  (unsigned long)empty_waits,
                                  (unsigned)CONFIG_NUWAX_WAKE_CAPTURE_QUEUE_DEPTH);
@@ -1005,14 +1114,15 @@ static void wake_capture_task(void *arg) {
                 atomic_fetch_add_explicit(&ctx->queue_drops,
                                           1U,
                                           memory_order_relaxed);
-                ctx->producer_generation =
-                    nuwax_wake_input_next_generation(ctx->producer_generation);
+                /* Eviction creates a hole at the queue HEAD, not a DMA
+                 * discontinuity at the new tail. Sequence detects that hole
+                 * before the consumer feeds PCM across it. */
             }
         }
         queue_empty_streak = 0U;
         if (index >= CONFIG_NUWAX_WAKE_CAPTURE_QUEUE_DEPTH) {
             ESP_LOGE(TAG,
-                     "playback wake capture invalid free chunk index=%u",
+                     "wake capture invalid free chunk index=%u",
                      (unsigned)index);
             ctx->producer_generation =
                 nuwax_wake_input_next_generation(ctx->producer_generation);
@@ -1028,19 +1138,22 @@ static void wake_capture_task(void *arg) {
 
         nuwax_wake_capture_chunk_t *chunk = &ctx->chunks[index];
         size_t samples_read = 0U;
-        const esp_err_t read_result =
-            nuwax_mic_input_read_vocat_mic12_pcm16(
+        const esp_err_t read_result = ctx->dual_input
+            ? nuwax_mic_input_read_vocat_mic12_pcm16(
                 &mic,
                 chunk->mic1,
                 chunk->mic2,
                 NUWAX_WAKE_CAPTURE_CHUNK_SAMPLES,
                 NUWAX_WAKE_CAPTURE_READ_TIMEOUT_MS,
-                &samples_read);
+                &samples_read)
+            : nuwax_mic_input_read_pcm16(&mic, chunk->mic1,
+                NUWAX_WAKE_CAPTURE_CHUNK_SAMPLES,
+                NUWAX_WAKE_CAPTURE_READ_TIMEOUT_MS, &samples_read);
         if (read_result == ESP_ERR_NOT_SUPPORTED) {
             ctx->init_result = read_result;
             wake_capture_return_chunk(ctx, index);
             ESP_LOGE(TAG,
-                     "playback wake capture requires vocat dual-microphone input");
+                     "wake capture requires vocat dual-microphone input");
             goto done;
         }
         if (read_result == ESP_ERR_INVALID_RESPONSE) {
@@ -1051,7 +1164,7 @@ static void wake_capture_task(void *arg) {
         }
         if (read_result != ESP_OK && read_result != ESP_ERR_TIMEOUT) {
             ESP_LOGW(TAG,
-                     "playback wake capture read failed: %s",
+                     "wake capture read failed: %s",
                      esp_err_to_name(read_result));
             ctx->producer_generation =
                 nuwax_wake_input_next_generation(ctx->producer_generation);
@@ -1082,14 +1195,14 @@ static void wake_capture_task(void *arg) {
         }
         chunk->sample_count = (uint16_t)samples_read;
         chunk->generation = ctx->producer_generation;
+        chunk->sequence = ctx->producer_sequence++;
         if (xQueueSend(ctx->ready_chunks, &index, 0) != pdTRUE) {
             ctx->producer_generation =
                 nuwax_wake_input_next_generation(ctx->producer_generation);
             wake_capture_return_chunk(ctx, index);
             continue;
         }
-        const uint_fast32_t depth =
-            (uint_fast32_t)uxQueueMessagesWaiting(ctx->ready_chunks);
+        const uint_fast32_t depth = wake_capture_publish_pressure(ctx);
         uint_fast32_t previous = atomic_load_explicit(
             &ctx->queue_high_water, memory_order_relaxed);
         while (depth > previous &&
@@ -1104,6 +1217,7 @@ static void wake_capture_task(void *arg) {
 
 done:
     atomic_store_explicit(&ctx->ready, false, memory_order_release);
+    (void)wake_capture_publish_pressure(ctx);
     if (mic_ready) {
         (void)nuwax_mic_input_deinit(&mic);
     }
@@ -1147,14 +1261,14 @@ static void wake_capture_stop(nuwax_wake_capture_context_t **owner) {
         const uint32_t now_ms = detector_monotonic_ms();
         if ((uint32_t)(now_ms - last_wait_log_ms) >= 1000U) {
             ESP_LOGW(TAG,
-                     "waiting for playback wake capture to release microphone elapsed_ms=%lu",
+                     "waiting for wake capture to release microphone elapsed_ms=%lu",
                      (unsigned long)(now_ms - wait_started_ms));
             last_wait_log_ms = now_ms;
         }
         if ((uint32_t)(now_ms - wait_started_ms) >=
             NUWAX_WAKE_CAPTURE_STOP_TIMEOUT_MS) {
             ESP_LOGE(TAG,
-                     "playback wake capture did not release microphone timeout_ms=%u; controlled restart preserves I2S ownership",
+                     "wake capture did not release microphone timeout_ms=%u; controlled restart preserves I2S ownership",
                      (unsigned)NUWAX_WAKE_CAPTURE_STOP_TIMEOUT_MS);
             vTaskDelay(pdMS_TO_TICKS(100));
             esp_restart();
@@ -1173,7 +1287,7 @@ static void wake_capture_stop(nuwax_wake_capture_context_t **owner) {
         }
         if (task_state != eSuspended) {
             ESP_LOGE(TAG,
-                     "playback wake capture exited task did not suspend state=%d timeout_ms=%u; controlled restart preserves task storage ownership",
+                     "wake capture exited task did not suspend state=%d timeout_ms=%u; controlled restart preserves task storage ownership",
                      (int)task_state,
                      (unsigned)NUWAX_WAKE_TASK_SUSPEND_SETTLE_TIMEOUT_MS);
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -1188,7 +1302,7 @@ static void wake_capture_stop(nuwax_wake_capture_context_t **owner) {
         ctx->consumer_holds_chunk = false;
     }
     ESP_LOGI(TAG,
-             "playback wake capture stopped partial_reads=%lu timeouts=%lu queue_drops=%lu queue_high_water=%lu empty_waits=%lu invariant_faults=%lu stack_min_free=%u stack_bytes=%u",
+             "wake capture stopped partial_reads=%lu timeouts=%lu queue_drops=%lu queue_high_water=%lu empty_waits=%lu invariant_faults=%lu stack_min_free=%u stack_bytes=%u",
              (unsigned long)atomic_load_explicit(&ctx->partial_reads,
                                                  memory_order_relaxed),
              (unsigned long)atomic_load_explicit(&ctx->read_timeouts,
@@ -1211,7 +1325,7 @@ static void wake_capture_stop(nuwax_wake_capture_context_t **owner) {
     *owner = NULL;
 }
 
-static esp_err_t wake_capture_start(nuwax_wake_capture_context_t **owner) {
+static esp_err_t wake_capture_start(nuwax_wake_capture_context_t **owner, bool dual_input) {
     if (!owner) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -1232,6 +1346,7 @@ static esp_err_t wake_capture_start(nuwax_wake_capture_context_t **owner) {
     atomic_init(&ctx->queue_high_water, 0U);
     atomic_init(&ctx->queue_empty_waits, 0U);
     atomic_init(&ctx->queue_invariant_faults, 0U);
+    ctx->dual_input = dual_input;
     ctx->init_result = ESP_ERR_NOT_FINISHED;
     ctx->producer_generation = 1U;
     ctx->owner_task = xTaskGetCurrentTaskHandle();
@@ -1300,7 +1415,7 @@ static esp_err_t wake_capture_start(nuwax_wake_capture_context_t **owner) {
             NUWAX_WAKE_CAPTURE_START_TIMEOUT_MS;
     if (start_timed_out) {
         ESP_LOGE(TAG,
-                 "playback wake capture start timed out after %u ms; requesting bounded child shutdown",
+                 "wake capture start timed out after %u ms; requesting bounded child shutdown",
                  (unsigned)NUWAX_WAKE_CAPTURE_START_TIMEOUT_MS);
     }
     const esp_err_t result = start_timed_out
@@ -1318,7 +1433,7 @@ static esp_err_t wake_capture_read(nuwax_wake_capture_context_t *ctx,
                                    size_t sample_count,
                                    uint32_t timeout_ms,
                                    size_t *samples_read) {
-    if (!ctx || !mic1 || !mic2 || !samples_read) {
+    if (!ctx || !mic1 || (ctx->dual_input && !mic2) || !samples_read) {
         return ESP_ERR_INVALID_ARG;
     }
     *samples_read = 0U;
@@ -1351,9 +1466,10 @@ static esp_err_t wake_capture_read(nuwax_wake_capture_context_t *ctx,
                               wait_ticks) != pdTRUE) {
                 return ESP_ERR_TIMEOUT;
             }
+            (void)wake_capture_publish_pressure(ctx);
             if (ctx->consumer_chunk >= CONFIG_NUWAX_WAKE_CAPTURE_QUEUE_DEPTH) {
                 ESP_LOGE(TAG,
-                         "playback wake capture invalid ready chunk index=%u",
+                         "wake capture invalid ready chunk index=%u",
                          (unsigned)ctx->consumer_chunk);
                 return ESP_ERR_INVALID_RESPONSE;
             }
@@ -1361,11 +1477,17 @@ static esp_err_t wake_capture_read(nuwax_wake_capture_context_t *ctx,
             ctx->consumer_holds_chunk = true;
             const uint32_t generation =
                 ctx->chunks[ctx->consumer_chunk].generation;
-            if (ctx->consumer_generation == 0U) {
-                ctx->consumer_generation = generation;
-            } else if (nuwax_wake_input_generation_changed(
-                           ctx->consumer_generation, generation)) {
-                ctx->consumer_generation = generation;
+            const uint32_t sequence = ctx->chunks[ctx->consumer_chunk].sequence;
+            const bool gap = ctx->consumer_sequence_valid &&
+                (sequence != (uint32_t)(ctx->consumer_sequence + 1U) ||
+                 nuwax_wake_input_generation_changed(ctx->consumer_generation,
+                                                     generation));
+            ctx->consumer_generation = generation;
+            ctx->consumer_sequence = sequence;
+            ctx->consumer_sequence_valid = true;
+            if (gap) {
+                /* Keep the first post-gap chunk owned for the next read;
+                 * the caller discards only its incomplete pre-gap frame. */
                 return ESP_ERR_INVALID_RESPONSE;
             }
         }
@@ -1388,9 +1510,9 @@ static esp_err_t wake_capture_read(nuwax_wake_capture_context_t *ctx,
         memcpy(mic1 + *samples_read,
                chunk->mic1 + ctx->consumer_offset,
                copied * sizeof(mic1[0]));
-        memcpy(mic2 + *samples_read,
-               chunk->mic2 + ctx->consumer_offset,
-               copied * sizeof(mic2[0]));
+        if (mic2) memcpy(mic2 + *samples_read,
+                         chunk->mic2 + ctx->consumer_offset,
+                         copied * sizeof(mic2[0]));
         *samples_read += copied;
         ctx->consumer_offset += (uint16_t)copied;
         if (ctx->consumer_offset >= chunk->sample_count) {
@@ -1405,9 +1527,7 @@ static esp_err_t wake_capture_read(nuwax_wake_capture_context_t *ctx,
 
 static void wake_word_task(void *arg) {
     (void)arg;
-    nuwax_mic_input_t mic = {0};
-    nuwax_wake_capture_context_t *playback_capture = NULL;
-    bool mic_ready = false;
+    nuwax_wake_capture_context_t *capture = NULL;
     int16_t *samples = NULL;
     int16_t *mic2_samples = NULL;
     int16_t *reference_primary = NULL;
@@ -1421,6 +1541,7 @@ static void wake_word_task(void *arg) {
 #if CONFIG_NUWAX_WAKE_WORD_BACKEND_MULTINET
     uint32_t mn_generation = 0U;
     uint32_t mn_created_ms = 0U;
+    uint32_t backend_health_ms = 0U;
 #endif
     detector_lock();
     arm_context = s_detector.arm_context;
@@ -1439,19 +1560,27 @@ static void wake_word_task(void *arg) {
     uint32_t partial_reads = 0U;
     uint32_t read_timeouts = 0U;
     uint32_t input_gaps = 0U;
+    uint32_t partial_reads_dropped = 0U;
+    uint32_t partial_samples_dropped = 0U;
     uint32_t delayed_feeds = 0U;
     uint32_t max_feed_gap_ms = 0U;
     bool capture_gap_since_feed = false;
     uint32_t noise_floor_avg_abs = 0U;
+    nuwax_wake_noise_t noise_estimator = {0};
     uint32_t voice_signal_avg_abs_max = 0U;
     uint32_t voice_span_started_ms = 0U;
     uint32_t voice_last_seen_ms = 0U;
     uint32_t window_clipped_samples = 0U;
     uint32_t window_total_samples = 0U;
+    nuwax_wake_evidence_t wake_evidence = {0};
     uint32_t weak_rejections = 0U;
     uint64_t inference_window_us = 0U;
     uint32_t inference_window_calls = 0U;
     uint32_t inference_window_max_us = 0U;
+    uint64_t processing_window_us = 0U;
+    uint32_t processing_window_calls = 0U;
+    uint32_t processing_window_max_us = 0U;
+    uint32_t read_window_max_us = 0U;
     uint32_t cooperative_blocks = 0U;
     uint32_t cooperative_blocks_window = 0U;
     uint32_t max_cooperate_gap_ms = 0U;
@@ -1489,15 +1618,13 @@ static void wake_word_task(void *arg) {
         }
     }
 
-    esp_err_t err = playback_interrupt_mode
-                        ? wake_capture_start(&playback_capture)
-                        : nuwax_mic_input_init_with_owner(
-                              &mic, NUWAX_MIC_OWNER_WAKE_DETECTOR);
+    /* Drain DMA independently of model inference in both normal and playback
+     * wake modes. The existing bounded PSRAM queue preserves PCM ordering. */
+    esp_err_t err = wake_capture_start(&capture, playback_interrupt_mode);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "wake detector mic init failed: %s", esp_err_to_name(err));
         goto done;
     }
-    mic_ready = !playback_interrupt_mode;
     detector_lock();
     const bool stop_before_ready = atomic_load_explicit(&s_detector.stop_requested,
                                                         memory_order_acquire);
@@ -1546,50 +1673,53 @@ static void wake_word_task(void *arg) {
         size_t samples_read = 0;
         const size_t samples_needed =
             nuwax_wake_input_samples_needed(samples_filled, sample_count);
-        if (playback_interrupt_mode && playback_capture) {
+        const int64_t read_started_us = esp_timer_get_time();
+        if (capture) {
             err = wake_capture_read(
-                playback_capture,
+                capture,
                 samples + samples_filled,
-                mic2_samples + samples_filled,
+                mic2_samples ? mic2_samples + samples_filled : NULL,
                 samples_needed,
                 read_timeout_ms,
                 &samples_read);
         } else {
-            err = nuwax_mic_input_read_pcm16(&mic,
-                                             samples + samples_filled,
-                                             samples_needed,
-                                             read_timeout_ms,
-                                             &samples_read);
+            break; /* No direct DMA fallback after child ownership has begun. */
         }
+        const uint32_t read_elapsed_us = (uint32_t)(esp_timer_get_time() - read_started_us);
+        if (read_elapsed_us > read_window_max_us) read_window_max_us = read_elapsed_us;
         if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
             if (err == ESP_ERR_INVALID_RESPONSE) {
                 /* mic_input consumed and rejected a discontinuous DMA frame.
                  * Retry immediately so RX catches up; delaying here used to
                  * let another DMA buffer overflow before every retry. */
+                if (samples_filled + samples_read > 0U) {
+                    partial_reads_dropped++;
+                    partial_samples_dropped += (uint32_t)(samples_filled + samples_read);
+                }
                 samples_filled = 0U;
                 capture_gap_since_feed = true;
                 continue;
             }
-            if (playback_interrupt_mode && playback_capture) {
+            if (capture) {
                 const bool stop_requested =
                     atomic_load_explicit(&s_detector.stop_requested,
                                          memory_order_acquire) ||
-                    atomic_load_explicit(&playback_capture->stop_requested,
+                    atomic_load_explicit(&capture->stop_requested,
                                          memory_order_acquire);
                 const bool capture_exited =
-                    atomic_load_explicit(&playback_capture->exited,
+                    atomic_load_explicit(&capture->exited,
                                          memory_order_acquire);
                 const bool expected_exit = err == ESP_ERR_INVALID_STATE &&
                     nuwax_wake_input_capture_exit_expected(
                         stop_requested,
                         capture_exited,
-                        playback_capture->init_result == ESP_OK);
+                        capture->init_result == ESP_OK);
                 if (expected_exit) {
                     ESP_LOGI(TAG,
-                             "playback wake capture stopped after owner request");
+                             "wake capture stopped after owner request");
                 } else {
                     ESP_LOGE(TAG,
-                             "playback wake capture stopped unexpectedly: %s",
+                             "wake capture stopped unexpectedly: %s",
                              esp_err_to_name(err));
                 }
                 break;
@@ -1616,6 +1746,7 @@ static void wake_word_task(void *arg) {
             continue;
         }
 
+        const int64_t processing_started_us = esp_timer_get_time();
         const uint32_t feed_ms = detector_monotonic_ms();
         const uint32_t feed_gap_ms = last_feed_ms == 0U
                                          ? 0U
@@ -1626,7 +1757,9 @@ static void wake_word_task(void *arg) {
         const bool delayed_feed = nuwax_wake_input_gap_is_discontinuous(
             last_feed_ms, feed_ms, NUWAX_WAKE_WORD_MAX_FEED_GAP_MS);
         if (capture_gap_since_feed) {
+            nuwax_wake_noise_reset(&noise_estimator);
             input_gaps++;
+            nuwax_wake_evidence_reset(&wake_evidence);
 #if CONFIG_NUWAX_WAKE_WORD_BACKEND_MULTINET
             if (s_detector.mn_iface && s_detector.mn_data) {
                 s_detector.mn_iface->clean(s_detector.mn_data);
@@ -1653,6 +1786,9 @@ static void wake_word_task(void *arg) {
             delayed_feeds++;
         }
         last_feed_ms = feed_ms;
+        atomic_store_explicit(&s_detector.last_feed_ms,
+                              feed_ms,
+                              memory_order_release);
         samples_filled = 0U;
         capture_gap_since_feed = false;
 
@@ -1771,17 +1907,13 @@ static void wake_word_task(void *arg) {
             }
         }
 
-        if (noise_floor_avg_abs == 0U) {
-            noise_floor_avg_abs = frame_avg_abs > 0U ? frame_avg_abs : 1U;
-        } else if (frame_avg_abs <= noise_floor_avg_abs * 2U + 80U) {
-            noise_floor_avg_abs =
-                (noise_floor_avg_abs * 31U + frame_avg_abs) / 32U;
-            if (noise_floor_avg_abs == 0U) {
-                noise_floor_avg_abs = 1U;
-            }
-        }
+        noise_floor_avg_abs = nuwax_wake_noise_observe(
+            &noise_estimator, feed_ms, frame_avg_abs, frame_peak);
         const bool voice_like = nuwax_wake_voice_frame_is_voice_like(
             frame_avg_abs, frame_peak, noise_floor_avg_abs);
+        nuwax_wake_evidence_observe(&wake_evidence, feed_ms,
+                                   (uint32_t)sample_count, frame_clipped_samples,
+                                   frame_avg_abs, voice_like);
         if (voice_like) {
             if (voice_span_started_ms == 0U ||
                 nuwax_wake_voice_tail_expired(feed_ms,
@@ -1824,7 +1956,7 @@ static void wake_word_task(void *arg) {
                                                         inference_window_calls)
                                                   : 0U;
             ESP_LOGI(TAG,
-                     "wake input health frames=%lu partial_reads=%lu timeouts=%lu input_gaps=%lu delayed_feeds=%lu max_feed_gap_ms=%lu avg_abs=%lu peak=%lu noise_floor=%lu dc_mean=%ld clipped=%lu/%lu voice_span_ms=%lu weak_rejections=%lu inference_avg_us=%lu inference_max_us=%lu cooperative_blocks=%lu total=%lu max_cooperate_gap_ms=%lu cooperate_queue_high=%lu partial_reads_dropped=0",
+                     "wake input health frames=%lu partial_reads=%lu timeouts=%lu input_gaps=%lu delayed_feeds=%lu max_feed_gap_ms=%lu avg_abs=%lu peak=%lu noise_floor=%lu dc_mean=%ld clipped=%lu/%lu voice_span_ms=%lu weak_rejections=%lu inference_avg_us=%lu inference_max_us=%lu cooperative_blocks=%lu total=%lu max_cooperate_gap_ms=%lu cooperate_queue_high=%lu partial_reads_dropped=%lu partial_samples_dropped=%lu processing_avg_us=%lu processing_max_us=%lu read_max_us=%lu",
                      (unsigned long)frames,
                      (unsigned long)partial_reads,
                      (unsigned long)read_timeouts,
@@ -1848,36 +1980,45 @@ static void wake_word_task(void *arg) {
                      (unsigned long)cooperative_blocks_window,
                      (unsigned long)cooperative_blocks,
                      (unsigned long)max_cooperate_gap_ms,
-                     (unsigned long)cooperate_queue_high);
-            if (playback_capture) {
+                     (unsigned long)cooperate_queue_high,
+                     (unsigned long)partial_reads_dropped,
+                     (unsigned long)partial_samples_dropped,
+                     (unsigned long)(processing_window_calls ? processing_window_us / processing_window_calls : 0U),
+                     (unsigned long)processing_window_max_us,
+                     (unsigned long)read_window_max_us);
+            if (capture) {
                 ESP_LOGI(TAG,
-                         "playback wake capture health ready_depth=%lu free_depth=%lu queue_high_water=%lu queue_drops=%lu empty_waits=%lu invariant_faults=%lu partial_reads=%lu timeouts=%lu",
+                         "wake capture health ready_depth=%lu free_depth=%lu queue_high_water=%lu queue_drops=%lu empty_waits=%lu invariant_faults=%lu partial_reads=%lu timeouts=%lu",
                          (unsigned long)uxQueueMessagesWaiting(
-                             playback_capture->ready_chunks),
+                             capture->ready_chunks),
                          (unsigned long)uxQueueMessagesWaiting(
-                             playback_capture->free_chunks),
+                             capture->free_chunks),
                          (unsigned long)atomic_load_explicit(
-                             &playback_capture->queue_high_water,
+                             &capture->queue_high_water,
                              memory_order_relaxed),
                          (unsigned long)atomic_load_explicit(
-                             &playback_capture->queue_drops,
+                             &capture->queue_drops,
                              memory_order_relaxed),
                          (unsigned long)atomic_load_explicit(
-                             &playback_capture->queue_empty_waits,
+                             &capture->queue_empty_waits,
                              memory_order_relaxed),
                          (unsigned long)atomic_load_explicit(
-                             &playback_capture->queue_invariant_faults,
+                             &capture->queue_invariant_faults,
                              memory_order_relaxed),
                          (unsigned long)atomic_load_explicit(
-                             &playback_capture->partial_reads,
+                             &capture->partial_reads,
                              memory_order_relaxed),
                          (unsigned long)atomic_load_explicit(
-                             &playback_capture->read_timeouts,
+                             &capture->read_timeouts,
                              memory_order_relaxed));
             }
             inference_window_us = 0U;
             inference_window_calls = 0U;
             inference_window_max_us = 0U;
+            processing_window_us = 0U;
+            processing_window_calls = 0U;
+            processing_window_max_us = 0U;
+            read_window_max_us = 0U;
             cooperative_blocks_window = 0U;
             max_cooperate_gap_ms = 0U;
             cooperate_queue_high = 0U;
@@ -1909,6 +2050,23 @@ static void wake_word_task(void *arg) {
                                   (uint32_t)((sample_count * 1000U) /
                                              detector_sample_rate);
                     detected_probability_q1000 = probability_q1000;
+                    const nuwax_wake_evidence_snapshot_t evidence =
+                        nuwax_wake_evidence_snapshot(&wake_evidence, feed_ms,
+                                                     detector_sample_rate);
+                    if (!playback_interrupt_mode) {
+                        ESP_LOGI(TAG,
+                                 "wake candidate diagnostics revision=wake-response-v1 score=%lu noise=%lu rise_held=%d recent_voice_ms=%lu recent_total_ms=%lu recent_signal_avg=%lu evidence_age_ms=%lu shadow=%s enforced=0",
+                                 (unsigned long)probability_q1000,
+                                 (unsigned long)noise_floor_avg_abs,
+                                 noise_estimator.rise_held,
+                                 (unsigned long)evidence.local_voice_ms,
+                                 (unsigned long)evidence.local_total_ms,
+                                 (unsigned long)evidence.local_signal_avg,
+                                 (unsigned long)evidence.age_ms,
+                                 nuwax_wake_shadow_reason(probability_q1000,
+                                                         noise_floor_avg_abs,
+                                                         &evidence));
+                    }
                     if (playback_interrupt_mode) {
                         const bool recent_nearfield =
                             last_nearfield_safe_ms != 0U &&
@@ -1929,10 +2087,10 @@ static void wake_word_task(void *arg) {
                         action_eligible = nuwax_wake_detection_accept(
                             probability_q1000,
                             noise_floor_avg_abs,
-                            voice_signal_avg_abs_max,
-                            voice_span_ms,
-                            window_clipped_samples,
-                            window_total_samples);
+                            evidence.signal_max,
+                            evidence.voiced_ms,
+                            evidence.clipped_samples,
+                            evidence.total_samples);
                         detected_now = action_eligible;
                     }
                     detected = mn_result->command_id[0];
@@ -1974,41 +2132,51 @@ static void wake_word_task(void *arg) {
                         const char *acceptance_path =
                             probability_q1000 >=
                                     NUWAX_WAKE_STRONG_THRESHOLD_Q1000
-                                ? "strong"
-                                : (voice_span_ms <
+                                ? "strong_guarded"
+                                : (evidence.voiced_ms <
                                            NUWAX_WAKE_WEAK_MIN_VOICE_SPAN_MS
                                        ? "fast"
                                        : "normal");
                         ESP_LOGI(TAG,
-                                 "custom wake word accepted command_id=%d prob=%.3f path=%s voice_span_ms=%lu signal_avg_max=%lu noise_floor=%lu text=%s raw=%s",
+                                 "custom wake word accepted command_id=%d prob=%.3f path=%s voice_span_ms=%lu signal_avg_max=%lu noise_floor=%lu evidence_voice_ms=%lu evidence_age_ms=%lu evidence_signal=%lu text=%s raw=%s",
                                  detected,
                                  (double)mn_result->prob[0],
                                  acceptance_path,
                                  (unsigned long)voice_span_ms,
                                  (unsigned long)voice_signal_avg_abs_max,
                                  (unsigned long)noise_floor_avg_abs,
+                                 (unsigned long)evidence.voiced_ms,
+                                 (unsigned long)evidence.age_ms,
+                                 (unsigned long)evidence.signal_max,
                                  mn_result->string,
                                  mn_result->raw_string);
                     } else {
                         weak_rejections++;
                         ESP_LOGW(TAG,
-                                 "custom wake word weak detection rejected command_id=%d prob=%.3f voice_span_ms=%lu signal_avg_max=%lu noise_floor=%lu clipped=%lu/%lu",
+                                 "custom wake word candidate rejected command_id=%d prob=%.3f voice_span_ms=%lu signal_avg_max=%lu noise_floor=%lu evidence_voice_ms=%lu evidence_age_ms=%lu evidence_signal=%lu clipped=%lu/%lu",
                                  detected,
                                  (double)mn_result->prob[0],
                                  (unsigned long)voice_span_ms,
                                  (unsigned long)voice_signal_avg_abs_max,
                                  (unsigned long)noise_floor_avg_abs,
-                                 (unsigned long)window_clipped_samples,
-                                 (unsigned long)window_total_samples);
+                                 (unsigned long)evidence.voiced_ms,
+                                 (unsigned long)evidence.age_ms,
+                                 (unsigned long)evidence.signal_max,
+                                 (unsigned long)evidence.clipped_samples,
+                                 (unsigned long)evidence.total_samples);
                     }
                 }
                 s_detector.mn_iface->clean(s_detector.mn_data);
+                /* A consumed candidate cannot lend voice to another one. */
+                nuwax_wake_evidence_reset(&wake_evidence);
                 voice_span_started_ms = 0U;
                 voice_last_seen_ms = 0U;
                 voice_signal_avg_abs_max = 0U;
                 window_clipped_samples = 0U;
                 window_total_samples = 0U;
             } else if (mn_state == ESP_MN_STATE_TIMEOUT) {
+                /* TIMEOUT is a model search boundary, not lost microphone
+                 * audio. Keep only the independently bounded recent evidence. */
                 s_detector.mn_iface->clean(s_detector.mn_data);
                 voice_span_started_ms = 0U;
                 voice_last_seen_ms = 0U;
@@ -2086,6 +2254,17 @@ static void wake_word_task(void *arg) {
 
         const uint32_t inference_finished_ms = detector_monotonic_ms();
 #if CONFIG_NUWAX_WAKE_WORD_BACKEND_MULTINET
+        if ((uint32_t)(inference_finished_ms - backend_health_ms) >= 60000U) {
+            backend_health_ms = inference_finished_ms;
+            ESP_LOGI(TAG, "MultiNet lifetime generation=%lu age_ms=%lu frames=%lu internal_free=%u internal_largest=%u psram_free=%u stack_min_free=%u",
+                     (unsigned long)mn_generation,
+                     (unsigned long)(inference_finished_ms - mn_created_ms),
+                     (unsigned long)frames,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL));
+        }
         if (!lifetime_refresh_deferred && mn_created_ms != 0U &&
             (uint32_t)(inference_finished_ms - mn_created_ms) >=
                 NUWAX_WAKE_MULTINET_MAX_LIFETIME_MS) {
@@ -2108,8 +2287,15 @@ static void wake_word_task(void *arg) {
             }
         }
 #endif
+        /* Wall time from complete PCM to inference/callback completion. It
+         * includes preemption/locks/logging, excludes queue wait and deliberate
+         * fairness sleep; compare with the 32 ms input period, not CPU usage. */
+        const uint32_t processing_us = (uint32_t)(esp_timer_get_time() - processing_started_us);
+        processing_window_us += processing_us;
+        processing_window_calls++;
+        if (processing_us > processing_window_max_us) processing_window_max_us = processing_us;
         if (nuwax_wake_input_cooperate_due(
-                playback_interrupt_mode,
+                capture != NULL,
                 last_cooperate_ms,
                 inference_finished_ms,
                 NUWAX_WAKE_INFERENCE_COOPERATE_INTERVAL_MS)) {
@@ -2118,9 +2304,9 @@ static void wake_word_task(void *arg) {
             if (cooperate_gap_ms > max_cooperate_gap_ms) {
                 max_cooperate_gap_ms = cooperate_gap_ms;
             }
-            if (playback_capture) {
+            if (capture) {
                 const uint32_t ready_depth = (uint32_t)uxQueueMessagesWaiting(
-                    playback_capture->ready_chunks);
+                    capture->ready_chunks);
                 if (ready_depth > cooperate_queue_high) {
                     cooperate_queue_high = ready_depth;
                 }
@@ -2138,10 +2324,7 @@ static void wake_word_task(void *arg) {
 
 done:
     atomic_store_explicit(&s_detector.ready, false, memory_order_release);
-    wake_capture_stop(&playback_capture);
-    if (mic_ready) {
-        (void)nuwax_mic_input_deinit(&mic);
-    }
+    wake_capture_stop(&capture);
     detector_lock();
     s_detector.partial_reads = partial_reads;
     s_detector.read_timeouts = read_timeouts;
@@ -2150,7 +2333,7 @@ done:
     s_detector.weak_rejections = weak_rejections;
     detector_unlock();
     ESP_LOGI(TAG,
-             "wake input final frames=%lu partial_reads=%lu timeouts=%lu input_gaps=%lu delayed_feeds=%lu max_feed_gap_ms=%lu cooperative_blocks=%lu stack_min_free=%u stack_bytes=%u partial_reads_dropped=0",
+             "wake input final frames=%lu partial_reads=%lu timeouts=%lu input_gaps=%lu delayed_feeds=%lu max_feed_gap_ms=%lu cooperative_blocks=%lu stack_min_free=%u stack_bytes=%u partial_reads_dropped=%lu partial_samples_dropped=%lu",
              (unsigned long)frames,
              (unsigned long)partial_reads,
              (unsigned long)read_timeouts,
@@ -2159,7 +2342,9 @@ done:
              (unsigned long)max_feed_gap_ms,
              (unsigned long)cooperative_blocks,
              (unsigned)uxTaskGetStackHighWaterMark(NULL),
-             (unsigned)CONFIG_NUWAX_WAKE_WORD_TASK_STACK_BYTES);
+             (unsigned)CONFIG_NUWAX_WAKE_WORD_TASK_STACK_BYTES,
+             (unsigned long)partial_reads_dropped,
+             (unsigned long)partial_samples_dropped);
     heap_caps_free(reference_secondary);
     heap_caps_free(reference_primary);
     heap_caps_free(mic2_samples);
@@ -2179,6 +2364,7 @@ done:
 
 esp_err_t nuwax_wake_word_detector_init(nuwax_wake_word_callback_t callback, void *user_ctx) {
 #if CONFIG_NUWAX_WAKE_WORD_ENABLE
+    wake_capture_pressure_signal_init();
     if (s_detector.initialized) {
         detector_lock();
         if (s_detector.deinitializing) {
@@ -2193,6 +2379,7 @@ esp_err_t nuwax_wake_word_detector_init(nuwax_wake_word_callback_t callback, voi
     memset(&s_detector, 0, sizeof(s_detector));
     atomic_init(&s_detector.stop_requested, false);
     atomic_init(&s_detector.ready, false);
+    atomic_init(&s_detector.last_feed_ms, 0U);
     s_detector.task_state = NUWAX_WAKE_TASK_STOPPED;
     s_detector.lock = xSemaphoreCreateMutex();
     if (!s_detector.lock) {
@@ -2234,8 +2421,10 @@ esp_err_t nuwax_wake_word_detector_init(nuwax_wake_word_callback_t callback, voi
         result = ESP_ERR_NOT_FOUND;
         goto fail;
     }
+    wake_heap_checkpoint("before_initial_create");
     s_detector.mn_data = s_detector.mn_iface->create(s_detector.active_model,
                                                      CONFIG_NUWAX_CUSTOM_WAKE_WORD_DURATION_MS);
+    wake_heap_checkpoint("after_initial_create");
     if (!s_detector.mn_data) {
         ESP_LOGE(TAG, "MultiNet create failed model=%s", s_detector.active_model);
         result = ESP_FAIL;
@@ -2281,6 +2470,7 @@ esp_err_t nuwax_wake_word_detector_init(nuwax_wake_word_callback_t callback, voi
         goto fail;
     }
     s_detector.config = configured;
+    s_detector.config_persisted = persisted_err == ESP_OK && !used_legacy_persistence;
     s_detector.command_configured = true;
     s_detector.mn_generation = 1U;
     s_detector.mn_created_ms = detector_monotonic_ms();
@@ -2299,7 +2489,7 @@ esp_err_t nuwax_wake_word_detector_init(nuwax_wake_word_callback_t callback, voi
              s_detector.feed_chunksize,
              CONFIG_NUWAX_WAKE_WORD_MODEL_PARTITION);
     ESP_LOGI(TAG,
-             "wake high-recall policy strong=%.3f weak=%.3f fast_span=%u..%ums fast_snr_q8=%u normal_span=%u..%ums normal_snr_q8=%u voice_peak=%u tail_hold_ms=%u",
+             "wake evidence policy revision=20260924-wake-evidence-v1 score_revision=20261028-score009-v1 strong_score=%.3f weak=%.3f fast_voice=%u..%ums fast_snr_q8=%u normal_voice=%u..%ums normal_snr_q8=%u voice_peak=%u tail_hold_ms=%u",
              (double)NUWAX_WAKE_STRONG_THRESHOLD_Q1000 / 1000.0,
              (double)NUWAX_WAKE_WEAK_THRESHOLD_Q1000 / 1000.0,
              (unsigned)NUWAX_WAKE_FAST_MIN_VOICE_SPAN_MS,
@@ -2384,9 +2574,13 @@ esp_err_t nuwax_wake_word_detector_start_with_context(
     (void)detector_reap_exited_task();
 
     detector_lock();
-    if (!s_detector.initialized || s_detector.deinitializing) {
+    if (!s_detector.initialized) {
         detector_unlock();
         return ESP_ERR_INVALID_STATE;
+    }
+    if (s_detector.deinitializing || s_detector.flash_operation_guarded) {
+        detector_unlock();
+        return ESP_ERR_NOT_FINISHED;
     }
     if (s_detector.task_state == NUWAX_WAKE_TASK_RUNNING) {
         detector_unlock();
@@ -2395,10 +2589,10 @@ esp_err_t nuwax_wake_word_detector_start_with_context(
     if (s_detector.task_state != NUWAX_WAKE_TASK_STOPPED || s_detector.task) {
         ESP_LOGW(TAG,
                  "wake detector start rejected while task state=%s handle=%p",
-                 detector_task_state_name(s_detector.task_state),
-                 s_detector.task);
+                  detector_task_state_name(s_detector.task_state),
+                  s_detector.task);
         detector_unlock();
-        return ESP_ERR_INVALID_STATE;
+        return ESP_ERR_NOT_FINISHED;
     }
 #if CONFIG_NUWAX_WAKE_WORD_BACKEND_MULTINET
     const bool backend_missing =
@@ -2434,10 +2628,14 @@ esp_err_t nuwax_wake_word_detector_start_with_context(
                           false,
                           memory_order_release);
     atomic_store_explicit(&s_detector.ready, false, memory_order_release);
+    atomic_store_explicit(&s_detector.last_feed_ms, 0U,
+                          memory_order_release);
 #if CONFIG_NUWAX_WAKE_WORD_BACKEND_MULTINET
     /* Each arm is a new recognition transaction. Half a command retained
      * across a sleep/playback handoff must never complete in the new mode. */
+    wake_heap_checkpoint("before_rearm_clean");
     s_detector.mn_iface->clean(s_detector.mn_data);
+    wake_heap_checkpoint("after_rearm_clean");
 #endif
     s_detector.arm_context = *context;
     if (!s_detector.task_tcb) {
@@ -2585,6 +2783,118 @@ esp_err_t nuwax_wake_word_detector_stop_with_timeout(uint32_t timeout_ms) {
 #endif
 }
 
+esp_err_t nuwax_wake_word_detector_begin_flash_operation(uint32_t timeout_ms) {
+#if CONFIG_NUWAX_WAKE_WORD_ENABLE
+    if (timeout_ms == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    bool stop_required = false;
+    detector_lock();
+    if (!s_detector.initialized) {
+        /* No model or worker exists before initialization, so there is no
+         * Flash-mapped inference path to fence. This call intentionally does
+         * not create an owned guard; the matching end call is a no-op. */
+        detector_unlock();
+        return ESP_OK;
+    }
+    if (s_detector.deinitializing) {
+        /* Teardown marks this state before requesting the worker to stop. A
+         * successful return here would let NVS race the still-exiting task. */
+        detector_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_detector.flash_operation_guarded) {
+        if (s_detector.flash_operation_owner == xTaskGetCurrentTaskHandle() &&
+            s_detector.flash_operation_depth < UINT16_MAX) {
+            /* OTA reconciliation and diagnostic cleanup can call one guarded
+             * NVS helper from another. Keep the outer stop fence in place and
+             * make the matching end call release only its own nesting level. */
+            s_detector.flash_operation_depth++;
+            detector_unlock();
+            return ESP_OK;
+        }
+        detector_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_detector.flash_operation_guarded = true;
+    s_detector.flash_operation_owner = xTaskGetCurrentTaskHandle();
+    s_detector.flash_operation_depth = 1U;
+    stop_required = s_detector.task_state != NUWAX_WAKE_TASK_STOPPED ||
+                    s_detector.task != NULL;
+    detector_unlock();
+
+    if (!stop_required) {
+        return ESP_OK;
+    }
+
+    const esp_err_t stop_err =
+        nuwax_wake_word_detector_stop_with_timeout(timeout_ms);
+    if (stop_err == ESP_OK) {
+        return ESP_OK;
+    }
+
+    detector_lock();
+    if (s_detector.flash_operation_guarded &&
+        s_detector.flash_operation_owner == xTaskGetCurrentTaskHandle()) {
+        s_detector.flash_operation_guarded = false;
+        s_detector.flash_operation_owner = NULL;
+        s_detector.flash_operation_depth = 0U;
+    }
+    detector_unlock();
+    ESP_LOGW(TAG,
+             "Flash operation guard could not quiesce wake detector err=%s; transaction deferred",
+             esp_err_to_name(stop_err));
+    return stop_err;
+#else
+    (void)timeout_ms;
+    return ESP_OK;
+#endif
+}
+
+bool nuwax_wake_word_detector_flash_paused(void) {
+#if CONFIG_NUWAX_WAKE_WORD_ENABLE
+    detector_lock();
+    const bool paused = s_detector.flash_operation_guarded;
+    detector_unlock();
+    return paused;
+#else
+    return false;
+#endif
+}
+
+void nuwax_wake_word_detector_end_flash_operation(void) {
+#if CONFIG_NUWAX_WAKE_WORD_ENABLE
+    const TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
+    TaskHandle_t owner_task = NULL;
+    bool wrong_owner = false;
+    detector_lock();
+    if (!s_detector.flash_operation_guarded) {
+        detector_unlock();
+        return;
+    }
+    if (s_detector.flash_operation_owner != current_task) {
+        owner_task = s_detector.flash_operation_owner;
+        wrong_owner = true;
+        detector_unlock();
+    } else if (s_detector.flash_operation_depth > 1U) {
+        s_detector.flash_operation_depth--;
+        detector_unlock();
+    } else {
+        s_detector.flash_operation_guarded = false;
+        s_detector.flash_operation_owner = NULL;
+        s_detector.flash_operation_depth = 0U;
+        detector_unlock();
+    }
+    if (wrong_owner) {
+        ESP_LOGE(TAG,
+                 "Flash operation guard release ignored from non-owner owner=%p current=%p",
+                 owner_task,
+                 current_task);
+    }
+#endif
+}
+
 void nuwax_wake_word_detector_stop(void) {
     const esp_err_t err = nuwax_wake_word_detector_stop_with_timeout(
         NUWAX_WAKE_WORD_STOP_TIMEOUT_MS);
@@ -2620,11 +2930,29 @@ bool nuwax_wake_word_detector_is_ready(void) {
 #endif
 }
 
+
+uint32_t nuwax_wake_word_detector_last_feed_ms(void)
+{
+#if CONFIG_NUWAX_WAKE_WORD_ENABLE
+    return (uint32_t)atomic_load_explicit(&s_detector.last_feed_ms,
+                                          memory_order_acquire);
+#else
+    return 0U;
+#endif
+}
+
 void nuwax_wake_word_detector_deinit(void) {
 #if CONFIG_NUWAX_WAKE_WORD_ENABLE
     detector_lock();
     const bool called_from_worker =
         s_detector.task && s_detector.task == xTaskGetCurrentTaskHandle();
+    const bool flash_operation_active = s_detector.flash_operation_guarded;
+    if (flash_operation_active && !called_from_worker) {
+        detector_unlock();
+        ESP_LOGW(TAG,
+                 "wake detector deinit deferred while Flash operation guard is active");
+        return;
+    }
     if (!called_from_worker) {
         s_detector.deinitializing = true;
     }
@@ -2685,10 +3013,17 @@ static esp_err_t apply_wake_word_config(
                              (s_detector.task_state != NUWAX_WAKE_TASK_STOPPED ||
                               s_detector.task != NULL);
     nuwax_wake_word_config_t previous = s_detector.config;
+    const bool already_durable = s_detector.config_persisted;
     nuwax_wake_arm_context_t restart_context = s_detector.arm_context;
     detector_unlock();
     if (!initialized) {
         return ESP_ERR_INVALID_STATE;
+    }
+
+    if (nuwax_wake_word_configs_equal(&previous, &normalized) &&
+        (persist_action == NUWAX_WAKE_PERSIST_NONE ||
+         (persist_action == NUWAX_WAKE_PERSIST_WRITE && already_durable))) {
+        return ESP_OK;
     }
 
     nuwax_wake_word_persisted_snapshot_t persisted_snapshot = {0};
@@ -2749,6 +3084,7 @@ static esp_err_t apply_wake_word_config(
         &normalized, "command_update");
     if (err == ESP_OK) {
         s_detector.config = normalized;
+        s_detector.config_persisted = false;
         s_detector.command_configured = true;
     }
     detector_unlock();
@@ -2911,3 +3247,8 @@ void nuwax_wake_word_detector_get_status(nuwax_wake_word_status_t *out_status) {
     detector_unlock();
 #endif
 }
+
+#if !CONFIG_NUWAX_WAKE_WORD_ENABLE
+uint32_t nuwax_wake_word_capture_backlog_ms(void) { return 0U; }
+void nuwax_wake_word_wait_capture_headroom(uint32_t timeout_ms) { (void)timeout_ms; }
+#endif
